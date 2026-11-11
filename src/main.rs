@@ -2,8 +2,10 @@ mod ai;
 mod app;
 mod config;
 mod db;
+mod er_diagram;
 mod export;
 mod syntax;
+mod table_designer;
 
 use app::MysqlRustyApp;
 use std::sync::Arc;
@@ -35,7 +37,29 @@ mod tests {
         compute_heuristic_ghost_completion, compute_local_completions, extract_sql_code_block,
     };
     use crate::db::{build_demo_schema, detect_editable_table_and_pk};
-    use crate::syntax::format_sql_pretty;
+    use crate::syntax::{extract_statement_at_cursor, format_sql_pretty};
+
+    #[test]
+    fn test_extract_statement_at_cursor() {
+        let sql = "SELECT 'first;one' AS col1; SELECT \"second;two\"; SELECT 3 -- comment with ; \n;";
+        // Statement 1 is from char 0 to 27
+        let (stmt1, (s1, e1)) = extract_statement_at_cursor(sql, 5);
+        assert_eq!(stmt1, "SELECT 'first;one' AS col1;");
+        assert_eq!((s1, e1), (0, 27));
+
+        // Cursor at 0 (start of statement 1)
+        let (stmt1_start, _) = extract_statement_at_cursor(sql, 0);
+        assert_eq!(stmt1_start, "SELECT 'first;one' AS col1;");
+
+        // Statement 2 contains quoted semicolon
+        let (stmt2, _) = extract_statement_at_cursor(sql, 35);
+        assert_eq!(stmt2, "SELECT \"second;two\";");
+
+        // Statement 3 has comment containing a semicolon
+        let (stmt3, _) = extract_statement_at_cursor(sql, sql.len());
+        assert!(stmt3.contains("SELECT 3"));
+        assert!(stmt3.contains("-- comment with ;"));
+    }
 
     #[test]
     fn test_schema_ddl_and_local_completions() {
@@ -82,5 +106,116 @@ mod tests {
         assert!(formatted.contains("\nFROM "));
         assert!(formatted.contains("\nWHERE "));
         assert!(formatted.contains("\nLIMIT "));
+    }
+
+    #[test]
+    fn test_table_designer_create_and_alter_ddl() {
+        use crate::db::{ColumnInfo, ForeignKeyInfo, IndexInfo};
+        use crate::table_designer::TableDraft;
+
+        // 1. CREATE TABLE mode
+        let mut create_draft = TableDraft::new_empty("products");
+        create_draft.columns.push(ColumnInfo {
+            name: "title".to_string(),
+            data_type: "VARCHAR(255)".to_string(),
+            is_nullable: false,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        });
+        create_draft.indexes.push(IndexInfo {
+            index_name: "idx_title".to_string(),
+            column_name: "title".to_string(),
+            non_unique: true,
+            index_type: "BTREE".to_string(),
+        });
+        create_draft.foreign_keys.push(ForeignKeyInfo {
+            constraint_name: "fk_prod_cat".to_string(),
+            column_name: "category_id".to_string(),
+            referenced_table: "categories".to_string(),
+            referenced_column: "id".to_string(),
+        });
+
+        let create_ddl = create_draft.generate_ddl_diff();
+        assert!(create_ddl.contains("CREATE TABLE `products`"));
+        assert!(create_ddl.contains("PRIMARY KEY (`id`)"));
+        assert!(create_ddl.contains("KEY `idx_title` (`title`)"));
+        assert!(create_ddl.contains("CONSTRAINT `fk_prod_cat` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)"));
+        assert!(create_ddl.contains("ENGINE=InnoDB"));
+
+        // 2. ALTER TABLE mode
+        let schema = build_demo_schema("ecommerce_prod");
+        let users_tbl = schema.tables.iter().find(|t| t.name == "users").unwrap();
+        let mut alter_draft = TableDraft::from_table(users_tbl);
+
+        // Add a new column
+        alter_draft.columns.push(ColumnInfo {
+            name: "phone_number".to_string(),
+            data_type: "VARCHAR(30)".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        });
+
+        // Modify email column
+        if let Some(email_col) = alter_draft.columns.iter_mut().find(|c| c.name == "email") {
+            email_col.data_type = "VARCHAR(320)".to_string();
+        }
+
+        // Drop country column
+        alter_draft.columns.retain(|c| c.name != "country");
+
+        let alter_ddl = alter_draft.generate_ddl_diff();
+        assert!(alter_ddl.contains("ALTER TABLE `users` ADD COLUMN `phone_number` VARCHAR(30) NULL;"));
+        assert!(alter_ddl.contains("ALTER TABLE `users` MODIFY COLUMN `email` VARCHAR(320) NOT NULL;"));
+        assert!(alter_ddl.contains("ALTER TABLE `users` DROP COLUMN `country`;"));
+    }
+
+    #[tokio::test]
+    async fn test_server_admin_methods() {
+        use crate::config::ConnectionProfile;
+        use crate::db::ActiveSession;
+
+        let session = ActiveSession::connect(ConnectionProfile::demo_profile())
+            .await
+            .expect("Failed to connect to demo sandbox");
+
+        let procs = session.list_processes().await.expect("Failed to list processes");
+        assert!(procs.columns.contains(&"Id".to_string()));
+        assert!(procs.columns.contains(&"User".to_string()));
+        assert!(procs.columns.contains(&"Command".to_string()));
+        assert!(!procs.rows.is_empty());
+
+        let status = session.server_status_summary().await.expect("Failed to get server status");
+        assert!(status.contains_key("Uptime"));
+        assert!(status.contains_key("Threads_connected"));
+        assert!(status.contains_key("Questions"));
+
+        session.kill_query(101).await.expect("Failed to kill query");
+    }
+
+    #[test]
+    fn test_parse_csv_to_batch_insert() {
+        use crate::export::parse_csv_to_batch_insert;
+
+        let csv = "id,name,price,in_stock,notes\n1,Widget,19.99,true,NULL\n2,Gadget,42.0,false,\"Best widget ever; tested!\"\n3,Doohickey,100,true,";
+        let sql = parse_csv_to_batch_insert("inventory", csv).expect("Failed to parse CSV");
+        assert!(sql.starts_with("INSERT INTO `inventory` (`id`, `name`, `price`, `in_stock`, `notes`) VALUES"));
+        assert!(sql.contains("(1, 'Widget', 19.99, 1, NULL)"));
+        assert!(sql.contains("(2, 'Gadget', 42.0, 0, 'Best widget ever; tested!')"));
+        assert!(sql.contains("(3, 'Doohickey', 100, 1, NULL)"));
+
+        // Error cases
+        assert!(parse_csv_to_batch_insert("test", "").is_err());
+        assert!(parse_csv_to_batch_insert("test", "id,name\n").is_err());
+    }
+
+    #[test]
+    fn test_keyring_fallback() {
+        use crate::config::{delete_secret, get_secret, set_secret};
+        let _ = set_secret("test_key", "secret_value");
+        let _ = get_secret("test_key");
+        let _ = delete_secret("test_key");
     }
 }

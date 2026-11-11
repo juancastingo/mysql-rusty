@@ -223,3 +223,147 @@ pub fn format_sql_pretty(sql: &str) -> String {
     }
     out
 }
+
+/// Extracts the SQL statement located at the specified character cursor index.
+/// Statements are delimited by `;` outside of quotes, backticks, and comments.
+/// Returns the statement text (trimmed) and its `(start_char_idx, end_char_idx)` range in `sql`.
+pub fn extract_statement_at_cursor(sql: &str, cursor_char_idx: usize) -> (String, (usize, usize)) {
+    if sql.trim().is_empty() {
+        return (String::new(), (0, 0));
+    }
+
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+
+    let mut raw_ranges = Vec::new();
+    let mut current_start = 0;
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < n {
+        let ch = chars[i];
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+        } else if in_block_comment {
+            if ch == '*' && i + 1 < n && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 1;
+            }
+        } else if in_single_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '\'' {
+                if i + 1 < n && chars[i + 1] == '\'' {
+                    i += 1;
+                } else {
+                    in_single_quote = false;
+                }
+            }
+        } else if in_double_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '"' {
+                if i + 1 < n && chars[i + 1] == '"' {
+                    i += 1;
+                } else {
+                    in_double_quote = false;
+                }
+            }
+        } else if in_backtick {
+            if ch == '`' {
+                if i + 1 < n && chars[i + 1] == '`' {
+                    i += 1;
+                } else {
+                    in_backtick = false;
+                }
+            }
+        } else {
+            if ch == '-' && i + 1 < n && chars[i + 1] == '-' {
+                in_line_comment = true;
+                i += 1;
+            } else if ch == '#' {
+                in_line_comment = true;
+            } else if ch == '/' && i + 1 < n && chars[i + 1] == '*' {
+                in_block_comment = true;
+                i += 1;
+            } else if ch == '\'' {
+                in_single_quote = true;
+            } else if ch == '"' {
+                in_double_quote = true;
+            } else if ch == '`' {
+                in_backtick = true;
+            } else if ch == ';' {
+                raw_ranges.push((current_start, i + 1));
+                current_start = i + 1;
+            }
+        }
+        i += 1;
+    }
+
+    if current_start < n {
+        raw_ranges.push((current_start, n));
+    }
+
+    struct StmtInfo {
+        raw_start: usize,
+        raw_end: usize,
+        trimmed_start: usize,
+        trimmed_end: usize,
+        text: String,
+    }
+
+    let mut stmts = Vec::new();
+    for (r_start, r_end) in raw_ranges {
+        let slice = &chars[r_start..r_end];
+        let mut lead_ws = 0;
+        while lead_ws < slice.len() && slice[lead_ws].is_whitespace() {
+            lead_ws += 1;
+        }
+        let mut trail_ws = 0;
+        while trail_ws < slice.len().saturating_sub(lead_ws)
+            && slice[slice.len() - 1 - trail_ws].is_whitespace()
+        {
+            trail_ws += 1;
+        }
+        if lead_ws + trail_ws < slice.len() {
+            let t_start = r_start + lead_ws;
+            let t_end = r_end - trail_ws;
+            let text: String = chars[t_start..t_end].iter().collect();
+            stmts.push(StmtInfo {
+                raw_start: r_start,
+                raw_end: r_end,
+                trimmed_start: t_start,
+                trimmed_end: t_end,
+                text,
+            });
+        }
+    }
+
+    if stmts.is_empty() {
+        return (String::new(), (0, 0));
+    }
+
+    let clamped_cursor = cursor_char_idx.min(n);
+
+    for stmt in &stmts {
+        if clamped_cursor >= stmt.raw_start && clamped_cursor <= stmt.raw_end {
+            return (stmt.text.clone(), (stmt.trimmed_start, stmt.trimmed_end));
+        }
+    }
+
+    if let Some(last) = stmts.last() {
+        if clamped_cursor >= last.raw_end {
+            return (last.text.clone(), (last.trimmed_start, last.trimmed_end));
+        }
+    }
+
+    let first = &stmts[0];
+    (first.text.clone(), (first.trimmed_start, first.trimmed_end))
+}
+

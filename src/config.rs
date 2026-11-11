@@ -40,6 +40,10 @@ impl Default for SshTunnelConfig {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: String,
@@ -51,6 +55,8 @@ pub struct ConnectionProfile {
     pub password: String,
     pub default_database: String,
     pub ssl_mode: SslMode,
+    #[serde(default = "default_true")]
+    pub ssl_accept_invalid_certs: bool,
     pub ssh: SshTunnelConfig,
     pub is_demo: bool,
 }
@@ -67,6 +73,7 @@ impl Default for ConnectionProfile {
             password: String::new(),
             default_database: String::new(),
             ssl_mode: SslMode::Preferred,
+            ssl_accept_invalid_certs: true,
             ssh: SshTunnelConfig::default(),
             is_demo: false,
         }
@@ -77,7 +84,7 @@ impl ConnectionProfile {
     pub fn demo_profile() -> Self {
         Self {
             id: "demo-sandbox-mysql".to_string(),
-            name: "⚡ Sandbox Demo (ecommerce_prod)".to_string(),
+            name: "Sandbox Demo (ecommerce_prod)".to_string(),
             color_hex: "#10b981".to_string(),
             host: "sandbox.local".to_string(),
             port: 3306,
@@ -85,6 +92,7 @@ impl ConnectionProfile {
             password: String::new(),
             default_database: "ecommerce_prod".to_string(),
             ssl_mode: SslMode::Disabled,
+            ssl_accept_invalid_certs: true,
             ssh: SshTunnelConfig::default(),
             is_demo: true,
         }
@@ -219,12 +227,30 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<Self>(&content) {
-                return cfg;
+        let mut cfg = if let Ok(content) = fs::read_to_string(&path) {
+            serde_json::from_str::<Self>(&content).unwrap_or_default()
+        } else {
+            Self::default()
+        };
+
+        // Hydrate secrets from OS keyring if available
+        for conn in &mut cfg.connections {
+            let key = format!("conn_pwd_{}", conn.id);
+            if let Some(sec) = get_secret(&key) {
+                conn.password = sec;
             }
         }
-        Self::default()
+        if let Some(k) = get_secret("openai_api_key") {
+            cfg.ai.openai_api_key = k;
+        }
+        if let Some(k) = get_secret("anthropic_api_key") {
+            cfg.ai.anthropic_api_key = k;
+        }
+        if let Some(k) = get_secret("gemini_api_key") {
+            cfg.ai.gemini_api_key = k;
+        }
+
+        cfg
     }
 
     pub fn save(&self) -> Result<()> {
@@ -232,8 +258,71 @@ impl AppConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)?;
+
+        let mut config_to_save = self.clone();
+
+        // Store secrets in OS Keyring
+        for conn in &self.connections {
+            let key = format!("conn_pwd_{}", conn.id);
+            let _ = set_secret(&key, &conn.password);
+            if get_secret(&key).as_deref() == Some(&conn.password) {
+                // Keyring confirmed storage: clean password from disk config
+                if let Some(c) = config_to_save.connections.iter_mut().find(|c| c.id == conn.id) {
+                    c.password.clear();
+                }
+            }
+        }
+
+        let _ = set_secret("openai_api_key", &self.ai.openai_api_key);
+        if get_secret("openai_api_key").as_deref() == Some(&self.ai.openai_api_key) {
+            config_to_save.ai.openai_api_key.clear();
+        }
+
+        let _ = set_secret("anthropic_api_key", &self.ai.anthropic_api_key);
+        if get_secret("anthropic_api_key").as_deref() == Some(&self.ai.anthropic_api_key) {
+            config_to_save.ai.anthropic_api_key.clear();
+        }
+
+        let _ = set_secret("gemini_api_key", &self.ai.gemini_api_key);
+        if get_secret("gemini_api_key").as_deref() == Some(&self.ai.gemini_api_key) {
+            config_to_save.ai.gemini_api_key.clear();
+        }
+
+        let json = serde_json::to_string_pretty(&config_to_save)?;
         fs::write(path, json)?;
         Ok(())
     }
 }
+
+pub const KEYRING_SERVICE: &str = "mysql-rusty";
+
+pub fn set_secret(key: &str, secret: &str) -> Result<()> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key) {
+        if secret.is_empty() {
+            let _ = entry.delete_credential();
+        } else {
+            let _ = entry.set_password(secret);
+        }
+    }
+    Ok(())
+}
+
+pub fn get_secret(key: &str) -> Option<String> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key) {
+        if let Ok(pwd) = entry.get_password() {
+            if !pwd.is_empty() {
+                return Some(pwd);
+            }
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub fn delete_secret(key: &str) -> Result<()> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key) {
+        let _ = entry.delete_credential();
+    }
+    Ok(())
+}
+

@@ -75,3 +75,61 @@ pub fn save_string_to_path(path: &Path, content: &str) -> Result<()> {
     fs::write(path, content)?;
     Ok(())
 }
+
+/// Parses a CSV string into a MySQL multi-row batch `INSERT INTO ... VALUES (...)` statement.
+pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<String> {
+    let trimmed = csv_content.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("CSV content is empty."));
+    }
+
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(trimmed.as_bytes());
+
+    let headers = reader.headers()?.clone();
+    if headers.is_empty() {
+        return Err(anyhow::anyhow!("CSV headers are empty."));
+    }
+
+    let clean_table = table.trim().trim_matches('`');
+    let cols_escaped = headers
+        .iter()
+        .map(|h| format!("`{}`", h.trim().replace('`', "``")))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut value_rows = Vec::new();
+    for result in reader.records() {
+        let record = result?;
+        let mut row_vals = Vec::new();
+        for field in record.iter() {
+            let field_trimmed = field.trim();
+            if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
+                row_vals.push("NULL".to_string());
+            } else if field_trimmed.parse::<i64>().is_ok() {
+                row_vals.push(field_trimmed.to_string());
+            } else if field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0') || field_trimmed == "0" || field_trimmed.starts_with("0.") {
+                row_vals.push(field_trimmed.to_string());
+            } else if field_trimmed.eq_ignore_ascii_case("true") {
+                row_vals.push("1".to_string());
+            } else if field_trimmed.eq_ignore_ascii_case("false") {
+                row_vals.push("0".to_string());
+            } else {
+                row_vals.push(format!("'{}'", field_trimmed.replace('\'', "''")));
+            }
+        }
+        value_rows.push(format!("  ({})", row_vals.join(", ")));
+    }
+
+    if value_rows.is_empty() {
+        return Err(anyhow::anyhow!("CSV contains no data rows."));
+    }
+
+    Ok(format!(
+        "INSERT INTO `{clean_table}` ({cols_escaped}) VALUES\n{};",
+        value_rows.join(",\n")
+    ))
+}
+

@@ -191,6 +191,10 @@ impl Default for DemoStore {
         map.insert("orders".to_string(), demo_orders_table());
         map.insert("order_items".to_string(), demo_order_items_table());
         map.insert("payments".to_string(), demo_payments_table());
+        map.insert("events_daily".to_string(), demo_events_daily_table());
+        map.insert("pageviews_summary".to_string(), demo_pageviews_summary_table());
+        map.insert("tables".to_string(), demo_tables_table());
+        map.insert("columns".to_string(), demo_columns_table());
         Self {
             tables: Arc::new(Mutex::new(map)),
         }
@@ -262,8 +266,8 @@ impl ActiveSession {
             ssh_guard = Some(Arc::new(Mutex::new(SshTunnelGuard { child })));
         }
 
-        let mut builder = OptsBuilder::default()
-            .ip_or_hostname(connect_host)
+        let base_builder = OptsBuilder::default()
+            .ip_or_hostname(&connect_host)
             .tcp_port(connect_port)
             .user(Some(profile.user.clone()))
             .pass(if profile.password.is_empty() {
@@ -277,22 +281,77 @@ impl ActiveSession {
                 Some(profile.default_database.clone())
             });
 
-        match profile.ssl_mode {
-            SslMode::Disabled => {
-                builder = builder.ssl_opts(None::<SslOpts>);
+        let host_for_err = connect_host.clone();
+        let format_conn_err = move |e: anyhow::Error| -> anyhow::Error {
+            let err_str = format!("{e:#}");
+            if err_str.contains("Connection refused") || err_str.contains("os error 111") || err_str.contains("os error 61") {
+                anyhow::anyhow!(
+                    "Connection refused (os error 111): No MySQL/MariaDB service is listening on {host_for_err}:{connect_port}.\n\n\
+                     • If your database is running on your personal computer, note that mysql-rusty runs in a remote virtual machine, so '127.0.0.1' points to this remote VM. Enter your computer's public/LAN IP or use the built-in SSH Tunnel option.\n\
+                     • To test queries, ER diagrams, AI completion, and table designer without an external database, click 'Connect' on the built-in 'Sandbox Demo' profile in the Servers tab."
+                )
+            } else {
+                e
             }
-            SslMode::Preferred | SslMode::Required => {
-                builder = builder.ssl_opts(Some(SslOpts::default()));
-            }
-        }
+        };
 
-        let pool = Pool::new(builder);
-        // Verify connectivity immediately
-        let mut conn = pool
-            .get_conn()
-            .await
-            .context("Failed to connect to MySQL/MariaDB server")?;
-        let _: Option<u8> = conn.query_first("SELECT 1").await?;
+        let pool = match profile.ssl_mode {
+            SslMode::Disabled => {
+                let pool = Pool::new(base_builder.ssl_opts(None::<SslOpts>));
+                let mut conn = pool
+                    .get_conn()
+                    .await
+                    .map_err(|e| format_conn_err(anyhow::anyhow!(e)))
+                    .context("Failed to connect to MySQL/MariaDB server (SSL disabled)")?;
+                let _: Option<u8> = conn.query_first("SELECT 1").await?;
+                pool
+            }
+            SslMode::Required => {
+                let mut ssl_opts = SslOpts::default();
+                if profile.ssl_accept_invalid_certs {
+                    ssl_opts = ssl_opts
+                        .with_danger_accept_invalid_certs(true)
+                        .with_danger_skip_domain_validation(true);
+                }
+                let pool = Pool::new(base_builder.ssl_opts(Some(ssl_opts)));
+                let mut conn = pool
+                    .get_conn()
+                    .await
+                    .map_err(|e| format_conn_err(anyhow::anyhow!(e)))
+                    .context("Failed to connect to MySQL/MariaDB server over SSL/TLS")?;
+                let _: Option<u8> = conn.query_first("SELECT 1").await?;
+                pool
+            }
+            SslMode::Preferred => {
+                let mut ssl_opts = SslOpts::default();
+                if profile.ssl_accept_invalid_certs {
+                    ssl_opts = ssl_opts
+                        .with_danger_accept_invalid_certs(true)
+                        .with_danger_skip_domain_validation(true);
+                }
+                let ssl_pool = Pool::new(base_builder.clone().ssl_opts(Some(ssl_opts)));
+                match ssl_pool.get_conn().await {
+                    Ok(mut conn) => {
+                        let _: Option<u8> = conn.query_first("SELECT 1").await?;
+                        ssl_pool
+                    }
+                    Err(ssl_err) => {
+                        // In Preferred mode, if SSL fails, gracefully fall back to unencrypted connection
+                        let plain_pool = Pool::new(base_builder.ssl_opts(None::<SslOpts>));
+                        match plain_pool.get_conn().await {
+                            Ok(mut conn) => {
+                                let _: Option<u8> = conn.query_first("SELECT 1").await?;
+                                plain_pool
+                            }
+                            Err(_) => {
+                                return Err(format_conn_err(anyhow::anyhow!(ssl_err)))
+                                    .context("Failed to connect to MySQL/MariaDB server");
+                            }
+                        }
+                    }
+                }
+            }
+        };
 
         Ok(Self::RealMysql {
             profile,
@@ -577,6 +636,158 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn list_processes(&self) -> Result<QueryResult> {
+        match self {
+            Self::DemoSandbox { .. } => {
+                let columns = vec![
+                    "Id".to_string(),
+                    "User".to_string(),
+                    "Host".to_string(),
+                    "db".to_string(),
+                    "Command".to_string(),
+                    "Time".to_string(),
+                    "State".to_string(),
+                    "Info".to_string(),
+                ];
+                let column_types = vec![
+                    "BIGINT".to_string(),
+                    "VARCHAR".to_string(),
+                    "VARCHAR".to_string(),
+                    "VARCHAR".to_string(),
+                    "VARCHAR".to_string(),
+                    "INT".to_string(),
+                    "VARCHAR".to_string(),
+                    "TEXT".to_string(),
+                ];
+                let rows = vec![
+                    vec![
+                        CellValue::Integer(101),
+                        CellValue::Text("app_user".to_string()),
+                        CellValue::Text("192.168.1.15:42120".to_string()),
+                        CellValue::Text("ecommerce_prod".to_string()),
+                        CellValue::Text("Query".to_string()),
+                        CellValue::Integer(2),
+                        CellValue::Text("executing".to_string()),
+                        CellValue::Text("SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC".to_string()),
+                    ],
+                    vec![
+                        CellValue::Integer(102),
+                        CellValue::Text("analytics".to_string()),
+                        CellValue::Text("10.0.0.84:51800".to_string()),
+                        CellValue::Text("ecommerce_prod".to_string()),
+                        CellValue::Text("Sleep".to_string()),
+                        CellValue::Integer(145),
+                        CellValue::Text(String::new()),
+                        CellValue::Null,
+                    ],
+                    vec![
+                        CellValue::Integer(103),
+                        CellValue::Text("root".to_string()),
+                        CellValue::Text("localhost".to_string()),
+                        CellValue::Text("ecommerce_prod".to_string()),
+                        CellValue::Text("Query".to_string()),
+                        CellValue::Integer(0),
+                        CellValue::Text("starting".to_string()),
+                        CellValue::Text("SHOW FULL PROCESSLIST".to_string()),
+                    ],
+                ];
+                Ok(QueryResult {
+                    sql: "SHOW FULL PROCESSLIST".to_string(),
+                    database: "mysql".to_string(),
+                    columns,
+                    column_types,
+                    rows,
+                    affected_rows: 0,
+                    last_insert_id: None,
+                    duration_ms: 1,
+                    editable_table: None,
+                    primary_key_column: None,
+                    status_message: "3 processes active (Sandbox)".to_string(),
+                })
+            }
+            Self::RealMysql { pool, .. } => {
+                let start = Instant::now();
+                let mut conn = pool.get_conn().await?;
+                let mut result = conn.query_iter("SHOW FULL PROCESSLIST").await?;
+                let columns_meta: Vec<(String, String)> = result
+                    .columns()
+                    .as_ref()
+                    .map(|cols| {
+                        cols.iter()
+                            .map(|c| (c.name_str().into_owned(), format!("{:?}", c.column_type())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let raw_rows: Vec<Row> = result.collect().await?;
+                let mut rows = Vec::new();
+                for r in raw_rows {
+                    let mut row_cells = Vec::new();
+                    for idx in 0..columns_meta.len() {
+                        let val: Value = r.get(idx).unwrap_or(Value::NULL);
+                        row_cells.push(CellValue::from_mysql_value(val));
+                    }
+                    rows.push(row_cells);
+                }
+
+                let columns = columns_meta.iter().map(|(n, _)| n.clone()).collect();
+                let column_types = columns_meta.into_iter().map(|(_, t)| t).collect();
+                let duration_ms = start.elapsed().as_millis().max(1) as u64;
+
+                Ok(QueryResult {
+                    sql: "SHOW FULL PROCESSLIST".to_string(),
+                    database: "mysql".to_string(),
+                    columns,
+                    column_types,
+                    rows,
+                    affected_rows: 0,
+                    last_insert_id: None,
+                    duration_ms,
+                    editable_table: None,
+                    primary_key_column: None,
+                    status_message: format!("Process list retrieved in {duration_ms} ms"),
+                })
+            }
+        }
+    }
+
+    pub async fn kill_query(&self, connection_id: u64) -> Result<()> {
+        match self {
+            Self::DemoSandbox { .. } => Ok(()),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let kill_stmt = format!("KILL QUERY {connection_id}");
+                conn.query_drop(kill_stmt).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn server_status_summary(&self) -> Result<HashMap<String, String>> {
+        match self {
+            Self::DemoSandbox { .. } => {
+                let mut map = HashMap::new();
+                map.insert("Uptime".to_string(), "86420".to_string());
+                map.insert("Threads_connected".to_string(), "14".to_string());
+                map.insert("Questions".to_string(), "148293".to_string());
+                map.insert("Slow_queries".to_string(), "3".to_string());
+                map.insert("Innodb_buffer_pool_bytes_data".to_string(), "1073741824".to_string());
+                Ok(map)
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let rows: Vec<Row> = conn.query("SHOW GLOBAL STATUS").await?;
+                let mut map = HashMap::new();
+                for r in rows {
+                    if let (Some(k), Some(v)) = (r.get::<String, _>(0), r.get::<String, _>(1)) {
+                        map.insert(k, v);
+                    }
+                }
+                Ok(map)
+            }
+        }
+    }
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -656,48 +867,176 @@ pub fn build_demo_schema(database: &str) -> DatabaseSchema {
     if database == "analytics_dw" {
         return DatabaseSchema {
             name: "analytics_dw".to_string(),
-            tables: vec![TableSchema {
-                name: "events_daily".to_string(),
-                table_type: "BASE TABLE".to_string(),
-                engine: "InnoDB".to_string(),
-                approx_rows: 14500,
-                columns: vec![
-                    ColumnInfo {
-                        name: "event_date".to_string(),
-                        data_type: "date".to_string(),
-                        is_nullable: false,
-                        is_primary_key: true,
-                        default_value: None,
-                        extra: String::new(),
-                    },
-                    ColumnInfo {
-                        name: "channel".to_string(),
-                        data_type: "varchar(64)".to_string(),
-                        is_nullable: false,
-                        is_primary_key: true,
-                        default_value: None,
-                        extra: String::new(),
-                    },
-                    ColumnInfo {
-                        name: "active_users".to_string(),
-                        data_type: "int unsigned".to_string(),
-                        is_nullable: false,
-                        is_primary_key: false,
-                        default_value: Some("0".to_string()),
-                        extra: String::new(),
-                    },
-                    ColumnInfo {
-                        name: "conversion_rate".to_string(),
-                        data_type: "decimal(5,2)".to_string(),
-                        is_nullable: false,
-                        is_primary_key: false,
-                        default_value: Some("0.00".to_string()),
-                        extra: String::new(),
-                    },
-                ],
-                foreign_keys: vec![],
-                indexes: vec![],
-            }],
+            tables: vec![
+                TableSchema {
+                    name: "events_daily".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 14500,
+                    columns: vec![
+                        ColumnInfo {
+                            name: "event_date".to_string(),
+                            data_type: "date".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "channel".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "active_users".to_string(),
+                            data_type: "int unsigned".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: Some("0".to_string()),
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "conversion_rate".to_string(),
+                            data_type: "decimal(5,2)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: Some("0.00".to_string()),
+                            extra: String::new(),
+                        },
+                    ],
+                    foreign_keys: vec![],
+                    indexes: vec![],
+                },
+                TableSchema {
+                    name: "pageviews_summary".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 82000,
+                    columns: vec![
+                        ColumnInfo {
+                            name: "path".to_string(),
+                            data_type: "varchar(255)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "views".to_string(),
+                            data_type: "bigint unsigned".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: Some("0".to_string()),
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "avg_time_sec".to_string(),
+                            data_type: "decimal(6,2)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: Some("0.00".to_string()),
+                            extra: String::new(),
+                        },
+                    ],
+                    foreign_keys: vec![],
+                    indexes: vec![],
+                },
+            ],
+        };
+    }
+
+    if database == "information_schema" {
+        return DatabaseSchema {
+            name: "information_schema".to_string(),
+            tables: vec![
+                TableSchema {
+                    name: "TABLES".to_string(),
+                    table_type: "SYSTEM VIEW".to_string(),
+                    engine: "MEMORY".to_string(),
+                    approx_rows: 120,
+                    columns: vec![
+                        ColumnInfo {
+                            name: "TABLE_SCHEMA".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "TABLE_NAME".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "TABLE_TYPE".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "ENGINE".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: true,
+                            is_primary_key: false,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                    ],
+                    foreign_keys: vec![],
+                    indexes: vec![],
+                },
+                TableSchema {
+                    name: "COLUMNS".to_string(),
+                    table_type: "SYSTEM VIEW".to_string(),
+                    engine: "MEMORY".to_string(),
+                    approx_rows: 950,
+                    columns: vec![
+                        ColumnInfo {
+                            name: "TABLE_SCHEMA".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "TABLE_NAME".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "COLUMN_NAME".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: true,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                        ColumnInfo {
+                            name: "DATA_TYPE".to_string(),
+                            data_type: "varchar(64)".to_string(),
+                            is_nullable: false,
+                            is_primary_key: false,
+                            default_value: None,
+                            extra: String::new(),
+                        },
+                    ],
+                    foreign_keys: vec![],
+                    indexes: vec![],
+                },
+            ],
         };
     }
 
@@ -1366,6 +1705,135 @@ fn demo_payments_table() -> QueryResult {
     }
 }
 
+fn demo_events_daily_table() -> QueryResult {
+    let rows = vec![
+        vec![
+            CellValue::Text("2026-11-10".into()),
+            CellValue::Text("organic_search".into()),
+            CellValue::Integer(4820),
+            CellValue::Float(4.25),
+        ],
+        vec![
+            CellValue::Text("2026-11-10".into()),
+            CellValue::Text("paid_ads".into()),
+            CellValue::Integer(3110),
+            CellValue::Float(6.80),
+        ],
+        vec![
+            CellValue::Text("2026-11-10".into()),
+            CellValue::Text("social_media".into()),
+            CellValue::Integer(2450),
+            CellValue::Float(2.90),
+        ],
+        vec![
+            CellValue::Text("2026-11-10".into()),
+            CellValue::Text("direct_referral".into()),
+            CellValue::Integer(1920),
+            CellValue::Float(5.10),
+        ],
+    ];
+    QueryResult {
+        sql: "SELECT * FROM events_daily".into(),
+        database: "analytics_dw".into(),
+        columns: vec![
+            "event_date".into(),
+            "channel".into(),
+            "active_users".into(),
+            "conversion_rate".into(),
+        ],
+        column_types: vec![
+            "DATE".into(),
+            "VARCHAR(64)".into(),
+            "INT UNSIGNED".into(),
+            "DECIMAL(5,2)".into(),
+        ],
+        rows,
+        affected_rows: 0,
+        last_insert_id: None,
+        duration_ms: 1,
+        editable_table: Some("events_daily".into()),
+        primary_key_column: Some("event_date".into()),
+        status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+    }
+}
+
+fn demo_pageviews_summary_table() -> QueryResult {
+    let rows = vec![
+        vec![
+            CellValue::Text("/".into()),
+            CellValue::Integer(42000),
+            CellValue::Float(45.2),
+        ],
+        vec![
+            CellValue::Text("/pricing".into()),
+            CellValue::Integer(18500),
+            CellValue::Float(78.5),
+        ],
+        vec![
+            CellValue::Text("/docs/quickstart".into()),
+            CellValue::Integer(12300),
+            CellValue::Float(195.0),
+        ],
+    ];
+    QueryResult {
+        sql: "SELECT * FROM pageviews_summary".into(),
+        database: "analytics_dw".into(),
+        columns: vec!["path".into(), "views".into(), "avg_time_sec".into()],
+        column_types: vec!["VARCHAR(255)".into(), "BIGINT UNSIGNED".into(), "DECIMAL(6,2)".into()],
+        rows,
+        affected_rows: 0,
+        last_insert_id: None,
+        duration_ms: 1,
+        editable_table: Some("pageviews_summary".into()),
+        primary_key_column: Some("path".into()),
+        status_message: "3 rows returned in 1 ms (Sandbox)".into(),
+    }
+}
+
+fn demo_tables_table() -> QueryResult {
+    let rows = vec![
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("products".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("orders".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
+        vec![CellValue::Text("analytics_dw".into()), CellValue::Text("events_daily".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
+    ];
+    QueryResult {
+        sql: "SELECT * FROM information_schema.TABLES".into(),
+        database: "information_schema".into(),
+        columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "TABLE_TYPE".into(), "ENGINE".into()],
+        column_types: vec!["VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into()],
+        rows,
+        affected_rows: 0,
+        last_insert_id: None,
+        duration_ms: 1,
+        editable_table: None,
+        primary_key_column: None,
+        status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+    }
+}
+
+fn demo_columns_table() -> QueryResult {
+    let rows = vec![
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("id".into()), CellValue::Text("bigint unsigned".into())],
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("full_name".into()), CellValue::Text("varchar(100)".into())],
+        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("email".into()), CellValue::Text("varchar(150)".into())],
+        vec![CellValue::Text("analytics_dw".into()), CellValue::Text("events_daily".into()), CellValue::Text("event_date".into()), CellValue::Text("date".into())],
+    ];
+    QueryResult {
+        sql: "SELECT * FROM information_schema.COLUMNS".into(),
+        database: "information_schema".into(),
+        columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "COLUMN_NAME".into(), "DATA_TYPE".into()],
+        column_types: vec!["VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into()],
+        rows,
+        affected_rows: 0,
+        last_insert_id: None,
+        duration_ms: 1,
+        editable_table: None,
+        primary_key_column: None,
+        status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+    }
+}
+
 fn execute_demo_query(
     store: &DemoStore,
     database: &str,
@@ -1374,6 +1842,85 @@ fn execute_demo_query(
 ) -> Result<QueryResult> {
     let lower = sql.to_lowercase();
     let guard = store.tables.lock().unwrap();
+
+    if lower.starts_with("show databases") || lower.starts_with("show schemas") {
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec!["Database".into()],
+            column_types: vec!["VARCHAR".into()],
+            rows: vec![
+                vec![CellValue::Text("ecommerce_prod".into())],
+                vec![CellValue::Text("analytics_dw".into())],
+                vec![CellValue::Text("information_schema".into())],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "3 databases discovered in 1 ms (Sandbox)".into(),
+        });
+    }
+
+    if lower.starts_with("show tables") {
+        let col = format!("Tables_in_{database}");
+        let tables_list = match database {
+            "analytics_dw" => vec!["events_daily", "pageviews_summary"],
+            "information_schema" => vec!["COLUMNS", "TABLES"],
+            _ => vec!["users", "products", "orders", "order_items", "payments"],
+        };
+        let rows = tables_list
+            .into_iter()
+            .map(|t| vec![CellValue::Text(t.into())])
+            .collect();
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec![col],
+            column_types: vec!["VARCHAR".into()],
+            rows,
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "Tables listed in 1 ms (Sandbox)".into(),
+        });
+    }
+
+    if lower.starts_with("use ") {
+        let target = sql[4..].trim().trim_matches(|c| c == ';' || c == '`' || c == ' ');
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: target.to_string(),
+            columns: vec![],
+            column_types: vec![],
+            rows: vec![],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: format!("Database changed to `{target}` (Sandbox)"),
+        });
+    }
+
+    if lower.starts_with("select database()") {
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec!["DATABASE()".into()],
+            column_types: vec!["VARCHAR".into()],
+            rows: vec![vec![CellValue::Text(database.to_string())]],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "1 row in set (Sandbox)".into(),
+        });
+    }
 
     if lower.starts_with("explain") {
         return Ok(QueryResult {
@@ -1445,6 +1992,31 @@ fn execute_demo_query(
         });
     }
 
+    // Check for scalar / function expressions like SELECT 1, SELECT NOW(), SELECT VERSION()
+    if lower.starts_with("select") && !lower.contains("from") {
+        let expr = sql.trim()[6..].trim().trim_end_matches(';');
+        let (col_name, val) = match expr.to_lowercase().as_str() {
+            "version()" | "@@version" => ("VERSION()", CellValue::Text("8.0.36-MySQL-Rusty-Sandbox".into())),
+            "now()" | "current_timestamp()" => ("NOW()", CellValue::Text(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())),
+            "user()" | "current_user()" => ("USER()", CellValue::Text("demo_admin@localhost".into())),
+            "connection_id()" => ("CONNECTION_ID()", CellValue::Integer(1)),
+            _ => (expr, CellValue::Text(expr.to_string())),
+        };
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec![col_name.to_string()],
+            column_types: vec!["VARCHAR".to_string()],
+            rows: vec![vec![val]],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: format!("1 row in set at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+        });
+    }
+
     if lower.contains("join") && lower.contains("users") && lower.contains("orders") {
         return Ok(QueryResult {
             sql: sql.to_string(),
@@ -1496,20 +2068,137 @@ fn execute_demo_query(
             duration_ms: 3,
             editable_table: None,
             primary_key_column: None,
-            status_message: "3 aggregated rows in 3 ms (Sandbox)".into(),
+            status_message: format!("3 aggregated rows in 3 ms at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
         });
     }
 
-    for (name, res) in guard.iter() {
-        if lower.contains(name) {
-            let mut cloned = res.clone();
-            cloned.sql = sql.to_string();
-            return Ok(cloned);
+    // Direct table matching ordered from longest to shortest name
+    let known_tables = [
+        "pageviews_summary",
+        "events_daily",
+        "order_items",
+        "payments",
+        "products",
+        "orders",
+        "users",
+        "tables",
+        "columns",
+    ];
+
+    // Check for COUNT(*) queries
+    if lower.contains("count(") && !lower.contains("group by") {
+        for &tname in &known_tables {
+            if lower.contains(tname) {
+                if let Some(res) = guard.get(tname) {
+                    let total = res.rows.len();
+                    return Ok(QueryResult {
+                        sql: sql.to_string(),
+                        database: database.to_string(),
+                        columns: vec!["COUNT(*)".to_string()],
+                        column_types: vec!["BIGINT".to_string()],
+                        rows: vec![vec![CellValue::Integer(total as i64)]],
+                        affected_rows: 0,
+                        last_insert_id: None,
+                        duration_ms: 1,
+                        editable_table: None,
+                        primary_key_column: None,
+                        status_message: format!("1 row in set at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+                    });
+                }
+            }
         }
     }
 
-    // Default fallback to users table in demo mode
-    let mut fallback = guard.get("users").unwrap().clone();
-    fallback.sql = sql.to_string();
-    Ok(fallback)
+    // Match known table
+    for &tname in &known_tables {
+        if lower.contains(tname) {
+            if let Some(res) = guard.get(tname) {
+                let mut cloned = res.clone();
+                cloned.sql = sql.to_string();
+
+                // Simple WHERE filter in sandbox demo for basic interactivity
+                if lower.contains("where") {
+                    if let Some(where_part) = lower.split("where").nth(1) {
+                        let where_clean = where_part.split("order by").next().unwrap_or(where_part);
+                        let where_clean = where_clean.split("limit").next().unwrap_or(where_clean);
+
+                        if where_clean.contains("id =") || where_clean.contains("id=") {
+                            if let Some(id_str) = where_clean.split('=').nth(1) {
+                                if let Ok(id_val) = id_str.trim().trim_matches(|c| c == ';' || c == ' ').parse::<i64>() {
+                                    cloned.rows.retain(|r| {
+                                        if let Some(CellValue::Integer(i)) = r.first() {
+                                            *i == id_val
+                                        } else {
+                                            true
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Simple LIMIT in sandbox demo
+                if lower.contains("limit") {
+                    if let Some(limit_part) = lower.split("limit").nth(1) {
+                        if let Some(num_str) = limit_part.split_whitespace().next() {
+                            if let Ok(limit_n) = num_str.trim_matches(';').parse::<usize>() {
+                                cloned.rows.truncate(limit_n);
+                            }
+                        }
+                    }
+                }
+
+                cloned.status_message = format!(
+                    "{} row(s) returned in 1 ms at {} (Sandbox)",
+                    cloned.rows.len(),
+                    chrono::Local::now().format("%H:%M:%S")
+                );
+                return Ok(cloned);
+            }
+        }
+    }
+
+    // Check for DDL / modification statements
+    if lower.starts_with("insert into") || lower.starts_with("update ") || lower.starts_with("delete from") {
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec![],
+            column_types: vec![],
+            rows: vec![],
+            affected_rows: 1,
+            last_insert_id: Some(101),
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: format!("1 row affected at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+        });
+    }
+
+    if lower.starts_with("create table") || lower.starts_with("alter table") || lower.starts_with("drop table") {
+        return Ok(QueryResult {
+            sql: sql.to_string(),
+            database: database.to_string(),
+            columns: vec![],
+            column_types: vec![],
+            rows: vec![],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 2,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: format!("Query OK, 0 rows affected at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+        });
+    }
+
+    Err(anyhow!(
+        "Table '{database}.{}' doesn't exist (or syntax not recognized by Sandbox). Available tables in `{database}`: {}",
+        sql.split_whitespace().last().unwrap_or("unknown").trim_matches(';'),
+        match database {
+            "analytics_dw" => "events_daily, pageviews_summary",
+            "information_schema" => "TABLES, COLUMNS",
+            _ => "users, products, orders, order_items, payments",
+        }
+    ))
 }

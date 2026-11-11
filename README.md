@@ -38,9 +38,45 @@ sudo apt install -y build-essential pkg-config libssl-dev libgtk-3-dev \
     libfontconfig1-dev libwayland-dev libx11-dev libgl1-mesa-dev
 ```
 
-### Run the Application
+### Run the Application (Development / Direct)
 ```bash
 cargo run --release
+```
+
+### Install Globally or User-Wide
+You can install the compiled binary directly into your user path:
+
+**Option A: Cargo Install (installs to `~/.cargo/bin/mysql-rusty`)**
+```bash
+cargo install --path .
+```
+
+**Option B: Copy to `~/.local/bin` or `/usr/local/bin`**
+```bash
+# Build release binary
+cargo build --release
+
+# Install for current user:
+mkdir -p ~/.local/bin
+cp target/release/mysql-rusty ~/.local/bin/
+
+# Or system-wide (requires sudo):
+sudo cp target/release/mysql-rusty /usr/local/bin/
+```
+
+### Desktop Shortcut (Ubuntu Application Launcher)
+To add MySQL-Rusty to your desktop application menu:
+```bash
+cat << 'EOF' > ~/.local/share/applications/mysql-rusty.desktop
+[Desktop Entry]
+Name=MySQL Rusty
+Comment=Modern Native Rust MySQL Workbench
+Exec=mysql-rusty
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Development;Database;
+EOF
 ```
 
 ### Run Unit Tests
@@ -50,5 +86,5 @@ cargo test
 
 ---
 
-## 🗺 Next Steps Roadmap
-See [`ARCHITECTURE_AND_PLAN.md`](./ARCHITECTURE_AND_PLAN.md) for the detailed, step-by-step implementation guide designed for subsequent AI agent iterations.
+## 🗺 Architecture & Plan
+See [`ARCHITECTURE_AND_PLAN.md`](./ARCHITECTURE_AND_PLAN.md) for the detailed architectural blueprint and verified implementation phases.
