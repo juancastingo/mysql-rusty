@@ -1,0 +1,30 @@
+[package]
+name = "mysql-rusty"
+version = "0.1.0"
+edition = "2024"
+description = "Modern native MySQL/MariaDB Workbench alternative in Rust with AI autocomplete & CLI assistant"
+authors = ["juancastingo"]
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
+    "clipboard",
+    "links",
+] }
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["all_loaders"] }
+mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
+tokio = { version = "1.43", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+csv = "1.3"
+dirs = "6.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+rfd = "0.15"
