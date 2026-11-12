@@ -13,8 +13,8 @@ use crate::export::{
 };
 use crate::schema_diff::{diff_schemas, SchemaDiffReport};
 use crate::syntax::{
-    extract_statement_at_cursor, format_sql_pretty, highlight_sql, is_potentially_destructive,
-    is_write_query,
+    apply_limit_to_sql, detect_current_limit, extract_statement_at_cursor, format_sql_pretty,
+    highlight_sql, is_potentially_destructive, is_write_query,
 };
 use crate::table_designer::{TableDesignerAction, TableDraft};
 use chrono::Local;
@@ -2428,6 +2428,112 @@ impl MysqlRustyApp {
             let mut editor_run_stmt = false;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                // Quick LIMIT Presets Bar
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Limit:")
+                            .size(12.0)
+                            .strong()
+                            .color(Color32::from_rgb(148, 163, 184)),
+                    );
+
+                    let active_sql_target = tab.selected_sql.as_deref().unwrap_or(&tab.sql);
+                    let current_limit = detect_current_limit(active_sql_target);
+
+                    let presets = [
+                        (Some(10), "10"),
+                        (Some(50), "50"),
+                        (Some(100), "100"),
+                        (Some(250), "250"),
+                        (Some(500), "500"),
+                        (Some(1000), "1000"),
+                        (Some(5000), "5000"),
+                        (None, "All"),
+                    ];
+
+                    for (preset_val, label) in presets {
+                        let is_selected = current_limit == preset_val;
+                        let btn = egui::Button::new(
+                            RichText::new(label)
+                                .size(11.0)
+                                .strong()
+                                .color(if is_selected {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_rgb(203, 213, 225)
+                                }),
+                        )
+                        .fill(if is_selected {
+                            Color32::from_rgb(14, 116, 144)
+                        } else {
+                            Color32::from_rgb(20, 27, 41)
+                        })
+                        .stroke(Stroke::new(
+                            1.0,
+                            if is_selected {
+                                Color32::from_rgb(56, 189, 248)
+                            } else {
+                                Color32::from_rgb(33, 43, 63)
+                            },
+                        ))
+                        .corner_radius(egui::CornerRadius::same(4));
+
+                        if ui
+                            .add(btn)
+                            .on_hover_text(if let Some(n) = preset_val {
+                                format!("Set LIMIT {n} in current SQL query")
+                            } else {
+                                "Remove LIMIT clause (return all rows)".to_string()
+                            })
+                            .clicked()
+                        {
+                            if let Some(sel) = tab.selected_sql.clone() {
+                                let updated_sel = apply_limit_to_sql(&sel, preset_val);
+                                tab.sql = tab.sql.replace(&sel, &updated_sel);
+                                tab.selected_sql = Some(updated_sel);
+                            } else {
+                                tab.sql = apply_limit_to_sql(&tab.sql, preset_val);
+                            }
+                            tab.is_dirty = true;
+                        }
+                    }
+
+                    egui::ComboBox::from_id_salt("limit_more_presets_combo")
+                        .selected_text(if let Some(lim) = current_limit {
+                            format!("{lim} rows")
+                        } else {
+                            "No Limit".to_string()
+                        })
+                        .width(90.0)
+                        .show_ui(ui, |ui| {
+                            for val in [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000] {
+                                let is_sel = current_limit == Some(val);
+                                if ui.selectable_label(is_sel, format!("LIMIT {val}")).clicked() {
+                                    if let Some(sel) = tab.selected_sql.clone() {
+                                        let updated_sel = apply_limit_to_sql(&sel, Some(val));
+                                        tab.sql = tab.sql.replace(&sel, &updated_sel);
+                                        tab.selected_sql = Some(updated_sel);
+                                    } else {
+                                        tab.sql = apply_limit_to_sql(&tab.sql, Some(val));
+                                    }
+                                    tab.is_dirty = true;
+                                }
+                            }
+                            ui.separator();
+                            if ui.selectable_label(current_limit.is_none(), "No Limit (All)").clicked() {
+                                if let Some(sel) = tab.selected_sql.clone() {
+                                    let updated_sel = apply_limit_to_sql(&sel, None);
+                                    tab.sql = tab.sql.replace(&sel, &updated_sel);
+                                    tab.selected_sql = Some(updated_sel);
+                                } else {
+                                    tab.sql = apply_limit_to_sql(&tab.sql, None);
+                                }
+                                tab.is_dirty = true;
+                            }
+                        });
+                });
+                ui.add_space(2.0);
+
                 // Accept suggestions via keyboard: Tab or Alt+1..8
                 let mut selected_suggestion: Option<CompletionItem> = None;
                 if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {

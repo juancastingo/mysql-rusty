@@ -422,4 +422,252 @@ pub fn is_write_query(sql: &str) -> bool {
         || upper.starts_with("REPLACE ")
 }
 
+struct TerminalLimitInfo {
+    limit_keyword_start: usize,
+    clause_end: usize,
+    current_limit: Option<usize>,
+    offset_prefix: Option<String>,
+    offset_suffix: Option<String>,
+}
+
+fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    let mut last_limit_pos: Option<usize> = None;
+
+    let mut i = 0;
+    while i < n {
+        let ch = chars[i];
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && i + 1 < n && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_single_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 2;
+                continue;
+            }
+            if ch == '\'' {
+                if i + 1 < n && chars[i + 1] == '\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_backtick {
+            if ch == '`' {
+                in_backtick = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if ch == '-' && i + 1 < n && chars[i + 1] == '-' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '#' {
+            in_line_comment = true;
+            i += 1;
+            continue;
+        }
+        if ch == '/' && i + 1 < n && chars[i + 1] == '*' {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+        if ch == '`' {
+            in_backtick = true;
+            i += 1;
+            continue;
+        }
+
+        let prev_ok = i == 0 || (!chars[i - 1].is_alphanumeric() && chars[i - 1] != '_');
+        if prev_ok && i + 5 <= n {
+            let slice: String = chars[i..i + 5].iter().collect();
+            if slice.eq_ignore_ascii_case("LIMIT") {
+                let next_ok = i + 5 == n || (!chars[i + 5].is_alphanumeric() && chars[i + 5] != '_');
+                if next_ok {
+                    last_limit_pos = Some(i);
+                    i += 5;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let limit_char_idx = last_limit_pos?;
+    let after_limit_chars = &chars[limit_char_idx + 5..];
+    let after_limit_str: String = after_limit_chars.iter().collect();
+    let trimmed_after = after_limit_str.trim_end();
+    let trimmed_without_semi = trimmed_after.trim_end_matches(';').trim_end();
+
+    let upper_after = trimmed_without_semi.to_uppercase();
+    if upper_after.contains(')') {
+        return None;
+    }
+    for kw in &["WHERE", "ORDER BY", "GROUP BY", "HAVING", "JOIN", "UNION", "SELECT", "FROM"] {
+        if upper_after.split_whitespace().any(|w| w == *kw) {
+            return None;
+        }
+    }
+
+    let args_str = trimmed_without_semi.trim();
+    if args_str.is_empty() {
+        return None;
+    }
+
+    let byte_limit_start = sql
+        .char_indices()
+        .nth(limit_char_idx)
+        .map(|(b, _)| b)?;
+
+    let last_char_idx = limit_char_idx + 5 + after_limit_str.trim_end().trim_end_matches(';').chars().count();
+    let byte_clause_end = sql
+        .char_indices()
+        .nth(last_char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(sql.len());
+
+    if args_str.contains(',') {
+        let parts: Vec<&str> = args_str.splitn(2, ',').collect();
+        let offset_part = parts[0].trim();
+        let count_part = parts[1].trim();
+        let count = count_part.parse::<usize>().ok()?;
+        return Some(TerminalLimitInfo {
+            limit_keyword_start: byte_limit_start,
+            clause_end: byte_clause_end,
+            current_limit: Some(count),
+            offset_prefix: Some(format!("{offset_part}, ")),
+            offset_suffix: None,
+        });
+    }
+
+    if upper_after.contains("OFFSET") {
+        let parts: Vec<&str> = upper_after.split("OFFSET").collect();
+        let count_part = parts[0].trim();
+        let offset_part = parts.get(1).map(|s| s.trim()).unwrap_or("");
+        let count = count_part.parse::<usize>().ok()?;
+        return Some(TerminalLimitInfo {
+            limit_keyword_start: byte_limit_start,
+            clause_end: byte_clause_end,
+            current_limit: Some(count),
+            offset_prefix: None,
+            offset_suffix: Some(format!(" OFFSET {offset_part}")),
+        });
+    }
+
+    if let Ok(count) = args_str.parse::<usize>() {
+        return Some(TerminalLimitInfo {
+            limit_keyword_start: byte_limit_start,
+            clause_end: byte_clause_end,
+            current_limit: Some(count),
+            offset_prefix: None,
+            offset_suffix: None,
+        });
+    }
+
+    None
+}
+
+/// Detects the currently applied terminal LIMIT count from an SQL query, if one exists.
+pub fn detect_current_limit(sql: &str) -> Option<usize> {
+    find_terminal_limit(sql).and_then(|info| info.current_limit)
+}
+
+/// Intelligently updates, appends, or removes a terminal LIMIT clause from an SQL statement.
+/// If `new_limit` is `Some(n)`, it sets or replaces the LIMIT with `n`.
+/// If `new_limit` is `None`, it cleanly strips the terminal LIMIT clause.
+pub fn apply_limit_to_sql(sql: &str, new_limit: Option<usize>) -> String {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return match new_limit {
+            Some(n) => format!("LIMIT {n};"),
+            None => String::new(),
+        };
+    }
+
+    let had_trailing_semicolon = trimmed.ends_with(';');
+
+    if let Some(info) = find_terminal_limit(sql) {
+        let before_limit = &sql[..info.limit_keyword_start];
+        let after_clause = &sql[info.clause_end..];
+        let has_semi_after = after_clause.contains(';');
+
+        match new_limit {
+            Some(n) => {
+                let limit_body = if let Some(prefix) = &info.offset_prefix {
+                    format!("LIMIT {prefix}{n}")
+                } else if let Some(suffix) = &info.offset_suffix {
+                    format!("LIMIT {n}{suffix}")
+                } else {
+                    format!("LIMIT {n}")
+                };
+                let before_trimmed = before_limit.trim_end();
+                format!("{before_trimmed} {limit_body};")
+            }
+            None => {
+                let before_trimmed = before_limit.trim_end();
+                if has_semi_after || had_trailing_semicolon {
+                    format!("{before_trimmed};")
+                } else {
+                    before_trimmed.to_string()
+                }
+            }
+        }
+    } else {
+        match new_limit {
+            Some(n) => {
+                let base = trimmed.trim_end_matches(';').trim_end();
+                format!("{base} LIMIT {n};")
+            }
+            None => sql.to_string(),
+        }
+    }
+}
+
 

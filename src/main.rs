@@ -445,4 +445,40 @@ mod tests {
         assert_eq!(snip.database.as_deref(), Some("ecommerce"));
         assert_eq!(snip.description, "Aggregates revenue by month");
     }
+
+    #[test]
+    fn test_apply_and_detect_limit_presets() {
+        use crate::syntax::{apply_limit_to_sql, detect_current_limit};
+
+        // 1. Appending to query without LIMIT
+        let q1 = "SELECT * FROM users;";
+        assert_eq!(detect_current_limit(q1), None);
+        let q1_l100 = apply_limit_to_sql(q1, Some(100));
+        assert_eq!(q1_l100, "SELECT * FROM users LIMIT 100;");
+        assert_eq!(detect_current_limit(&q1_l100), Some(100));
+
+        // 2. Updating existing LIMIT
+        let q2 = "SELECT * FROM `_migration` LIMIT 100;";
+        assert_eq!(detect_current_limit(q2), Some(100));
+        let q2_l500 = apply_limit_to_sql(q2, Some(500));
+        assert_eq!(q2_l500, "SELECT * FROM `_migration` LIMIT 500;");
+        assert_eq!(detect_current_limit(&q2_l500), Some(500));
+
+        // 3. Removing LIMIT (All / None)
+        let q2_all = apply_limit_to_sql(&q2_l500, None);
+        assert_eq!(q2_all, "SELECT * FROM `_migration`;");
+        assert_eq!(detect_current_limit(&q2_all), None);
+
+        // 4. LIMIT with offset (LIMIT offset, count)
+        let q3 = "SELECT id, name FROM products LIMIT 20, 50;";
+        assert_eq!(detect_current_limit(q3), Some(50));
+        let q3_l250 = apply_limit_to_sql(q3, Some(250));
+        assert_eq!(q3_l250, "SELECT id, name FROM products LIMIT 20, 250;");
+        assert_eq!(detect_current_limit(&q3_l250), Some(250));
+
+        // 5. Query without semicolon
+        let q4 = "SELECT * FROM orders WHERE status = 'paid'";
+        let q4_l10 = apply_limit_to_sql(q4, Some(10));
+        assert_eq!(q4_l10, "SELECT * FROM orders WHERE status = 'paid' LIMIT 10;");
+    }
 }
