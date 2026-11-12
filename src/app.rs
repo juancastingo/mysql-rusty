@@ -218,6 +218,10 @@ pub struct MysqlRustyApp {
     show_save_snippet_modal: bool,
     snippet_search_filter: String,
     history_search_filter: String,
+    renaming_tab_idx: Option<usize>,
+    rename_tab_buffer: String,
+    renaming_snippet_id: Option<String>,
+    rename_snippet_buffer: String,
 
     // Live Server Monitoring History
     qps_history: Vec<[f64; 2]>,
@@ -289,6 +293,10 @@ impl MysqlRustyApp {
             show_save_snippet_modal: false,
             snippet_search_filter: String::new(),
             history_search_filter: String::new(),
+            renaming_tab_idx: None,
+            rename_tab_buffer: String::new(),
+            renaming_snippet_id: None,
+            rename_snippet_buffer: String::new(),
 
             qps_history: Vec::new(),
             threads_history: Vec::new(),
@@ -355,44 +363,154 @@ impl MysqlRustyApp {
         });
     }
 
-    fn save_active_tab_to_file(&mut self, save_as: bool) {
+    fn save_active_tab_direct(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
             return;
         };
-        let path = if !save_as && tab.file_path.is_some() {
-            tab.file_path.clone().unwrap()
+
+        // Determine destination path: use existing file_path or auto-assign inside queries_dir
+        let path = if let Some(existing_path) = &tab.file_path {
+            existing_path.clone()
         } else {
-            let default_name = if !tab.title.is_empty() && !tab.title.contains(' ') {
-                if tab.title.ends_with(".sql") {
-                    tab.title.clone()
-                } else {
-                    format!("{}.sql", tab.title)
-                }
+            let safe_title = sanitize_filename(&tab.title);
+            let base_name = if safe_title.is_empty() {
+                "query".to_string()
             } else {
-                "query.sql".to_string()
+                safe_title
             };
-            match rfd::FileDialog::new()
-                .set_file_name(&default_name)
-                .add_filter("SQL Files", &["sql", "txt"])
-                .save_file()
-            {
-                Some(p) => p,
-                None => return,
+            let mut candidate = AppConfig::queries_dir().join(format!("{base_name}.sql"));
+            let mut counter = 1;
+            while candidate.exists() {
+                candidate = AppConfig::queries_dir().join(format!("{base_name}_{counter}.sql"));
+                counter += 1;
             }
+            tab.file_path = Some(candidate.clone());
+            candidate
         };
 
+        // Write SQL directly to file
         if let Err(e) = std::fs::write(&path, &tab.sql) {
-            self.status_banner = format!("Failed to save SQL file: {e}");
+            self.status_banner = format!("Error saving query: {e}");
+            return;
+        }
+
+        tab.is_dirty = false;
+
+        // Auto-sync into Saved Queries library (config.snippets)
+        let tab_id = tab.id.clone();
+        let tab_title = tab.title.clone();
+        let tab_sql = tab.sql.clone();
+        let active_db = if self.active_database.is_empty() {
+            None
         } else {
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("query.sql")
-                .to_string();
-            tab.title = filename;
-            tab.file_path = Some(path.clone());
-            tab.is_dirty = false;
-            self.status_banner = format!("Saved query to {}", path.display());
+            Some(self.active_database.clone())
+        };
+        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+
+        if let Some(existing) = self.config.snippets.iter_mut().find(|s| s.id == tab_id) {
+            existing.title = tab_title.clone();
+            existing.sql = tab_sql;
+            if existing.database.is_none() {
+                existing.database = active_db;
+            }
+        } else {
+            self.config.snippets.push(SavedSnippet {
+                id: tab_id,
+                title: tab_title.clone(),
+                sql: tab_sql,
+                database: active_db,
+                description: String::new(),
+                created_at: now_str,
+            });
+        }
+
+        let _ = self.config.save();
+        let display_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&tab_title);
+        self.status_banner = format!("Saved '{display_name}' directly to {}", path.display());
+    }
+
+    fn rename_tab(&mut self, idx: usize, new_name: String) {
+        let clean_name = new_name.trim();
+        if clean_name.is_empty() {
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(idx) else {
+            return;
+        };
+        let old_title = tab.title.clone();
+        tab.title = clean_name.to_string();
+
+        // If file_path was previously saved in queries_dir, rename the file too
+        if let Some(old_path) = tab.file_path.take() {
+            let safe = sanitize_filename(clean_name);
+            let new_path = AppConfig::queries_dir().join(format!("{safe}.sql"));
+            let _ = std::fs::rename(&old_path, &new_path);
+            tab.file_path = Some(new_path);
+        }
+
+        // Also update in config.snippets if present
+        let tab_id = tab.id.clone();
+        if let Some(snip) = self
+            .config
+            .snippets
+            .iter_mut()
+            .find(|s| s.id == tab_id || s.title == old_title)
+        {
+            snip.title = clean_name.to_string();
+            let _ = self.config.save();
+        }
+
+        self.status_banner = format!("Renamed query to '{clean_name}'");
+    }
+
+    fn rename_saved_query(&mut self, snippet_id: &str, new_title: &str) {
+        let clean = new_title.trim();
+        if clean.is_empty() {
+            return;
+        }
+        if let Some(snip) = self.config.snippets.iter_mut().find(|s| s.id == snippet_id) {
+            let old_title = snip.title.clone();
+            snip.title = clean.to_string();
+
+            for tab in &mut self.tabs {
+                if tab.id == snippet_id || tab.title == old_title {
+                    tab.title = clean.to_string();
+                }
+            }
+
+            let old_file = AppConfig::queries_dir().join(format!("{}.sql", sanitize_filename(&old_title)));
+            let new_file = AppConfig::queries_dir().join(format!("{}.sql", sanitize_filename(clean)));
+            if old_file.exists() {
+                let _ = std::fs::rename(old_file, new_file);
+            }
+
+            let _ = self.config.save();
+            self.status_banner = format!("Renamed query to '{clean}'");
+        }
+    }
+
+    fn save_active_tab_to_file(&mut self, save_as: bool) {
+        if !save_as {
+            self.save_active_tab_direct();
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
+            return;
+        };
+        let default_name = format!("{}.sql", sanitize_filename(&tab.title));
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("SQL Files", &["sql", "txt"])
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, &tab.sql) {
+                self.status_banner = format!("Failed to export SQL file: {e}");
+            } else {
+                self.status_banner = format!("Exported query to {}", path.display());
+            }
         }
     }
 
@@ -1203,10 +1321,10 @@ impl MysqlRustyApp {
 
                     if ui
                         .button("Save Query")
-                        .on_hover_text("Save query to library or file (Ctrl+S)")
+                        .on_hover_text("Directly save query to library and disk (Ctrl+S)")
                         .clicked()
                     {
-                        self.open_save_query_modal();
+                        self.save_active_tab_direct();
                     }
 
                     if ui
@@ -1678,12 +1796,13 @@ impl MysqlRustyApp {
         let mut new_tab_entry: Option<(String, String)> = None;
         let mut delete_snippet_id: Option<String> = None;
         let mut export_snippet_sql: Option<(String, String)> = None;
+        let mut rename_snippet: Option<(String, String)> = None;
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Saved Queries Library").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ Save Active").on_hover_text("Bookmark active query tab to library").clicked() {
-                    self.open_save_query_modal();
+                if ui.button("+ Save Active").on_hover_text("Directly save active query to library and disk (Ctrl+S)").clicked() {
+                    self.save_active_tab_direct();
                 }
                 if ui.button("Open File...").on_hover_text("Open .sql file into a tab (Ctrl+O)").clicked() {
                     self.open_sql_file_dialog();
@@ -1708,7 +1827,7 @@ impl MysqlRustyApp {
                 ui.label(RichText::new("No saved queries yet.").weak());
                 ui.add_space(6.0);
                 if ui.button("Save Current Query Tab").clicked() {
-                    self.open_save_query_modal();
+                    self.save_active_tab_direct();
                 }
             });
             return;
@@ -1738,19 +1857,44 @@ impl MysqlRustyApp {
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(8.0)
                     .show(ui, |ui| {
+                        let is_renaming = self.renaming_snippet_id.as_deref() == Some(&snip.id);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(&snip.title).strong().size(13.0));
-                            if let Some(db) = &snip.database {
-                                ui.colored_label(
-                                    Color32::from_rgb(56, 189, 248),
-                                    format!("[{db}]"),
+                            if is_renaming {
+                                let edit_res = ui.add(
+                                    egui::TextEdit::singleline(&mut self.rename_snippet_buffer)
+                                        .desired_width(120.0),
                                 );
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("Delete").on_hover_text("Delete saved query").clicked() {
-                                    delete_snippet_id = Some(snip.id.clone());
+                                if edit_res.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                                    rename_snippet = Some((snip.id.clone(), self.rename_snippet_buffer.clone()));
                                 }
-                            });
+                                if ui.small_button("OK").clicked() {
+                                    rename_snippet = Some((snip.id.clone(), self.rename_snippet_buffer.clone()));
+                                }
+                                if ui.small_button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                                    self.renaming_snippet_id = None;
+                                }
+                            } else {
+                                let label_res = ui.label(RichText::new(&snip.title).strong().size(13.0));
+                                if label_res.double_clicked() {
+                                    self.renaming_snippet_id = Some(snip.id.clone());
+                                    self.rename_snippet_buffer = snip.title.clone();
+                                }
+                                if let Some(db) = &snip.database {
+                                    ui.colored_label(
+                                        Color32::from_rgb(56, 189, 248),
+                                        format!("[{db}]"),
+                                    );
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Delete").on_hover_text("Delete saved query").clicked() {
+                                        delete_snippet_id = Some(snip.id.clone());
+                                    }
+                                    if ui.small_button("Rename").on_hover_text("Rename query (or double-click title)").clicked() {
+                                        self.renaming_snippet_id = Some(snip.id.clone());
+                                        self.rename_snippet_buffer = snip.title.clone();
+                                    }
+                                });
+                            }
                         });
 
                         if !snip.description.is_empty() {
@@ -1784,6 +1928,11 @@ impl MysqlRustyApp {
                 ui.add_space(4.0);
             }
         });
+
+        if let Some((id, new_title)) = rename_snippet {
+            self.rename_saved_query(&id, &new_title);
+            self.renaming_snippet_id = None;
+        }
 
         if let Some(id) = delete_snippet_id {
             self.config.snippets.retain(|s| s.id != id);
@@ -1827,6 +1976,7 @@ impl MysqlRustyApp {
         let mut load_sql: Option<String> = None;
         let mut new_tab_sql: Option<String> = None;
         let mut clear_all_history = false;
+        let mut save_snippet_from_history: Option<SavedSnippet> = None;
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Execution History").strong());
@@ -1896,8 +2046,8 @@ impl MysqlRustyApp {
                             if ui.small_button("Open in Tab").clicked() {
                                 new_tab_sql = Some(entry.sql.clone());
                             }
-                            if ui.small_button("Save to Library").clicked() {
-                                self.new_snippet_title = entry
+                            if ui.small_button("Save to Library").on_hover_text("Save query into Library").clicked() {
+                                let title = entry
                                     .sql
                                     .lines()
                                     .next()
@@ -1905,16 +2055,30 @@ impl MysqlRustyApp {
                                     .trim()
                                     .chars()
                                     .take(40)
-                                    .collect();
-                                self.new_snippet_db = entry.database.clone();
-                                self.new_snippet_desc = format!("Executed on {}", entry.timestamp);
-                                self.show_save_snippet_modal = true;
+                                    .collect::<String>();
+                                let clean_title = if title.is_empty() { "Historic Query".to_string() } else { title };
+                                let new_id = uuid::Uuid::new_v4().to_string();
+                                save_snippet_from_history = Some(SavedSnippet {
+                                    id: new_id,
+                                    title: clean_title,
+                                    sql: entry.sql.clone(),
+                                    database: if entry.database.is_empty() { None } else { Some(entry.database.clone()) },
+                                    description: format!("Executed on {}", entry.timestamp),
+                                    created_at: entry.timestamp.clone(),
+                                });
                             }
                         });
                     });
                 ui.add_space(4.0);
             }
         });
+
+        if let Some(snip) = save_snippet_from_history {
+            let title = snip.title.clone();
+            self.config.snippets.push(snip);
+            let _ = self.config.save();
+            self.status_banner = format!("Saved '{title}' to library.");
+        }
 
         if clear_all_history {
             self.config.history.clear();
@@ -2342,8 +2506,11 @@ impl MysqlRustyApp {
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 let mut close_idx = None;
+                let mut tab_to_rename: Option<(usize, String)> = None;
+
                 for idx in 0..self.tabs.len() {
                     let is_active = idx == self.active_tab_idx;
+                    let is_renaming = self.renaming_tab_idx == Some(idx);
                     let title = self.tabs[idx].display_title();
 
                     let tab_bg = if is_active {
@@ -2361,17 +2528,51 @@ impl MysqlRustyApp {
                         .fill(tab_bg)
                         .stroke(tab_stroke)
                         .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
-                        .inner_margin(egui::Margin::symmetric(10, 5))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let label_color = if is_active {
-                                    Color32::WHITE
+                                if is_renaming {
+                                    let edit_resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.rename_tab_buffer)
+                                            .desired_width(100.0),
+                                    );
+                                    if edit_resp.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                                        tab_to_rename = Some((idx, self.rename_tab_buffer.clone()));
+                                    }
+                                    if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                        self.renaming_tab_idx = None;
+                                    }
                                 } else {
-                                    Color32::from_rgb(148, 163, 184)
-                                };
-                                let label = RichText::new(&title).size(12.5).color(label_color);
-                                if ui.selectable_label(is_active, label).clicked() {
-                                    self.active_tab_idx = idx;
+                                    let label_color = if is_active {
+                                        Color32::WHITE
+                                    } else {
+                                        Color32::from_rgb(148, 163, 184)
+                                    };
+                                    let label = RichText::new(&title).size(12.5).color(label_color);
+                                    let resp = ui.selectable_label(is_active, label);
+                                    if resp.clicked() {
+                                        self.active_tab_idx = idx;
+                                    }
+                                    if resp.double_clicked() {
+                                        self.renaming_tab_idx = Some(idx);
+                                        self.rename_tab_buffer = self.tabs[idx].title.clone();
+                                    }
+                                    resp.context_menu(|ui| {
+                                        if ui.button("Rename").clicked() {
+                                            self.renaming_tab_idx = Some(idx);
+                                            self.rename_tab_buffer = self.tabs[idx].title.clone();
+                                            ui.close();
+                                        }
+                                        if ui.button("Save (Direct)").clicked() {
+                                            self.active_tab_idx = idx;
+                                            self.save_active_tab_direct();
+                                            ui.close();
+                                        }
+                                        if self.tabs.len() > 1 && ui.button("Close Tab").clicked() {
+                                            close_idx = Some(idx);
+                                            ui.close();
+                                        }
+                                    });
                                 }
                                 if self.tabs.len() > 1 {
                                     if ui.button(RichText::new("×").size(11.0).weak()).clicked() {
@@ -2381,6 +2582,10 @@ impl MysqlRustyApp {
                             });
                         });
                     ui.add_space(2.0);
+                }
+                if let Some((idx, new_title)) = tab_to_rename {
+                    self.rename_tab(idx, new_title);
+                    self.renaming_tab_idx = None;
                 }
                 if let Some(idx) = close_idx {
                     self.tabs.remove(idx);
@@ -2404,11 +2609,21 @@ impl MysqlRustyApp {
 
                 ui.add_space(4.0);
                 if ui
-                    .small_button("Save (Ctrl+S)")
-                    .on_hover_text("Save query to file or bookmark in library")
+                    .small_button("Rename Tab")
+                    .on_hover_text("Rename active query tab (or double-click tab name)")
                     .clicked()
                 {
-                    self.save_active_tab_to_file(false);
+                    self.renaming_tab_idx = Some(self.active_tab_idx);
+                    if let Some(tab) = self.tabs.get(self.active_tab_idx) {
+                        self.rename_tab_buffer = tab.title.clone();
+                    }
+                }
+                if ui
+                    .small_button("Save (Ctrl+S)")
+                    .on_hover_text("Directly save query to disk and library")
+                    .clicked()
+                {
+                    self.save_active_tab_direct();
                 }
                 if ui
                     .small_button("Open (Ctrl+O)")
@@ -4523,4 +4738,26 @@ fn format_buffer_pool_bytes(bytes_str: Option<&String>) -> String {
         format!("{} KB", bytes / 1024)
     }
 }
+
+pub fn sanitize_filename(name: &str) -> String {
+    let trimmed = name.trim();
+    let without_ext = trimmed.strip_suffix(".sql").unwrap_or(trimmed);
+    let mut safe = String::new();
+    for c in without_ext.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '-' {
+            safe.push(c);
+        } else if c.is_whitespace() || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+            if !safe.ends_with('_') {
+                safe.push('_');
+            }
+        }
+    }
+    let res = safe.trim_matches(|c| c == '_' || c == '.').to_string();
+    if res.is_empty() {
+        "query".to_string()
+    } else {
+        res
+    }
+}
+
 

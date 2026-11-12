@@ -288,9 +288,20 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn config_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("mysql-rusty")
+    }
+
     pub fn config_path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        base.join("mysql-rusty").join("config.json")
+        Self::config_dir().join("config.json")
+    }
+
+    pub fn queries_dir() -> PathBuf {
+        let dir = Self::config_dir().join("queries");
+        let _ = fs::create_dir_all(&dir);
+        dir
     }
 
     pub fn load() -> Self {
