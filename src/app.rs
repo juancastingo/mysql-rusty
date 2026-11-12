@@ -1224,7 +1224,7 @@ impl MysqlRustyApp {
                             if ui.small_button("Edit").clicked() {
                                 to_edit = Some(prof.clone());
                             }
-                            if !prof.is_demo && ui.small_button("Delete").clicked() {
+                            if ui.small_button("Delete").clicked() {
                                 to_delete = Some(prof.id.clone());
                             }
                         });
@@ -1426,26 +1426,32 @@ impl MysqlRustyApp {
     }
 
     fn render_connections_dashboard(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(28.0);
-            ui.heading(
-                RichText::new("MySQL & MariaDB Connections")
-                    .size(24.0)
-                    .color(Color32::from_rgb(56, 189, 248))
-                    .strong(),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Select a server connection to open the workspace, or configure a new connection profile.")
-                    .color(Color32::from_rgb(148, 163, 184)),
-            );
-            ui.add_space(16.0);
-        });
+        let mut to_connect = None;
+        let mut to_edit = None;
+        let mut to_delete = None;
 
-        ui.horizontal(|ui| {
-            ui.add_space(30.0);
-            ui.vertical(|ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("connections_dashboard_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.heading(
+                        RichText::new("MySQL & MariaDB Connections")
+                            .size(24.0)
+                            .color(Color32::from_rgb(56, 189, 248))
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Select a server connection to open the workspace, or configure a new connection profile.")
+                            .color(Color32::from_rgb(148, 163, 184)),
+                    );
+                });
+                ui.add_space(16.0);
+
                 ui.horizontal(|ui| {
+                    ui.add_space(32.0);
                     if ui
                         .button(
                             RichText::new("+ New Connection Profile")
@@ -1465,118 +1471,134 @@ impl MysqlRustyApp {
                 });
                 ui.add_space(12.0);
 
-                let profiles = self.config.connections.clone();
-                let mut to_connect = None;
-                let mut to_edit = None;
-                let mut to_delete = None;
-
-                egui::ScrollArea::vertical()
-                    .id_salt("connections_dashboard_scroll")
-                    .show(ui, |ui| {
-                        for prof in profiles {
-                            let is_demo = prof.is_demo;
-                            let card_accent = if is_demo {
-                                Color32::from_rgb(16, 185, 129) // Emerald
-                            } else {
-                                self.parse_hex_color(&prof.color_hex)
-                            };
-
-                            egui::Frame::group(ui.style())
-                                .fill(Color32::from_rgb(20, 26, 38))
-                                .stroke(Stroke::new(1.2, card_accent))
-                                .inner_margin(16.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.heading(
-                                                    RichText::new(&prof.name)
-                                                        .size(17.0)
-                                                        .color(Color32::WHITE)
-                                                        .strong(),
-                                                );
-                                                if is_demo {
-                                                    ui.label(
-                                                        RichText::new("[DEMO SANDBOX]")
-                                                            .small()
-                                                            .color(Color32::from_rgb(16, 185, 129))
-                                                            .strong(),
-                                                    );
-                                                }
-                                                if prof.ssh.enabled {
-                                                    ui.label(
-                                                        RichText::new("[SSH TUNNEL]")
-                                                            .small()
-                                                            .color(Color32::from_rgb(56, 189, 248))
-                                                            .strong(),
-                                                    );
-                                                }
-                                            });
-                                            ui.add_space(4.0);
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "User: {}   |   Host: {}:{}   |   Default DB: {}",
-                                                    prof.user,
-                                                    prof.host,
-                                                    prof.port,
-                                                    if prof.default_database.is_empty() { "None" } else { &prof.default_database }
-                                                ))
-                                                .color(Color32::from_rgb(148, 163, 184)),
-                                            );
-                                            if prof.ssh.enabled {
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "SSH: {}@{} (Port: {})",
-                                                        prof.ssh.ssh_user, prof.ssh.ssh_host, prof.ssh.ssh_port
-                                                    ))
-                                                    .small()
-                                                    .weak(),
-                                                );
-                                            }
-                                        });
-
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        RichText::new(" Connect ⚡ ")
-                                                            .size(14.0)
-                                                            .color(Color32::BLACK)
-                                                            .strong(),
-                                                    )
-                                                    .fill(card_accent),
-                                                )
-                                                .clicked()
-                                            {
-                                                to_connect = Some(prof.clone());
-                                            }
-                                            if ui.button("✏ Edit").clicked() {
-                                                to_edit = Some(prof.clone());
-                                            }
-                                            if !is_demo && ui.button("🗑 Delete").clicked() {
-                                                to_delete = Some(prof.id.clone());
-                                            }
-                                        });
-                                    });
-                                });
-                            ui.add_space(10.0);
+                if self.config.connections.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            RichText::new("No connection profiles available.")
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                        ui.add_space(10.0);
+                        if ui.button("Restore Sandbox Demo Profile").clicked() {
+                            self.config.connections.push(ConnectionProfile::demo_profile());
+                            let _ = self.config.save();
                         }
                     });
+                } else {
+                    let profiles = self.config.connections.clone();
+                    for prof in profiles {
+                        let is_demo = prof.is_demo;
+                        let card_accent = if is_demo {
+                            Color32::from_rgb(16, 185, 129) // Emerald
+                        } else {
+                            self.parse_hex_color(&prof.color_hex)
+                        };
 
-                if let Some(prof) = to_connect {
-                    self.connect_to_profile(prof);
+                        ui.horizontal(|ui| {
+                            ui.add_space(32.0);
+                            let content_w = (ui.available_width() - 32.0).max(300.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(content_w, 0.0),
+                                egui::Layout::top_down(egui::Align::LEFT),
+                                |ui| {
+                                    egui::Frame::group(ui.style())
+                                        .fill(Color32::from_rgb(20, 26, 38))
+                                        .stroke(Stroke::new(1.2, card_accent))
+                                        .inner_margin(16.0)
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.heading(
+                                                            RichText::new(&prof.name)
+                                                                .size(17.0)
+                                                                .color(Color32::WHITE)
+                                                                .strong(),
+                                                        );
+                                                        if is_demo {
+                                                            ui.label(
+                                                                RichText::new("[DEMO SANDBOX]")
+                                                                    .small()
+                                                                    .color(Color32::from_rgb(16, 185, 129))
+                                                                    .strong(),
+                                                            );
+                                                        }
+                                                        if prof.ssh.enabled {
+                                                            ui.label(
+                                                                RichText::new("[SSH TUNNEL]")
+                                                                    .small()
+                                                                    .color(Color32::from_rgb(56, 189, 248))
+                                                                    .strong(),
+                                                            );
+                                                        }
+                                                    });
+                                                    ui.add_space(4.0);
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "User: {}   |   Host: {}:{}   |   Default DB: {}",
+                                                            prof.user,
+                                                            prof.host,
+                                                            prof.port,
+                                                            if prof.default_database.is_empty() { "None" } else { &prof.default_database }
+                                                        ))
+                                                        .color(Color32::from_rgb(148, 163, 184)),
+                                                    );
+                                                    if prof.ssh.enabled {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "SSH: {}@{} (Port: {})",
+                                                                prof.ssh.ssh_user, prof.ssh.ssh_host, prof.ssh.ssh_port
+                                                            ))
+                                                            .small()
+                                                            .weak(),
+                                                        );
+                                                    }
+                                                });
+
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new(" Connect ⚡ ")
+                                                                    .size(14.0)
+                                                                    .color(Color32::BLACK)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(card_accent),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        to_connect = Some(prof.clone());
+                                                    }
+                                                    if ui.button("✏ Edit").clicked() {
+                                                        to_edit = Some(prof.clone());
+                                                    }
+                                                    if ui.button("🗑 Delete").clicked() {
+                                                        to_delete = Some(prof.id.clone());
+                                                    }
+                                                });
+                                            });
+                                        });
+                                },
+                            );
+                        });
+                        ui.add_space(10.0);
+                    }
                 }
-                if let Some(prof) = to_edit {
-                    self.editing_connection = prof;
-                    self.show_connection_modal = true;
-                }
-                if let Some(id) = to_delete {
-                    self.config.connections.retain(|c| c.id != id);
-                    let _ = self.config.save();
-                }
+                ui.add_space(30.0);
             });
-            ui.add_space(30.0);
-        });
+
+        if let Some(prof) = to_connect {
+            self.connect_to_profile(prof);
+        }
+        if let Some(prof) = to_edit {
+            self.editing_connection = prof;
+            self.show_connection_modal = true;
+        }
+        if let Some(id) = to_delete {
+            self.config.connections.retain(|c| c.id != id);
+            let _ = self.config.save();
+        }
     }
 
     fn render_central_workspace(&mut self, ui: &mut egui::Ui) {
