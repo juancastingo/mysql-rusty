@@ -157,12 +157,9 @@ impl MysqlRustyApp {
         let (tx, rx) = unbounded_channel();
         let config = AppConfig::load();
 
-        let initial_tab = QueryTab::new(
-            "Query 1",
-            "SELECT \n    u.id,\n    u.full_name,\n    u.email,\n    u.country,\n    COUNT(o.id) AS total_orders,\n    ROUND(SUM(o.total_amount), 2) AS lifetime_value\nFROM users u\nJOIN orders o ON o.user_id = u.id\nWHERE o.status = 'paid'\nGROUP BY u.id, u.full_name, u.email, u.country\nORDER BY lifetime_value DESC\nLIMIT 25;",
-        );
+        let initial_tab = QueryTab::new("Query 1", "");
 
-        let mut app = Self {
+        Self {
             rt,
             tx,
             rx,
@@ -170,12 +167,12 @@ impl MysqlRustyApp {
             active_profile_id: None,
             active_session: None,
             databases: Vec::new(),
-            active_database: "ecommerce_prod".to_string(),
+            active_database: String::new(),
             schemas: HashMap::new(),
             schema_filter: String::new(),
             tabs: vec![initial_tab],
             active_tab_idx: 0,
-            sidebar_tab: SidebarTab::Schema,
+            sidebar_tab: SidebarTab::Connections,
             bottom_tab: BottomTab::ResultsGrid,
             show_ai_panel: true,
             show_ai_settings_modal: false,
@@ -188,21 +185,24 @@ impl MysqlRustyApp {
             is_server_admin_loading: false,
             chat_messages: vec![ChatMessage {
                 role: "assistant".to_string(),
-                content: "Welcome to **MySQL-Rusty Workbench**!\n\nI have automatic context of your active database schema (`tables`, `columns`, `PK/FK relations`).\n- Press **`Ctrl+Space`** in the editor to trigger AI inline ghost completion (`Tab` to accept).\n- Ask me to generate complex `JOIN` queries, explain `EXPLAIN` plans, or suggest missing indexes.".to_string(),
+                content: "Welcome to **MySQL-Rusty Workbench**!\n\nSelect a server connection from the central dashboard or the 'Servers' sidebar tab to begin.".to_string(),
                 extracted_sql: None,
             }],
             chat_input: String::new(),
             is_chat_loading: false,
             is_inline_ai_loading: false,
-            status_banner: "Ready — Connecting to Sandbox Demo (ecommerce_prod)...".to_string(),
-        };
-
-        // Automatically connect to the built-in Sandbox Demo profile on startup so UI is immediately interactive
-        if let Some(demo) = app.config.connections.first().cloned() {
-            app.connect_to_profile(demo);
+            status_banner: "Ready — Select a connection to begin.".to_string(),
         }
+    }
 
-        app
+    fn disconnect(&mut self) {
+        self.active_session = None;
+        self.active_profile_id = None;
+        self.databases.clear();
+        self.schemas.clear();
+        self.active_database.clear();
+        self.sidebar_tab = SidebarTab::Connections;
+        self.status_banner = "Disconnected. Select a connection to begin.".to_string();
     }
 
     fn connect_to_profile(&mut self, profile: ConnectionProfile) {
@@ -462,11 +462,28 @@ impl MysqlRustyApp {
                         self.active_database,
                         self.databases.len()
                     );
+                    self.sidebar_tab = SidebarTab::Schema;
+
+                    // Setup initial starter query if the active tab is empty
+                    if let Some(tab) = self.tabs.first_mut() {
+                        if tab.sql.trim().is_empty() {
+                            if let Some(schema) = self.schemas.get(&self.active_database) {
+                                if let Some(first_tbl) = schema.tables.first() {
+                                    tab.sql = format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name);
+                                } else {
+                                    tab.sql = "SHOW TABLES;".to_string();
+                                }
+                            } else {
+                                tab.sql = "SHOW TABLES;".to_string();
+                            }
+                        }
+                    }
+
                     // Run default query automatically on first connect
                     if self
                         .tabs
                         .first()
-                        .map(|t| t.last_result.is_none())
+                        .map(|t| !t.sql.trim().is_empty() && t.last_result.is_none())
                         .unwrap_or(false)
                     {
                         self.execute_current_tab_query(None);
@@ -735,6 +752,14 @@ impl MysqlRustyApp {
                             }
                         });
 
+                    if self.active_session.is_some() {
+                        if ui.small_button("🔌 Disconnect").on_hover_text("Disconnect from active database and return to Servers dashboard").clicked() {
+                            self.disconnect();
+                        }
+                    } else if ui.small_button("⚡ Connections").on_hover_text("View servers dashboard").clicked() {
+                        self.sidebar_tab = SidebarTab::Connections;
+                    }
+
                     if ui.button("+ New Connection").clicked() {
                         self.editing_connection = ConnectionProfile::default();
                         self.show_connection_modal = true;
@@ -934,6 +959,18 @@ impl MysqlRustyApp {
     }
 
     fn render_schema_tree(&mut self, ui: &mut Ui) {
+        if self.active_session.is_none() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(30.0);
+                ui.label(RichText::new("No database connected").color(Color32::from_rgb(148, 163, 184)));
+                ui.add_space(8.0);
+                if ui.button("⚡ Choose Connection...").clicked() {
+                    self.sidebar_tab = SidebarTab::Connections;
+                }
+            });
+            return;
+        }
+
         // Database selector and quick switcher
         ui.horizontal(|ui| {
             ui.label(RichText::new("DB:").strong());
@@ -1374,7 +1411,182 @@ impl MysqlRustyApp {
             });
     }
 
+    fn parse_hex_color(&self, hex: &str) -> Color32 {
+        let clean = hex.trim_start_matches('#');
+        if clean.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&clean[0..2], 16),
+                u8::from_str_radix(&clean[2..4], 16),
+                u8::from_str_radix(&clean[4..6], 16),
+            ) {
+                return Color32::from_rgb(r, g, b);
+            }
+        }
+        Color32::from_rgb(56, 189, 248)
+    }
+
+    fn render_connections_dashboard(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(28.0);
+            ui.heading(
+                RichText::new("MySQL & MariaDB Connections")
+                    .size(24.0)
+                    .color(Color32::from_rgb(56, 189, 248))
+                    .strong(),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Select a server connection to open the workspace, or configure a new connection profile.")
+                    .color(Color32::from_rgb(148, 163, 184)),
+            );
+            ui.add_space(16.0);
+        });
+
+        ui.horizontal(|ui| {
+            ui.add_space(30.0);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(
+                            RichText::new("+ New Connection Profile")
+                                .color(Color32::from_rgb(56, 189, 248))
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        self.editing_connection = ConnectionProfile::default();
+                        self.show_connection_modal = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{} profiles available", self.config.connections.len()))
+                            .small()
+                            .weak(),
+                    );
+                });
+                ui.add_space(12.0);
+
+                let profiles = self.config.connections.clone();
+                let mut to_connect = None;
+                let mut to_edit = None;
+                let mut to_delete = None;
+
+                egui::ScrollArea::vertical()
+                    .id_salt("connections_dashboard_scroll")
+                    .show(ui, |ui| {
+                        for prof in profiles {
+                            let is_demo = prof.is_demo;
+                            let card_accent = if is_demo {
+                                Color32::from_rgb(16, 185, 129) // Emerald
+                            } else {
+                                self.parse_hex_color(&prof.color_hex)
+                            };
+
+                            egui::Frame::group(ui.style())
+                                .fill(Color32::from_rgb(20, 26, 38))
+                                .stroke(Stroke::new(1.2, card_accent))
+                                .inner_margin(16.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.heading(
+                                                    RichText::new(&prof.name)
+                                                        .size(17.0)
+                                                        .color(Color32::WHITE)
+                                                        .strong(),
+                                                );
+                                                if is_demo {
+                                                    ui.label(
+                                                        RichText::new("[DEMO SANDBOX]")
+                                                            .small()
+                                                            .color(Color32::from_rgb(16, 185, 129))
+                                                            .strong(),
+                                                    );
+                                                }
+                                                if prof.ssh.enabled {
+                                                    ui.label(
+                                                        RichText::new("[SSH TUNNEL]")
+                                                            .small()
+                                                            .color(Color32::from_rgb(56, 189, 248))
+                                                            .strong(),
+                                                    );
+                                                }
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "User: {}   |   Host: {}:{}   |   Default DB: {}",
+                                                    prof.user,
+                                                    prof.host,
+                                                    prof.port,
+                                                    if prof.default_database.is_empty() { "None" } else { &prof.default_database }
+                                                ))
+                                                .color(Color32::from_rgb(148, 163, 184)),
+                                            );
+                                            if prof.ssh.enabled {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "SSH: {}@{} (Port: {})",
+                                                        prof.ssh.ssh_user, prof.ssh.ssh_host, prof.ssh.ssh_port
+                                                    ))
+                                                    .small()
+                                                    .weak(),
+                                                );
+                                            }
+                                        });
+
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        RichText::new(" Connect ⚡ ")
+                                                            .size(14.0)
+                                                            .color(Color32::BLACK)
+                                                            .strong(),
+                                                    )
+                                                    .fill(card_accent),
+                                                )
+                                                .clicked()
+                                            {
+                                                to_connect = Some(prof.clone());
+                                            }
+                                            if ui.button("✏ Edit").clicked() {
+                                                to_edit = Some(prof.clone());
+                                            }
+                                            if !is_demo && ui.button("🗑 Delete").clicked() {
+                                                to_delete = Some(prof.id.clone());
+                                            }
+                                        });
+                                    });
+                                });
+                            ui.add_space(10.0);
+                        }
+                    });
+
+                if let Some(prof) = to_connect {
+                    self.connect_to_profile(prof);
+                }
+                if let Some(prof) = to_edit {
+                    self.editing_connection = prof;
+                    self.show_connection_modal = true;
+                }
+                if let Some(id) = to_delete {
+                    self.config.connections.retain(|c| c.id != id);
+                    let _ = self.config.save();
+                }
+            });
+            ui.add_space(30.0);
+        });
+    }
+
     fn render_central_workspace(&mut self, ui: &mut egui::Ui) {
+        if self.active_session.is_none() {
+            egui::CentralPanel::default().show(ui, |ui| {
+                self.render_connections_dashboard(ui);
+            });
+            return;
+        }
+
         egui::CentralPanel::default().show(ui, |ui| {
             // Query Tabs Bar
             ui.horizontal(|ui| {
