@@ -292,7 +292,7 @@ async fn call_provider(
     is_inline: bool,
 ) -> Result<String> {
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(if is_inline { 8 } else { 30 }))
+        .timeout(std::time::Duration::from_secs(if is_inline { 20 } else { 45 }))
         .build()?;
 
     match config.provider {

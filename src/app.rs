@@ -11,7 +11,7 @@ use crate::export::{
 use crate::syntax::{extract_statement_at_cursor, format_sql_pretty, highlight_sql};
 use crate::table_designer::{TableDesignerAction, TableDraft};
 use chrono::Local;
-use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke, Ui};
+use egui::{Color32, Key, Modifiers, RichText, Stroke, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -611,19 +611,60 @@ impl eframe::App for MysqlRustyApp {
         self.process_async_events();
 
         // Global keyboard shortcuts (Ctrl+Enter, F5, Ctrl+Shift+Enter, Shift+F5)
-        let is_ctrl = ui.ctx().input(|i| i.modifiers.ctrl || i.modifiers.command);
-        let is_shift = ui.ctx().input(|i| i.modifiers.shift);
-        if (is_ctrl && is_shift && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)))
-            || (is_shift && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)))
-        {
-            self.execute_current_statement();
-        } else if (is_ctrl && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)))
-            || ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5))
-        {
-            self.execute_current_tab_query(None);
+        let is_modal_open = self.show_connection_modal || self.show_ai_settings_modal;
+        if !is_modal_open {
+            let mut global_run_stmt = false;
+            let mut global_run_query = false;
+
+            ui.ctx().input_mut(|i| {
+                let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
+                let is_shift = i.modifiers.shift;
+
+                let has_enter_press = i
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. }));
+
+                if is_ctrl && is_shift && has_enter_press {
+                    i.events.retain(|e| {
+                        !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
+                    });
+                    global_run_stmt = true;
+                } else if is_ctrl && has_enter_press {
+                    i.events.retain(|e| {
+                        !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
+                    });
+                    global_run_query = true;
+                } else if is_shift && i.consume_key(Modifiers::NONE, Key::F5) {
+                    global_run_stmt = true;
+                } else if i.consume_key(Modifiers::NONE, Key::F5) {
+                    global_run_query = true;
+                }
+            });
+
+            if global_run_stmt {
+                self.execute_current_statement();
+            } else if global_run_query {
+                self.execute_current_tab_query(None);
+            }
         }
-        let ai_complete_shortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Space);
-        if ui.ctx().input_mut(|i| i.consume_shortcut(&ai_complete_shortcut)) {
+
+        let ai_triggered = ui.ctx().input_mut(|i| {
+            let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
+            let has_space_press = i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, .. }));
+            if is_ctrl && has_space_press {
+                i.events.retain(|e| {
+                    !matches!(e, egui::Event::Key { key: Key::Space, pressed: true, .. })
+                });
+                true
+            } else {
+                false
+            }
+        });
+        if ai_triggered {
             self.trigger_inline_ai_completion();
         }
 
@@ -1425,17 +1466,30 @@ impl MysqlRustyApp {
                 let editor_resp = output.response;
 
                 if editor_resp.has_focus() {
-                    let is_ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
-                    let is_shift = ui.input(|i| i.modifiers.shift);
-                    if (is_ctrl && is_shift && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)))
-                        || (is_shift && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)))
-                    {
-                        editor_run_stmt = true;
-                    } else if (is_ctrl && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)))
-                        || ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5))
-                    {
-                        editor_run_query = true;
-                    }
+                    ui.input_mut(|i| {
+                        let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
+                        let is_shift = i.modifiers.shift;
+
+                        let has_enter_press = i.events.iter().any(|e| {
+                            matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
+                        });
+
+                        if is_ctrl && is_shift && has_enter_press {
+                            i.events.retain(|e| {
+                                !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
+                            });
+                            editor_run_stmt = true;
+                        } else if is_ctrl && has_enter_press {
+                            i.events.retain(|e| {
+                                !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
+                            });
+                            editor_run_query = true;
+                        } else if is_shift && i.consume_key(Modifiers::NONE, Key::F5) {
+                            editor_run_stmt = true;
+                        } else if i.consume_key(Modifiers::NONE, Key::F5) {
+                            editor_run_query = true;
+                        }
+                    });
                 }
 
                 if editor_resp.changed() {
