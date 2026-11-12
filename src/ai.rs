@@ -233,12 +233,13 @@ pub async fn request_inline_completion(
     sql_prefix: &str,
     schema_ddl: &str,
 ) -> Result<String> {
-    let system_prompt = "You are an expert MySQL 8.0 / MariaDB inline code completion engine. \
+    let system_prompt = "You are a code completion model for MySQL 8.0 / MariaDB SQL. \
         Output ONLY the exact SQL continuation that should be appended immediately after the user's cursor. \
-        Do NOT repeat the prefix already written by the user. Do NOT wrap in markdown code fences or add explanations.";
+        Never repeat words, keywords, clauses, table names, or column names already written before the cursor. \
+        Do NOT output markdown fences, comments, or explanations.";
 
     let user_prompt = format!(
-        "Active Database Schema:\n{schema_ddl}\n\nCurrent SQL before cursor:\n{sql_prefix}\n\nContinuation:"
+        "/* Active Database Schema */\n{schema_ddl}\n\n/* Complete the SQL query directly from cursor: */\n{sql_prefix}<CURSOR>\n\n/* Continuation: */"
     );
 
     match call_provider(config, system_prompt, &user_prompt, true).await {
@@ -493,7 +494,120 @@ async fn call_provider(
     }
 }
 
-fn clean_inline_completion(raw: &str, prefix: &str) -> String {
+#[derive(Debug, Clone, PartialEq)]
+struct SqlOverlapToken {
+    text: String,
+    normalized: String,
+    start: usize,
+    end: usize,
+}
+
+fn tokenize_for_overlap(s: &str) -> Vec<SqlOverlapToken> {
+    let mut tokens = Vec::new();
+    let chars: Vec<(usize, char)> = s.char_indices().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let (start, ch) = chars[i];
+        if ch.is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        // Quoted string or identifier: '...', "...", `...`
+        if ch == '\'' || ch == '"' || ch == '`' {
+            let quote = ch;
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].1 != quote {
+                if chars[j].1 == '\\' && j + 1 < chars.len() {
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            if j < chars.len() {
+                j += 1; // include closing quote
+            }
+            let end = if j < chars.len() { chars[j].0 } else { s.len() };
+            let raw = &s[start..end];
+            let norm = raw
+                .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+                .to_lowercase();
+            tokens.push(SqlOverlapToken {
+                text: raw.to_string(),
+                normalized: norm,
+                start,
+                end,
+            });
+            i = j;
+            continue;
+        }
+
+        // Word (alphanumeric or underscore)
+        if ch.is_alphanumeric() || ch == '_' {
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].1.is_alphanumeric() || chars[j].1 == '_') {
+                j += 1;
+            }
+            let end = if j < chars.len() { chars[j].0 } else { s.len() };
+            let raw = &s[start..end];
+            tokens.push(SqlOverlapToken {
+                text: raw.to_string(),
+                normalized: raw.to_lowercase(),
+                start,
+                end,
+            });
+            i = j;
+            continue;
+        }
+
+        // Compound operators like !=, <=, >=, <>
+        let next_ch = if i + 1 < chars.len() {
+            Some(chars[i + 1].1)
+        } else {
+            None
+        };
+        if let Some(next) = next_ch {
+            let op2 = match (ch, next) {
+                ('!', '=') | ('<', '=') | ('>', '=') | ('<', '>') => true,
+                _ => false,
+            };
+            if op2 {
+                let end = if i + 2 < chars.len() {
+                    chars[i + 2].0
+                } else {
+                    s.len()
+                };
+                let raw = &s[start..end];
+                tokens.push(SqlOverlapToken {
+                    text: raw.to_string(),
+                    normalized: raw.to_string(),
+                    start,
+                    end,
+                });
+                i += 2;
+                continue;
+            }
+        }
+
+        // Single punctuation / operator
+        let end = if i + 1 < chars.len() {
+            chars[i + 1].0
+        } else {
+            s.len()
+        };
+        let raw = &s[start..end];
+        tokens.push(SqlOverlapToken {
+            text: raw.to_string(),
+            normalized: raw.to_lowercase(),
+            start,
+            end,
+        });
+        i += 1;
+    }
+    tokens
+}
+
+pub fn clean_inline_completion(raw: &str, prefix: &str) -> String {
     let mut cleaned = raw.trim().to_string();
     if let Some(block) = extract_sql_code_block(&cleaned) {
         cleaned = block;
@@ -505,11 +619,80 @@ fn clean_inline_completion(raw: &str, prefix: &str) -> String {
         .trim()
         .to_string();
 
-    let trimmed_prefix = prefix.trim();
-    if !trimmed_prefix.is_empty() && cleaned.starts_with(trimmed_prefix) {
-        cleaned = cleaned[trimmed_prefix.len()..].to_string();
+    let p_tokens = tokenize_for_overlap(prefix);
+    let c_tokens = tokenize_for_overlap(&cleaned);
+    let mut partial_found = false;
+
+    if !p_tokens.is_empty() && !c_tokens.is_empty() {
+        // 1. Exact full-token suffix/prefix match
+        let max_k_candidate = p_tokens.len().min(c_tokens.len());
+        let mut best_k = 0;
+        let mut best_c_end = 0;
+
+        for k in (1..=max_k_candidate).rev() {
+            let p_slice = &p_tokens[p_tokens.len() - k..];
+            let c_slice = &c_tokens[..k];
+            let matches = p_slice
+                .iter()
+                .zip(c_slice.iter())
+                .all(|(p, c)| p.normalized == c.normalized);
+            if matches {
+                best_k = k;
+                best_c_end = c_tokens[k - 1].end;
+                break;
+            }
+        }
+
+        if best_k > 0 {
+            cleaned = cleaned[best_c_end..].trim().to_string();
+        } else {
+            // 2. Partial-token match: 0..k full tokens match, and p.last() is a prefix of c[k]
+            let last_p = &p_tokens[p_tokens.len() - 1];
+            let max_partial_k = (p_tokens.len() - 1).min(c_tokens.len() - 1);
+
+            for k in (0..=max_partial_k).rev() {
+                let leading_match = if k > 0 {
+                    let p_slice = &p_tokens[p_tokens.len() - 1 - k..p_tokens.len() - 1];
+                    let c_slice = &c_tokens[..k];
+                    p_slice
+                        .iter()
+                        .zip(c_slice.iter())
+                        .all(|(p, c)| p.normalized == c.normalized)
+                } else {
+                    true
+                };
+
+                if leading_match {
+                    let cand_c = &c_tokens[k];
+                    if cand_c.normalized.starts_with(&last_p.normalized)
+                        && cand_c.normalized.len() > last_p.normalized.len()
+                    {
+                        let offset = cand_c.start + last_p.text.len();
+                        if offset <= cleaned.len() {
+                            cleaned = cleaned[offset..].trim_start().to_string();
+                            partial_found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !partial_found {
+                // Also check if prefix is non-empty and cleaned literally starts with trimmed prefix
+                let trimmed_p = prefix.trim();
+                if !trimmed_p.is_empty() && cleaned.to_lowercase().starts_with(&trimmed_p.to_lowercase()) {
+                    cleaned = cleaned[trimmed_p.len()..].trim().to_string();
+                }
+            }
+        }
     }
-    if !prefix.ends_with(char::is_whitespace) && !cleaned.starts_with(' ') && !cleaned.is_empty() {
+
+    if !partial_found
+        && !prefix.ends_with(char::is_whitespace)
+        && !cleaned.starts_with(' ')
+        && !cleaned.is_empty()
+        && !cleaned.starts_with(|c| c == ';' || c == ',' || c == ')')
+    {
         format!(" {cleaned}")
     } else {
         cleaned

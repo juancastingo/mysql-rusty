@@ -34,7 +34,8 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::ai::{
-        compute_heuristic_ghost_completion, compute_local_completions, extract_sql_code_block,
+        clean_inline_completion, compute_heuristic_ghost_completion, compute_local_completions,
+        extract_sql_code_block,
     };
     use crate::db::{build_demo_schema, detect_editable_table_and_pk};
     use crate::syntax::{extract_statement_at_cursor, format_sql_pretty};
@@ -89,6 +90,34 @@ mod tests {
             detect_editable_table_and_pk("SELECT id, full_name, email FROM users LIMIT 10", &cols, Some(&schema));
         assert_eq!(tbl.as_deref(), Some("users"));
         assert_eq!(pk.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn test_clean_inline_completion_overlap_trimming() {
+        // User's exact bug case: LLM repeats 'WHERE serialNumber LIKE ...'
+        let prefix1 = "SELECT * FROM `asset` where serialNumber like ";
+        let raw1 = "WHERE serialNumber LIKE '%your_serial_number%'";
+        assert_eq!(
+            clean_inline_completion(raw1, prefix1),
+            "'%your_serial_number%'"
+        );
+
+        // LLM repeats the full query
+        let raw2 = "SELECT * FROM `asset` WHERE serialNumber LIKE '%pattern%'";
+        assert_eq!(clean_inline_completion(raw2, prefix1), "'%pattern%'");
+
+        // LLM repeats 'WHERE' clause
+        let prefix3 = "SELECT * FROM orders WHERE ";
+        let raw3 = "WHERE status = 'pending'";
+        assert_eq!(clean_inline_completion(raw3, prefix3), "status = 'pending'");
+
+        // Partial identifier completion ('em' -> 'ail')
+        let prefix4 = "SELECT * FROM users WHERE em";
+        let raw4 = "WHERE email = 'admin@example.com'";
+        assert_eq!(
+            clean_inline_completion(raw4, prefix4),
+            "ail = 'admin@example.com'"
+        );
     }
 
     #[test]
