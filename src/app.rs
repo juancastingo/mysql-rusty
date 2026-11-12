@@ -38,6 +38,7 @@ pub enum AsyncEvent {
     },
     InlineAiCompletion {
         tab_id: String,
+        req_id: u64,
         result: Result<String, String>,
     },
     ChatAiReply(Result<ChatMessage, String>),
@@ -59,6 +60,7 @@ pub struct QueryTab {
     pub ghost_completion: Option<String>,
     pub local_suggestions: Vec<CompletionItem>,
     pub current_token_prefix: String,
+    pub inline_req_id: u64,
     pub is_running: bool,
     pub task_abort_handle: Option<tokio::task::AbortHandle>,
     pub last_result: Option<QueryResult>,
@@ -83,6 +85,7 @@ impl QueryTab {
             ghost_completion: None,
             local_suggestions: Vec::new(),
             current_token_prefix: String::new(),
+            inline_req_id: 0,
             is_running: false,
             task_abort_handle: None,
             last_result: None,
@@ -330,9 +333,11 @@ impl MysqlRustyApp {
     }
 
     fn trigger_inline_ai_completion(&mut self) {
-        let Some(tab) = self.tabs.get(self.active_tab_idx) else {
+        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
             return;
         };
+        tab.inline_req_id += 1;
+        let req_id = tab.inline_req_id;
         let tab_id = tab.id.clone();
         let sql_prefix = if tab.cursor_index > 0 {
             let chars: Vec<char> = tab.sql.chars().collect();
@@ -344,7 +349,7 @@ impl MysqlRustyApp {
         let ddl = self
             .schemas
             .get(&self.active_database)
-            .map(|s| s.to_ai_ddl_context())
+            .map(|s| s.to_pruned_ai_ddl_context(&sql_prefix))
             .unwrap_or_default();
         let ai_cfg = self.config.ai.clone();
         let tx = self.tx.clone();
@@ -361,6 +366,7 @@ impl MysqlRustyApp {
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AsyncEvent::InlineAiCompletion {
                 tab_id,
+                req_id,
                 result: res,
             });
         });
@@ -529,9 +535,17 @@ impl MysqlRustyApp {
                         self.status_banner = format!("Failed to commit inline edits: {e}");
                     }
                 },
-                AsyncEvent::InlineAiCompletion { tab_id, result } => {
+                AsyncEvent::InlineAiCompletion {
+                    tab_id,
+                    req_id,
+                    result,
+                } => {
                     self.is_inline_ai_loading = false;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        // Stale request check: discard if user continued typing or triggered a newer request
+                        if tab.inline_req_id != req_id {
+                            continue;
+                        }
                         match result {
                             Ok(completion) if !completion.is_empty() => {
                                 tab.ghost_completion = Some(completion);
@@ -617,11 +631,14 @@ impl eframe::App for MysqlRustyApp {
         if self.config.ai.enable_inline_autocomplete && !self.is_inline_ai_loading {
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 if let Some(instant) = tab.last_edit_instant {
-                    if instant.elapsed() >= std::time::Duration::from_millis(450) {
+                    let debounce = std::time::Duration::from_millis(
+                        self.config.ai.autocomplete_debounce_ms.max(50),
+                    );
+                    if instant.elapsed() >= debounce {
                         tab.last_edit_instant = None;
                         self.trigger_inline_ai_completion();
                     } else {
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
                     }
                 }
             }
@@ -2166,8 +2183,9 @@ impl MysqlRustyApp {
                     AiProvider::Ollama => {
                         ui.label("Ollama Endpoint URL:");
                         ui.text_edit_singleline(&mut self.config.ai.ollama_endpoint);
-                        ui.label("Model Name (e.g. `qwen2.5-coder:7b`, `codestral`, `llama3.2`):");
+                        ui.label("Model Name (e.g. `qwen2.5-coder:1.5b` [ultra-fast], `0.5b`, `7b`):");
                         ui.text_edit_singleline(&mut self.config.ai.ollama_model);
+                        ui.small("Tip: `qwen2.5-coder:1.5b` responds in ~100-200ms with 0 cloud cost.");
                     }
                     AiProvider::OpenAiCompatible => {
                         ui.label("Base URL (OpenAI, Groq, OpenRouter, vLLM):");
@@ -2209,6 +2227,26 @@ impl MysqlRustyApp {
                         );
                     }
                 }
+
+                ui.separator();
+                ui.label(RichText::new("⚡ Performance & Inline Latency").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Debounce Delay:");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.ai.autocomplete_debounce_ms, 50..=600)
+                            .suffix(" ms"),
+                    );
+                });
+                ui.small("150–200 ms recommended for fast, natural response while typing.");
+
+                ui.horizontal(|ui| {
+                    ui.label("Max Completion Tokens:");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.ai.autocomplete_max_tokens, 15..=100)
+                            .suffix(" tokens"),
+                    );
+                });
+                ui.small("Capping at 25–40 tokens cuts LLM inference time by ~75%.");
 
                 ui.separator();
                 if ui.button("Save Configuration").clicked() {

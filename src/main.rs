@@ -71,6 +71,10 @@ mod tests {
         let (prefix, items) = compute_local_completions("SELECT * FROM us", Some(&schema), 10);
         assert_eq!(prefix, "us");
         assert!(items.iter().any(|i| i.label == "users"));
+
+        let pruned = schema.to_pruned_ai_ddl_context("SELECT * FROM users WHERE");
+        assert!(pruned.contains("TABLE `users`"));
+        assert!(pruned.contains("TABLE `orders`"));
     }
 
     #[test]

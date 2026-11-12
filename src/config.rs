@@ -126,6 +126,11 @@ pub struct AiConfig {
     pub enable_inline_autocomplete: bool,
     pub include_schema_context: bool,
 
+    #[serde(default = "default_debounce_ms")]
+    pub autocomplete_debounce_ms: u64,
+    #[serde(default = "default_max_tokens")]
+    pub autocomplete_max_tokens: u32,
+
     // Ollama
     pub ollama_endpoint: String,
     pub ollama_model: String,
@@ -148,21 +153,31 @@ pub struct AiConfig {
     pub cli_pass_via_stdin: bool,
 }
 
+fn default_debounce_ms() -> u64 {
+    180
+}
+
+fn default_max_tokens() -> u32 {
+    35
+}
+
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
             provider: AiProvider::Ollama,
             enable_inline_autocomplete: true,
             include_schema_context: true,
+            autocomplete_debounce_ms: 180,
+            autocomplete_max_tokens: 35,
             ollama_endpoint: "http://127.0.0.1:11434".to_string(),
-            ollama_model: "qwen2.5-coder:7b".to_string(),
+            ollama_model: "qwen2.5-coder:1.5b".to_string(),
             openai_base_url: "https://api.openai.com/v1".to_string(),
             openai_api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             openai_model: "gpt-4o-mini".to_string(),
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-            anthropic_model: "claude-3-7-sonnet-latest".to_string(),
+            anthropic_model: "claude-3-5-haiku-latest".to_string(),
             gemini_api_key: std::env::var("GEMINI_API_KEY").unwrap_or_default(),
-            gemini_model: "gemini-2.5-flash".to_string(),
+            gemini_model: "gemini-2.0-flash".to_string(),
             cli_command: "agy".to_string(),
             cli_pass_via_stdin: true,
         }

@@ -75,6 +75,70 @@ impl DatabaseSchema {
         }
         out
     }
+
+    /// Generates a pruned DDL context containing only tables relevant to the given SQL prefix,
+    /// plus directly related foreign-key tables (1-hop). This keeps prompt token count minimal and speeds up TTFT.
+    pub fn to_pruned_ai_ddl_context(&self, sql_query: &str) -> String {
+        let sql_lower = sql_query.to_lowercase();
+        let mut relevant_tables: Vec<&TableSchema> = Vec::new();
+        let mut mentioned_names: Vec<String> = Vec::new();
+
+        for t in &self.tables {
+            let name_lower = t.name.to_lowercase();
+            // Check if table name appears in query as a distinct token or with backticks
+            if sql_lower.contains(&format!("`{name_lower}`"))
+                || sql_lower.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == name_lower)
+            {
+                relevant_tables.push(t);
+                mentioned_names.push(t.name.clone());
+            }
+        }
+
+        // Include 1-hop foreign key related tables
+        if !mentioned_names.is_empty() {
+            for t in &self.tables {
+                if !mentioned_names.contains(&t.name) {
+                    let links_to_mentioned = t
+                        .foreign_keys
+                        .iter()
+                        .any(|fk| mentioned_names.contains(&fk.referenced_table));
+                    let mentioned_links_to_this = relevant_tables.iter().any(|rt| {
+                        rt.foreign_keys
+                            .iter()
+                            .any(|fk| fk.referenced_table.eq_ignore_ascii_case(&t.name))
+                    });
+                    if links_to_mentioned || mentioned_links_to_this {
+                        relevant_tables.push(t);
+                    }
+                }
+            }
+        }
+
+        // If no specific tables are matched yet (e.g. user just typed `SELECT `), or DB has few tables, fallback to full
+        if relevant_tables.is_empty() || self.tables.len() <= 3 {
+            return self.to_ai_ddl_context();
+        }
+
+        let mut out = format!("-- Database: `{}` (Filtered active tables)\n", self.name);
+        for t in &relevant_tables {
+            let cols: Vec<String> = t
+                .columns
+                .iter()
+                .map(|c| {
+                    let pk = if c.is_primary_key { " PK" } else { "" };
+                    format!("{} {}{}", c.name, c.data_type, pk)
+                })
+                .collect();
+            out.push_str(&format!("TABLE `{}` ({});\n", t.name, cols.join(", ")));
+            for fk in &t.foreign_keys {
+                out.push_str(&format!(
+                    "-- FK: `{}`.`{}` -> `{}`.`{}`\n",
+                    t.name, fk.column_name, fk.referenced_table, fk.referenced_column
+                ));
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

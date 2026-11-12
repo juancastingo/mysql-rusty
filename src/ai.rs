@@ -241,7 +241,7 @@ pub async fn request_inline_completion(
         "Active Database Schema:\n{schema_ddl}\n\nCurrent SQL before cursor:\n{sql_prefix}\n\nContinuation:"
     );
 
-    match call_provider(config, system_prompt, &user_prompt).await {
+    match call_provider(config, system_prompt, &user_prompt, true).await {
         Ok(raw) => Ok(clean_inline_completion(&raw, sql_prefix)),
         Err(err) => {
             // If local heuristic can provide a helpful suggestion, surface error in log or fallback
@@ -275,7 +275,7 @@ pub async fn request_chat_assistant(
     full_prompt.push_str("User Request:\n");
     full_prompt.push_str(user_message);
 
-    let reply = call_provider(config, system_prompt, &full_prompt).await?;
+    let reply = call_provider(config, system_prompt, &full_prompt, false).await?;
     let extracted_sql = extract_sql_code_block(&reply);
 
     Ok(ChatMessage {
@@ -289,9 +289,10 @@ async fn call_provider(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    is_inline: bool,
 ) -> Result<String> {
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(if is_inline { 8 } else { 30 }))
         .build()?;
 
     match config.provider {
@@ -300,14 +301,20 @@ async fn call_provider(
                 "{}/api/generate",
                 config.ollama_endpoint.trim_end_matches('/')
             );
+            let mut options = json!({
+                "temperature": if is_inline { 0.1 } else { 0.2 },
+            });
+            if is_inline {
+                let max_tokens = config.autocomplete_max_tokens.clamp(10, 200);
+                options["num_predict"] = json!(max_tokens);
+                options["stop"] = json!([";", "\n\n", "```"]);
+            }
             let body = json!({
                 "model": config.ollama_model,
                 "system": system_prompt,
                 "prompt": user_prompt,
                 "stream": false,
-                "options": {
-                    "temperature": 0.15
-                }
+                "options": options,
             });
             let resp = client
                 .post(&url)
@@ -333,14 +340,19 @@ async fn call_provider(
                 "{}/chat/completions",
                 config.openai_base_url.trim_end_matches('/')
             );
-            let body = json!({
+            let mut body = json!({
                 "model": config.openai_model,
-                "temperature": 0.15,
+                "temperature": if is_inline { 0.1 } else { 0.2 },
                 "messages": [
                     { "role": "system", "content": system_prompt },
                     { "role": "user", "content": user_prompt }
                 ]
             });
+            if is_inline {
+                let max_tokens = config.autocomplete_max_tokens.clamp(10, 200);
+                body["max_tokens"] = json!(max_tokens);
+                body["stop"] = json!([";", "\n\n", "```"]);
+            }
             let mut req = client.post(&url).json(&body);
             if !config.openai_api_key.trim().is_empty() {
                 req = req.bearer_auth(config.openai_api_key.trim());
@@ -363,14 +375,22 @@ async fn call_provider(
             if config.anthropic_api_key.trim().is_empty() {
                 return Err(anyhow!("Anthropic API Key is empty in AI Settings."));
             }
-            let body = json!({
+            let max_tokens = if is_inline {
+                config.autocomplete_max_tokens.clamp(10, 200)
+            } else {
+                1024
+            };
+            let mut body = json!({
                 "model": config.anthropic_model,
-                "max_tokens": 1024,
+                "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": [
                     { "role": "user", "content": user_prompt }
                 ]
             });
+            if is_inline {
+                body["stop_sequences"] = json!([";\n", "\n\n", "```"]);
+            }
             let resp = client
                 .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", config.anthropic_api_key.trim())
@@ -401,11 +421,19 @@ async fn call_provider(
                 config.gemini_api_key.trim()
             );
             let combined = format!("{system_prompt}\n\n{user_prompt}");
-            let body = json!({
+            let mut body = json!({
                 "contents": [{
                     "parts": [{ "text": combined }]
                 }]
             });
+            if is_inline {
+                let max_tokens = config.autocomplete_max_tokens.clamp(10, 200);
+                body["generationConfig"] = json!({
+                    "temperature": 0.1,
+                    "maxOutputTokens": max_tokens,
+                    "stopSequences": [";\n", "\n\n", "```"]
+                });
+            }
             let resp = client.post(&url).json(&body).send().await?;
             if !resp.status().is_success() {
                 let status = resp.status();
