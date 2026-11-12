@@ -1413,13 +1413,43 @@ impl MysqlRustyApp {
             let mut editor_run_stmt = false;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                // Accept ghost completion on Tab key
-                if tab.ghost_completion.is_some()
-                    && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab))
-                {
+                // Accept suggestions via keyboard: Tab or Alt+1..8
+                let mut selected_suggestion: Option<CompletionItem> = None;
+                if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
                     if let Some(ghost) = tab.ghost_completion.take() {
                         tab.sql.push_str(&ghost);
+                    } else if let Some(first) = tab.local_suggestions.first() {
+                        selected_suggestion = Some(first.clone());
                     }
+                } else {
+                    for (idx, item) in tab.local_suggestions.iter().enumerate().take(8) {
+                        let num_key = match idx {
+                            0 => Key::Num1,
+                            1 => Key::Num2,
+                            2 => Key::Num3,
+                            3 => Key::Num4,
+                            4 => Key::Num5,
+                            5 => Key::Num6,
+                            6 => Key::Num7,
+                            7 => Key::Num8,
+                            _ => break,
+                        };
+                        if ui.input_mut(|i| i.consume_key(Modifiers::ALT, num_key)) {
+                            selected_suggestion = Some(item.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(item) = selected_suggestion {
+                    let prefix_len = tab.current_token_prefix.len();
+                    if prefix_len <= tab.sql.len() {
+                        let new_len = tab.sql.len() - prefix_len;
+                        tab.sql.truncate(new_len);
+                    }
+                    tab.sql.push_str(&item.insert_text);
+                    tab.local_suggestions.clear();
+                    tab.ghost_completion = None;
                 }
 
                 let ghost_clone = tab.ghost_completion.clone();
@@ -1531,11 +1561,27 @@ impl MysqlRustyApp {
 
                         let suggestions = tab.local_suggestions.clone();
                         let prefix_len = tab.current_token_prefix.len();
-                        for item in suggestions {
-                            let label = format!("[{}] {}", item.kind.badge(), item.label);
+                        let has_ghost = tab.ghost_completion.is_some();
+                        for (idx, item) in suggestions.into_iter().enumerate() {
+                            let badge = if idx == 0 && !has_ghost {
+                                "[Tab]".to_string()
+                            } else if idx < 8 {
+                                format!("[Alt+{}]", idx + 1)
+                            } else {
+                                String::new()
+                            };
+                            let label = if badge.is_empty() {
+                                format!("[{}] {}", item.kind.badge(), item.label)
+                            } else {
+                                format!("{badge} [{}] {}", item.kind.badge(), item.label)
+                            };
                             if ui
                                 .small_button(label)
-                                .on_hover_text(&item.detail)
+                                .on_hover_text(format!(
+                                    "{}\nShortcut: {}",
+                                    item.detail,
+                                    if idx == 0 && !has_ghost { "Tab or Alt+1" } else if idx < 8 { "Alt+1..8" } else { "Click" }
+                                ))
                                 .clicked()
                             {
                                 if prefix_len <= tab.sql.len() {
@@ -1544,6 +1590,7 @@ impl MysqlRustyApp {
                                 }
                                 tab.sql.push_str(&item.insert_text);
                                 tab.local_suggestions.clear();
+                                tab.ghost_completion = None;
                             }
                         }
                     });
