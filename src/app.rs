@@ -376,19 +376,19 @@ impl MysqlRustyApp {
             if prof.read_only && is_write_query(&sql) {
                 self.status_banner = "Query blocked: connection is in Read-Only mode.".to_string();
                 if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                    tab.last_error = Some("⛔ Execution Blocked: Connection is in Read-Only mode. Write operations (INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE) are prohibited.".to_string());
+                    tab.last_error = Some("[BLOCKED] Connection is in Read-Only mode. Write operations (INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE) are prohibited.".to_string());
                 }
                 return;
             }
 
             if let Some(reason) = is_potentially_destructive(&sql) {
-                self.safety_warning_msg = format!("⚠️ Safety Warning (Destructive Query):\n{reason}");
+                self.safety_warning_msg = format!("[WARNING] Destructive Query Detected:\n{reason}");
                 self.pending_safe_sql = sql.clone();
                 self.show_safety_modal = true;
                 return;
             } else if prof.environment == Environment::Production && is_write_query(&sql) {
                 self.safety_warning_msg = format!(
-                    "🛡️ Production Guard:\nYou are connected to '{}' [PRODUCTION]. Confirm you want to execute this write query.",
+                    "[PRODUCTION GUARD]\nYou are connected to '{}' [PRODUCTION]. Confirm you want to execute this write query.",
                     prof.name
                 );
                 self.pending_safe_sql = sql.clone();
@@ -888,7 +888,7 @@ impl MysqlRustyApp {
                     ui.add_space(4.0);
                     // Brand Logo with glowing accent
                     ui.label(
-                        RichText::new("⚡ MySQL-Rusty")
+                        RichText::new("MySQL-Rusty")
                             .size(16.0)
                             .color(Color32::from_rgb(56, 189, 248))
                             .strong(),
@@ -953,7 +953,7 @@ impl MysqlRustyApp {
                     ui.add_space(4.0);
 
                     // Database Selector
-                    ui.label(RichText::new("🗄 DB:").weak());
+                    ui.label(RichText::new("DB:").weak());
                     let current_db = if self.active_database.is_empty() {
                         "None"
                     } else {
@@ -1060,7 +1060,7 @@ impl MysqlRustyApp {
                     }
 
                     if ui
-                        .button("🔍 Explain")
+                        .button("Explain")
                         .on_hover_text("Inspect MySQL execution plan for current query")
                         .clicked()
                     {
@@ -1068,7 +1068,7 @@ impl MysqlRustyApp {
                     }
 
                     if ui
-                        .button("⚡ Format")
+                        .button("Format SQL")
                         .on_hover_text("Format SQL clauses cleanly")
                         .clicked()
                     {
@@ -1078,7 +1078,7 @@ impl MysqlRustyApp {
                     }
 
                     let ai_btn = egui::Button::new(
-                        RichText::new(" ✨ AI Auto ")
+                        RichText::new(" AI Auto ")
                             .color(Color32::from_rgb(233, 213, 255))
                             .size(12.0),
                     )
@@ -1096,9 +1096,9 @@ impl MysqlRustyApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let copilot_text = if self.show_ai_panel {
-                            RichText::new("✨ AI Copilot").color(Color32::WHITE).strong()
+                            RichText::new("AI Copilot").color(Color32::WHITE).strong()
                         } else {
-                            RichText::new("✨ AI Copilot").weak()
+                            RichText::new("AI Copilot").weak()
                         };
                         let copilot_btn = egui::Button::new(copilot_text)
                             .fill(if self.show_ai_panel {
@@ -1166,17 +1166,17 @@ impl MysqlRustyApp {
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::Schema,
-                        RichText::new("🗄 Schema").size(12.0),
+                        RichText::new("Schema").size(12.0),
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::Connections,
-                        RichText::new("⚡ Servers").size(12.0),
+                        RichText::new("Servers").size(12.0),
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::SnippetsAndHistory,
-                        RichText::new("🕒 History").size(12.0),
+                        RichText::new("History").size(12.0),
                     );
                 });
                 ui.separator();
@@ -1195,7 +1195,7 @@ impl MysqlRustyApp {
                 ui.add_space(30.0);
                 ui.label(RichText::new("No database connected").color(Color32::from_rgb(148, 163, 184)));
                 ui.add_space(8.0);
-                if ui.button("⚡ Choose Connection...").clicked() {
+                if ui.button("Choose Connection...").clicked() {
                     self.sidebar_tab = SidebarTab::Connections;
                 }
             });
@@ -1260,7 +1260,7 @@ impl MysqlRustyApp {
                 self.table_designer_draft = Some(TableDraft::new_empty("new_table"));
             }
             if ui
-                .small_button("🔄 Diff & Sync")
+                .small_button("Diff & Sync")
                 .on_hover_text("Compare two schemas and generate DDL synchronization script")
                 .clicked()
             {
@@ -1365,7 +1365,7 @@ impl MysqlRustyApp {
                                 }
                             }
                             if ui
-                                .small_button("🎲 Mock Data")
+                                .small_button("Mock Data")
                                 .on_hover_text("Generate realistic random seed data for this table")
                                 .clicked()
                             {
@@ -1462,7 +1462,7 @@ impl MysqlRustyApp {
                             let (er, eg, eb) = prof.environment.color_rgb();
                             ui.colored_label(Color32::from_rgb(er, eg, eb), format!("[{}]", prof.environment.label()));
                             if prof.read_only {
-                                ui.colored_label(Color32::from_rgb(251, 146, 60), "[🔒 Read-Only]");
+                                ui.colored_label(Color32::from_rgb(251, 146, 60), "[Read-Only]");
                             }
                             if is_active {
                                 egui::Frame::new()
@@ -1487,14 +1487,14 @@ impl MysqlRustyApp {
                         );
                         if prof.ssh.enabled {
                             ui.label(
-                                RichText::new(format!("🔒 SSH: {}", prof.ssh.ssh_host))
+                                RichText::new(format!("SSH: {}", prof.ssh.ssh_host))
                                     .size(10.5)
                                     .color(Color32::from_rgb(56, 189, 248)),
                             );
                         }
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            let conn_label = if is_active { "Reconnect" } else { "Connect ⚡" };
+                            let conn_label = if is_active { "Reconnect" } else { "Connect" };
                             let btn = egui::Button::new(RichText::new(conn_label).size(11.5).strong())
                                 .fill(if is_active { Color32::from_rgb(6, 78, 59) } else { Color32::from_rgb(2, 132, 199) })
                                 .corner_radius(egui::CornerRadius::same(4));
@@ -1531,9 +1531,9 @@ impl MysqlRustyApp {
         let mut delete_snippet_id: Option<String> = None;
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("📑 SQL Snippets").strong());
+            ui.label(RichText::new("SQL Snippets").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("➕ Save Active").clicked() {
+                if ui.small_button("+ Save Active").clicked() {
                     self.show_save_snippet_modal = true;
                     if let Some(tab) = self.tabs.get(self.active_tab_idx) {
                         self.new_snippet_title = if !tab.title.is_empty() {
@@ -1572,7 +1572,7 @@ impl MysqlRustyApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&snip.title).strong().small());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("🗑").on_hover_text("Delete Snippet").clicked() {
+                                if ui.small_button("Delete").on_hover_text("Delete Snippet").clicked() {
                                     delete_snippet_id = Some(snip.id.clone());
                                 }
                             });
@@ -1592,7 +1592,7 @@ impl MysqlRustyApp {
             }
 
             ui.separator();
-            ui.label(RichText::new("🕒 Recent Query History").strong());
+            ui.label(RichText::new("Recent Query History").strong());
             ui.add_space(2.0);
 
             for entry in self.config.history.iter().rev() {
@@ -1793,7 +1793,7 @@ impl MysqlRustyApp {
                         .inner_margin(egui::Margin::symmetric(14, 4))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("⚡ WORKBENCH CONNECTIONS")
+                                RichText::new("WORKBENCH CONNECTIONS")
                                     .size(11.0)
                                     .color(Color32::from_rgb(56, 189, 248))
                                     .strong(),
@@ -1896,7 +1896,7 @@ impl MysqlRustyApp {
                                                                         .color(Color32::from_rgb(52, 211, 153))
                                                                         .strong(),
                                                                 );
-                                                            });
+                                                             });
                                                     }
                                                     if prof.ssh.enabled {
                                                         egui::Frame::new()
@@ -1934,7 +1934,7 @@ impl MysqlRustyApp {
                                                             .inner_margin(egui::Margin::symmetric(6, 2))
                                                             .show(ui, |ui| {
                                                                 ui.label(
-                                                                    RichText::new("🔒 READ-ONLY")
+                                                                    RichText::new("READ-ONLY")
                                                                         .size(10.5)
                                                                         .color(Color32::from_rgb(251, 146, 60))
                                                                         .strong(),
@@ -1945,20 +1945,20 @@ impl MysqlRustyApp {
                                                 ui.add_space(4.0);
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.label(
-                                                        RichText::new(format!("👤 {}", prof.user))
+                                                        RichText::new(format!("User: {}", prof.user))
                                                             .size(12.5)
                                                             .color(Color32::from_rgb(226, 232, 240)),
                                                     );
                                                     ui.label(RichText::new("•").weak());
                                                     ui.label(
-                                                        RichText::new(format!("🌐 {}:{}", prof.host, prof.port))
+                                                        RichText::new(format!("Host: {}:{}", prof.host, prof.port))
                                                             .size(12.5)
                                                             .color(Color32::from_rgb(148, 163, 184)),
                                                     );
                                                     ui.label(RichText::new("•").weak());
                                                     ui.label(
                                                         RichText::new(format!(
-                                                            "📁 DB: {}",
+                                                            "DB: {}",
                                                             if prof.default_database.is_empty() { "None" } else { &prof.default_database }
                                                         ))
                                                         .size(12.5)
@@ -1969,7 +1969,7 @@ impl MysqlRustyApp {
                                                     ui.add_space(2.0);
                                                     ui.label(
                                                         RichText::new(format!(
-                                                            "🔒 SSH Bastion: {}@{} (Port: {})",
+                                                            "SSH Bastion: {}@{} (Port: {})",
                                                             prof.ssh.ssh_user, prof.ssh.ssh_host, prof.ssh.ssh_port
                                                         ))
                                                         .size(11.5)
@@ -1982,7 +1982,7 @@ impl MysqlRustyApp {
                                                 if ui
                                                     .add(
                                                         egui::Button::new(
-                                                            RichText::new(" Connect ⚡ ")
+                                                            RichText::new(" Connect ")
                                                                 .size(13.5)
                                                                 .color(Color32::WHITE)
                                                                 .strong(),
@@ -1994,10 +1994,10 @@ impl MysqlRustyApp {
                                                 {
                                                     to_connect = Some(prof.clone());
                                                 }
-                                                if ui.button("✏ Edit").clicked() {
+                                                if ui.button("Edit").clicked() {
                                                     to_edit = Some(prof.clone());
                                                 }
-                                                if ui.button("🗑 Delete").clicked() {
+                                                if ui.button("Delete").clicked() {
                                                     to_delete = Some(prof.id.clone());
                                                 }
                                             });
@@ -2327,23 +2327,23 @@ impl MysqlRustyApp {
                 ui.selectable_value(
                     &mut self.bottom_tab,
                     BottomTab::ResultsGrid,
-                    RichText::new("📊 Results Grid").size(12.5),
+                    RichText::new("Results Grid").size(12.5),
                 );
                 ui.selectable_value(
                     &mut self.bottom_tab,
                     BottomTab::ErRelationships,
-                    RichText::new("🕸 ER Diagram").size(12.5),
+                    RichText::new("ER Diagram").size(12.5),
                 );
                 ui.selectable_value(
                     &mut self.bottom_tab,
                     BottomTab::ExecutionPlanAndLog,
-                    RichText::new("⚡ Query Stats & DDL").size(12.5),
+                    RichText::new("Query Stats & DDL").size(12.5),
                 );
                 if ui
                     .selectable_value(
                         &mut self.bottom_tab,
                         BottomTab::ServerAdmin,
-                        RichText::new("🖥 Server Monitor").size(12.5),
+                        RichText::new("Server Monitor").size(12.5),
                     )
                     .clicked()
                 {
@@ -2400,8 +2400,8 @@ impl MysqlRustyApp {
             );
 
             ui.separator();
-            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "📋 Table");
-            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Chart, "📊 Chart");
+            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "Table");
+            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Chart, "Chart");
 
             ui.separator();
             ui.label(
@@ -2443,7 +2443,7 @@ impl MysqlRustyApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button(
-                        RichText::new("🤖 AI Insights")
+                        RichText::new("AI Insights")
                             .color(Color32::from_rgb(192, 132, 252))
                             .strong(),
                     )
@@ -2695,8 +2695,8 @@ impl MysqlRustyApp {
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Chart Type:").strong());
-            ui.selectable_value(&mut tab.chart_type, ChartType::Bar, "📊 Bar");
-            ui.selectable_value(&mut tab.chart_type, ChartType::Line, "📈 Line");
+            ui.selectable_value(&mut tab.chart_type, ChartType::Bar, "Bar");
+            ui.selectable_value(&mut tab.chart_type, ChartType::Line, "Line");
 
             ui.separator();
             ui.label(RichText::new("X Axis (Label):").strong());
@@ -2815,7 +2815,7 @@ impl MysqlRustyApp {
             if is_explain && !res.rows.is_empty() {
                 ui.separator();
                 ui.heading(
-                    RichText::new("🌳 Visual Execution Plan (EXPLAIN Tree)")
+                    RichText::new("Visual Execution Plan (EXPLAIN Tree)")
                         .color(Color32::from_rgb(56, 189, 248))
                         .size(15.0),
                 );
@@ -2869,12 +2869,12 @@ impl MysqlRustyApp {
                     let (type_color, type_badge) = match access_type.to_uppercase().as_str() {
                         "ALL" => {
                             has_full_scan = true;
-                            (Color32::from_rgb(239, 68, 68), "FULL TABLE SCAN ⚠️")
+                            (Color32::from_rgb(239, 68, 68), "FULL TABLE SCAN [WARN]")
                         }
                         "INDEX" => (Color32::from_rgb(249, 115, 22), "FULL INDEX SCAN"),
                         "RANGE" => (Color32::from_rgb(234, 179, 8), "INDEX RANGE SCAN"),
                         "REF" | "EQ_REF" | "CONST" => {
-                            (Color32::from_rgb(34, 197, 94), "INDEX LOOKUP ✅")
+                            (Color32::from_rgb(34, 197, 94), "INDEX LOOKUP [OK]")
                         }
                         _ => (Color32::from_rgb(148, 163, 184), "SCAN"),
                     };
@@ -2898,7 +2898,7 @@ impl MysqlRustyApp {
                             });
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(format!("🔑 Index Used: `{key_used}`"))
+                                    RichText::new(format!("Index Used: `{key_used}`"))
                                         .small()
                                         .color(Color32::from_rgb(56, 189, 248)),
                                 );
@@ -2921,7 +2921,7 @@ impl MysqlRustyApp {
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(
-                                    "⚠️ Optimization Tip: Table performs a FULL TABLE SCAN (`ALL`). Creating an index on the join or WHERE filter columns can drastically reduce query latency.",
+                                    "[Optimization Tip] Table performs a FULL TABLE SCAN (`ALL`). Creating an index on the join or WHERE filter columns can drastically reduce query latency.",
                                 )
                                 .color(Color32::from_rgb(254, 202, 202))
                                 .small(),
@@ -2998,7 +2998,7 @@ impl MysqlRustyApp {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
-                        RichText::new("📈 Live QPS (Queries / Sec)")
+                        RichText::new("Live QPS (Queries / Sec)")
                             .strong()
                             .small()
                             .color(Color32::from_rgb(56, 189, 248)),
@@ -3016,7 +3016,7 @@ impl MysqlRustyApp {
                 });
                 ui.vertical(|ui| {
                     ui.label(
-                        RichText::new("📊 Active Connections (Threads)")
+                        RichText::new("Active Connections (Threads)")
                             .strong()
                             .small()
                             .color(Color32::from_rgb(52, 211, 153)),
@@ -3184,7 +3184,7 @@ impl MysqlRustyApp {
                         ui.label("Security Mode:");
                         ui.checkbox(
                             &mut self.editing_connection.read_only,
-                            "🔒 Read-Only (Prevent write queries)",
+                            "Read-Only (Prevent write queries)",
                         )
                         .on_hover_text("When checked, blocks all INSERT, UPDATE, DELETE, DROP, and ALTER queries.");
                         ui.end_row();
@@ -3249,7 +3249,7 @@ impl MysqlRustyApp {
                             ui.label("SSH Private Key:");
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut self.editing_connection.ssh.ssh_key_path);
-                                if ui.small_button("📁 ...").on_hover_text("Browse SSH private key file").clicked() {
+                                if ui.small_button("Browse...").on_hover_text("Browse SSH private key file").clicked() {
                                     let default_dir = dirs::home_dir().map(|h| h.join(".ssh")).unwrap_or_else(|| std::path::PathBuf::from("/"));
                                     if let Some(path) = rfd::FileDialog::new().set_directory(default_dir).pick_file() {
                                         self.editing_connection.ssh.ssh_key_path = path.to_string_lossy().to_string();
@@ -3281,7 +3281,7 @@ impl MysqlRustyApp {
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            RichText::new("✓")
+                                            RichText::new("[OK]")
                                                 .color(Color32::from_rgb(16, 185, 129))
                                                 .strong(),
                                         );
@@ -3301,7 +3301,7 @@ impl MysqlRustyApp {
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| {
                                         ui.label(
-                                            RichText::new("✕ Connection Failed")
+                                            RichText::new("[FAIL] Connection Failed")
                                                 .color(Color32::from_rgb(239, 68, 68))
                                                 .strong(),
                                         );
@@ -3510,7 +3510,7 @@ impl MysqlRustyApp {
                 }
 
                 ui.separator();
-                ui.label(RichText::new("⚡ Performance & Inline Latency").strong());
+                ui.label(RichText::new("Performance & Inline Latency").strong());
                 ui.horizontal(|ui| {
                     ui.label("Debounce Delay:");
                     ui.add(
@@ -3594,7 +3594,7 @@ impl MysqlRustyApp {
         let mut open = self.show_safety_modal;
         let mut execute_confirmed = false;
 
-        egui::Window::new("🛡️ Safety Confirmation & Production Guard")
+        egui::Window::new("Safety Confirmation & Production Guard")
             .open(&mut open)
             .resizable(false)
             .default_width(460.0)
@@ -3625,7 +3625,7 @@ impl MysqlRustyApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("⚠️ Proceed & Execute Statement")
+                                RichText::new("Proceed & Execute Statement")
                                     .color(Color32::from_rgb(239, 68, 68))
                                     .strong(),
                             )
@@ -3660,7 +3660,7 @@ impl MysqlRustyApp {
         let mut open = self.show_schema_diff_modal;
         let mut open_in_tab_sql = None;
 
-        egui::Window::new("🔄 Schema Diff & DDL Synchronization")
+        egui::Window::new("Schema Diff & DDL Synchronization")
             .open(&mut open)
             .default_width(650.0)
             .default_height(480.0)
@@ -3692,7 +3692,7 @@ impl MysqlRustyApp {
                             }
                         });
 
-                    if ui.button("⚡ Compare").clicked() {
+                    if ui.button("Compare").clicked() {
                         if let (Some(src), Some(tgt)) = (
                             self.schemas.get(&self.diff_source_db),
                             self.schemas.get(&self.diff_target_db),
@@ -3748,7 +3748,7 @@ impl MysqlRustyApp {
 
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("📋 Copy Migration Script").clicked() {
+                        if ui.button("Copy Migration Script").clicked() {
                             ui.ctx().copy_text(report.migration_sql.clone());
                             self.status_banner = "Copied migration DDL to clipboard.".to_string();
                         }
@@ -3759,7 +3759,7 @@ impl MysqlRustyApp {
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(30.0);
-                        ui.label(RichText::new("Select Source and Target databases above, then click '⚡ Compare' to generate a synchronization DDL script.").weak());
+                        ui.label(RichText::new("Select Source and Target databases above, then click 'Compare' to generate a synchronization DDL script.").weak());
                     });
                 }
             });
@@ -3785,7 +3785,7 @@ impl MysqlRustyApp {
         let table_opt = self.mock_data_target_table.clone();
         let schema_opt = self.schemas.get(&self.active_database).cloned();
 
-        egui::Window::new("🎲 Intelligent Mock Data Generator")
+        egui::Window::new("Intelligent Mock Data Generator")
             .open(&mut open)
             .default_width(520.0)
             .show(ctx, |ui| {
@@ -3831,7 +3831,7 @@ impl MysqlRustyApp {
 
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if ui.button("📋 Open in Query Tab").clicked() {
+                            if ui.button("Open in Query Tab").clicked() {
                                 let full_sql =
                                     generate_mock_data_sql(table, self.mock_data_row_count);
                                 generate_to_tab = Some((tbl_name.clone(), full_sql));
@@ -3872,7 +3872,7 @@ impl MysqlRustyApp {
         let mut open = self.show_save_snippet_modal;
         let mut save_snippet = false;
 
-        egui::Window::new("➕ Save Query as Snippet")
+        egui::Window::new("Save Query as Snippet")
             .open(&mut open)
             .default_width(380.0)
             .show(ctx, |ui| {

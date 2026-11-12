@@ -231,7 +231,7 @@ pub fn diff_schemas(source: &DatabaseSchema, target: &DatabaseSchema) -> SchemaD
     }
 
     if summary.is_empty() {
-        summary.push("✓ Schemas are identical! No migration necessary.".to_string());
+        summary.push("[OK] Schemas are identical! No migration necessary.".to_string());
         migration_sql.push_str("-- Schemas are completely synchronized.\n");
     }
 
