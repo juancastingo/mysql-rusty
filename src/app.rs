@@ -96,6 +96,8 @@ pub struct QueryTab {
     pub chart_type: ChartType,
     pub chart_x_col: usize,
     pub chart_y_col: usize,
+    pub file_path: Option<std::path::PathBuf>,
+    pub is_dirty: bool,
 }
 
 impl QueryTab {
@@ -125,6 +127,16 @@ impl QueryTab {
             chart_type: ChartType::Bar,
             chart_x_col: 0,
             chart_y_col: 1,
+            file_path: None,
+            is_dirty: false,
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        if self.is_dirty {
+            format!("{} *", self.title)
+        } else {
+            self.title.clone()
         }
     }
 }
@@ -133,7 +145,8 @@ impl QueryTab {
 enum SidebarTab {
     Schema,
     Connections,
-    SnippetsAndHistory,
+    SavedQueries,
+    History,
 }
 
 #[derive(PartialEq, Eq)]
@@ -198,10 +211,13 @@ pub struct MysqlRustyApp {
     mock_data_target_table: Option<String>,
     mock_data_row_count: usize,
 
-    // Snippets & History filter
+    // Saved Queries & History filter
     new_snippet_title: String,
+    new_snippet_desc: String,
+    new_snippet_db: String,
     show_save_snippet_modal: bool,
     snippet_search_filter: String,
+    history_search_filter: String,
 
     // Live Server Monitoring History
     qps_history: Vec<[f64; 2]>,
@@ -268,8 +284,11 @@ impl MysqlRustyApp {
             mock_data_row_count: 25,
 
             new_snippet_title: String::new(),
+            new_snippet_desc: String::new(),
+            new_snippet_db: String::new(),
             show_save_snippet_modal: false,
             snippet_search_filter: String::new(),
+            history_search_filter: String::new(),
 
             qps_history: Vec::new(),
             threads_history: Vec::new(),
@@ -334,6 +353,111 @@ impl MysqlRustyApp {
                 let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
             }
         });
+    }
+
+    fn save_active_tab_to_file(&mut self, save_as: bool) {
+        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
+            return;
+        };
+        let path = if !save_as && tab.file_path.is_some() {
+            tab.file_path.clone().unwrap()
+        } else {
+            let default_name = if !tab.title.is_empty() && !tab.title.contains(' ') {
+                if tab.title.ends_with(".sql") {
+                    tab.title.clone()
+                } else {
+                    format!("{}.sql", tab.title)
+                }
+            } else {
+                "query.sql".to_string()
+            };
+            match rfd::FileDialog::new()
+                .set_file_name(&default_name)
+                .add_filter("SQL Files", &["sql", "txt"])
+                .save_file()
+            {
+                Some(p) => p,
+                None => return,
+            }
+        };
+
+        if let Err(e) = std::fs::write(&path, &tab.sql) {
+            self.status_banner = format!("Failed to save SQL file: {e}");
+        } else {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("query.sql")
+                .to_string();
+            tab.title = filename;
+            tab.file_path = Some(path.clone());
+            tab.is_dirty = false;
+            self.status_banner = format!("Saved query to {}", path.display());
+        }
+    }
+
+    fn open_sql_file_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("SQL Files", &["sql", "txt"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let filename = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("query.sql")
+                        .to_string();
+                    let is_current_tab_empty = self
+                        .tabs
+                        .get(self.active_tab_idx)
+                        .map(|t| t.sql.trim().is_empty())
+                        .unwrap_or(false);
+
+                    if is_current_tab_empty {
+                        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                            tab.title = filename;
+                            tab.sql = content;
+                            tab.file_path = Some(path.clone());
+                            tab.is_dirty = false;
+                        }
+                    } else {
+                        let mut new_tab = QueryTab::new(&filename, content);
+                        new_tab.file_path = Some(path.clone());
+                        self.tabs.push(new_tab);
+                        self.active_tab_idx = self.tabs.len() - 1;
+                    }
+                    self.status_banner = format!("Opened file: {}", path.display());
+                }
+                Err(e) => {
+                    self.status_banner = format!("Failed to read SQL file: {e}");
+                }
+            }
+        }
+    }
+
+    fn open_save_query_modal(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab_idx) {
+            self.new_snippet_title = if !tab.title.is_empty() && !tab.title.starts_with("Query ") {
+                tab.title.clone()
+            } else {
+                tab.sql
+                    .lines()
+                    .next()
+                    .unwrap_or("My Query")
+                    .trim_start_matches("--")
+                    .trim()
+                    .chars()
+                    .take(45)
+                    .collect::<String>()
+            };
+            if self.new_snippet_title.is_empty() {
+                self.new_snippet_title = "My Query".to_string();
+            }
+            self.new_snippet_db = self.active_database.clone();
+            self.new_snippet_desc.clear();
+            self.show_save_snippet_modal = true;
+        }
     }
 
     fn execute_sql_in_current_tab(&mut self, raw_sql: String, prefix_override: Option<&str>) {
@@ -1077,6 +1201,22 @@ impl MysqlRustyApp {
                         }
                     }
 
+                    if ui
+                        .button("Save Query")
+                        .on_hover_text("Save query to library or file (Ctrl+S)")
+                        .clicked()
+                    {
+                        self.open_save_query_modal();
+                    }
+
+                    if ui
+                        .button("Open SQL...")
+                        .on_hover_text("Open .sql script from disk (Ctrl+O)")
+                        .clicked()
+                    {
+                        self.open_sql_file_dialog();
+                    }
+
                     let ai_btn = egui::Button::new(
                         RichText::new(" AI Auto ")
                             .color(Color32::from_rgb(233, 213, 255))
@@ -1162,7 +1302,7 @@ impl MysqlRustyApp {
             .size_range(220.0..=420.0)
             .show(ui, |ui| {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::Schema,
@@ -1175,7 +1315,12 @@ impl MysqlRustyApp {
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
-                        SidebarTab::SnippetsAndHistory,
+                        SidebarTab::SavedQueries,
+                        RichText::new("Saved Queries").size(12.0),
+                    );
+                    ui.selectable_value(
+                        &mut self.sidebar_tab,
+                        SidebarTab::History,
                         RichText::new("History").size(12.0),
                     );
                 });
@@ -1184,7 +1329,8 @@ impl MysqlRustyApp {
                 match self.sidebar_tab {
                     SidebarTab::Schema => self.render_schema_tree(ui),
                     SidebarTab::Connections => self.render_connections_list(ui),
-                    SidebarTab::SnippetsAndHistory => self.render_snippets_and_history(ui),
+                    SidebarTab::SavedQueries => self.render_saved_queries_panel(ui),
+                    SidebarTab::History => self.render_query_history_panel(ui),
                 }
             });
     }
@@ -1526,43 +1672,66 @@ impl MysqlRustyApp {
         }
     }
 
-    fn render_snippets_and_history(&mut self, ui: &mut Ui) {
+    fn render_saved_queries_panel(&mut self, ui: &mut Ui) {
         let mut load_sql: Option<String> = None;
+        let mut run_sql_now: Option<String> = None;
+        let mut new_tab_entry: Option<(String, String)> = None;
         let mut delete_snippet_id: Option<String> = None;
+        let mut export_snippet_sql: Option<(String, String)> = None;
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("SQL Snippets").strong());
+            ui.label(RichText::new("Saved Queries Library").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+ Save Active").clicked() {
-                    self.show_save_snippet_modal = true;
-                    if let Some(tab) = self.tabs.get(self.active_tab_idx) {
-                        self.new_snippet_title = if !tab.title.is_empty() {
-                            tab.title.clone()
-                        } else {
-                            "My Snippet".to_string()
-                        };
-                    }
+                if ui.button("+ Save Active").on_hover_text("Bookmark active query tab to library").clicked() {
+                    self.open_save_query_modal();
+                }
+                if ui.button("Open File...").on_hover_text("Open .sql file into a tab (Ctrl+O)").clicked() {
+                    self.open_sql_file_dialog();
                 }
             });
         });
+        ui.add_space(2.0);
 
         ui.add(
             egui::TextEdit::singleline(&mut self.snippet_search_filter)
-                .hint_text("Search snippets and history...")
+                .hint_text("Search queries by name, tag, database, or SQL...")
                 .desired_width(ui.available_width()),
         );
         ui.add_space(4.0);
 
         let filter = self.snippet_search_filter.to_lowercase();
+        let total_count = self.config.snippets.len();
+
+        if self.config.snippets.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("No saved queries yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("Save Current Query Tab").clicked() {
+                    self.open_save_query_modal();
+                }
+            });
+            return;
+        }
+
+        ui.label(
+            RichText::new(format!("Showing queries ({} total)", total_count))
+                .small()
+                .weak(),
+        );
+        ui.add_space(2.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for snip in &self.config.snippets {
                 if !filter.is_empty()
                     && !snip.title.to_lowercase().contains(&filter)
                     && !snip.sql.to_lowercase().contains(&filter)
+                    && !snip.description.to_lowercase().contains(&filter)
+                    && !snip.database.as_deref().unwrap_or("").to_lowercase().contains(&filter)
                 {
                     continue;
                 }
+
                 egui::Frame::new()
                     .fill(Color32::from_rgb(17, 24, 39))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(31, 41, 55)))
@@ -1570,31 +1739,125 @@ impl MysqlRustyApp {
                     .inner_margin(8.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(&snip.title).strong().small());
+                            ui.label(RichText::new(&snip.title).strong().size(13.0));
+                            if let Some(db) = &snip.database {
+                                ui.colored_label(
+                                    Color32::from_rgb(56, 189, 248),
+                                    format!("[{db}]"),
+                                );
+                            }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("Delete").on_hover_text("Delete Snippet").clicked() {
+                                if ui.small_button("Delete").on_hover_text("Delete saved query").clicked() {
                                     delete_snippet_id = Some(snip.id.clone());
                                 }
                             });
                         });
-                        ui.label(RichText::new(&snip.sql).monospace().small().weak());
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Load into Tab").clicked() {
+
+                        if !snip.description.is_empty() {
+                            ui.label(RichText::new(&snip.description).small().color(Color32::from_rgb(148, 163, 184)));
+                        }
+
+                        let preview_lines: Vec<&str> = snip.sql.lines().take(3).collect();
+                        let preview = preview_lines.join("\n");
+                        ui.label(RichText::new(preview).monospace().small().weak());
+
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.small_button("Open Tab").on_hover_text("Open this query in a new editor tab").clicked() {
+                                new_tab_entry = Some((snip.title.clone(), snip.sql.clone()));
+                            }
+                            if ui.small_button("Run Now").on_hover_text("Load and execute immediately").clicked() {
+                                run_sql_now = Some(snip.sql.clone());
+                            }
+                            if ui.small_button("Paste").on_hover_text("Paste into active tab").clicked() {
                                 load_sql = Some(snip.sql.clone());
                             }
-                            if ui.small_button("Open New Tab").clicked() {
-                                self.tabs.push(QueryTab::new(&snip.title, &snip.sql));
-                                self.active_tab_idx = self.tabs.len() - 1;
+                            if ui.small_button("Copy").on_hover_text("Copy SQL to clipboard").clicked() {
+                                ui.ctx().copy_text(snip.sql.clone());
+                                self.status_banner = "Copied SQL to clipboard.".to_string();
+                            }
+                            if ui.small_button("Export .sql").on_hover_text("Save query as .sql file on disk").clicked() {
+                                export_snippet_sql = Some((snip.title.clone(), snip.sql.clone()));
                             }
                         });
                     });
                 ui.add_space(4.0);
             }
+        });
 
-            ui.separator();
-            ui.label(RichText::new("Recent Query History").strong());
-            ui.add_space(2.0);
+        if let Some(id) = delete_snippet_id {
+            self.config.snippets.retain(|s| s.id != id);
+            let _ = self.config.save();
+            self.status_banner = "Deleted saved query.".to_string();
+        }
 
+        if let Some((title, sql)) = new_tab_entry {
+            self.tabs.push(QueryTab::new(title, sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        }
+
+        if let Some(sql) = load_sql {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                tab.sql = sql;
+                tab.is_dirty = true;
+            }
+        }
+
+        if let Some(sql) = run_sql_now {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                tab.sql = sql.clone();
+            }
+            self.execute_sql_in_current_tab(sql, None);
+        }
+
+        if let Some((title, sql)) = export_snippet_sql {
+            let filename = format!("{}.sql", title.replace(' ', "_").replace('/', "_"));
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(&filename)
+                .add_filter("SQL Files", &["sql"])
+                .save_file()
+            {
+                let _ = std::fs::write(&path, sql);
+                self.status_banner = format!("Exported query to {}", path.display());
+            }
+        }
+    }
+
+    fn render_query_history_panel(&mut self, ui: &mut Ui) {
+        let mut load_sql: Option<String> = None;
+        let mut new_tab_sql: Option<String> = None;
+        let mut clear_all_history = false;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Execution History").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.config.history.is_empty() {
+                    if ui.small_button("Clear History").clicked() {
+                        clear_all_history = true;
+                    }
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        ui.add(
+            egui::TextEdit::singleline(&mut self.history_search_filter)
+                .hint_text("Search execution history by SQL or database...")
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(4.0);
+
+        let filter = self.history_search_filter.to_lowercase();
+
+        if self.config.history.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("No executed queries recorded yet.").weak());
+            });
+            return;
+        }
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
             for entry in self.config.history.iter().rev() {
                 if !filter.is_empty()
                     && !entry.sql.to_lowercase().contains(&filter)
@@ -1610,33 +1873,66 @@ impl MysqlRustyApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&entry.timestamp).small().weak());
+                            if !entry.database.is_empty() {
+                                ui.colored_label(
+                                    Color32::from_rgb(56, 189, 248),
+                                    format!("[{}]", entry.database),
+                                );
+                            }
                             ui.label(
                                 RichText::new(format!(
                                     "{} rows • {} ms",
                                     entry.row_count, entry.duration_ms
                                 ))
                                 .small()
-                                .color(Color32::from_rgb(56, 189, 248)),
+                                .color(Color32::from_rgb(52, 211, 153)),
                             );
                         });
                         ui.label(RichText::new(&entry.sql).monospace().small());
-                        if ui.small_button("Reuse SQL").clicked() {
-                            load_sql = Some(entry.sql.clone());
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Reuse SQL").clicked() {
+                                load_sql = Some(entry.sql.clone());
+                            }
+                            if ui.small_button("Open in Tab").clicked() {
+                                new_tab_sql = Some(entry.sql.clone());
+                            }
+                            if ui.small_button("Save to Library").clicked() {
+                                self.new_snippet_title = entry
+                                    .sql
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("Historic Query")
+                                    .trim()
+                                    .chars()
+                                    .take(40)
+                                    .collect();
+                                self.new_snippet_db = entry.database.clone();
+                                self.new_snippet_desc = format!("Executed on {}", entry.timestamp);
+                                self.show_save_snippet_modal = true;
+                            }
+                        });
                     });
                 ui.add_space(4.0);
             }
         });
 
-        if let Some(id) = delete_snippet_id {
-            self.config.snippets.retain(|s| s.id != id);
+        if clear_all_history {
+            self.config.history.clear();
             let _ = self.config.save();
+            self.status_banner = "Query history cleared.".to_string();
         }
 
         if let Some(sql) = load_sql {
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 tab.sql = sql;
+                tab.is_dirty = true;
             }
+        }
+
+        if let Some(sql) = new_tab_sql {
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Query {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
         }
     }
 
@@ -2032,6 +2328,15 @@ impl MysqlRustyApp {
             return;
         }
 
+        let trigger_save = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S) || i.consume_key(Modifiers::CTRL, Key::S));
+        let trigger_open = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O) || i.consume_key(Modifiers::CTRL, Key::O));
+        if trigger_save {
+            self.save_active_tab_to_file(false);
+        }
+        if trigger_open {
+            self.open_sql_file_dialog();
+        }
+
         egui::CentralPanel::default().show(ui, |ui| {
             // Query Tabs Bar
             ui.horizontal(|ui| {
@@ -2039,7 +2344,7 @@ impl MysqlRustyApp {
                 let mut close_idx = None;
                 for idx in 0..self.tabs.len() {
                     let is_active = idx == self.active_tab_idx;
-                    let title = self.tabs[idx].title.clone();
+                    let title = self.tabs[idx].display_title();
 
                     let tab_bg = if is_active {
                         Color32::from_rgb(13, 18, 28)
@@ -2095,6 +2400,22 @@ impl MysqlRustyApp {
                     self.tabs
                         .push(QueryTab::new(format!("Query {n}"), "SELECT * FROM users LIMIT 50;"));
                     self.active_tab_idx = self.tabs.len() - 1;
+                }
+
+                ui.add_space(4.0);
+                if ui
+                    .small_button("Save (Ctrl+S)")
+                    .on_hover_text("Save query to file or bookmark in library")
+                    .clicked()
+                {
+                    self.save_active_tab_to_file(false);
+                }
+                if ui
+                    .small_button("Open (Ctrl+O)")
+                    .on_hover_text("Open .sql file from disk into an editor tab")
+                    .clicked()
+                {
+                    self.open_sql_file_dialog();
                 }
             });
             ui.separator();
@@ -2217,6 +2538,7 @@ impl MysqlRustyApp {
                 }
 
                 if editor_resp.changed() {
+                    tab.is_dirty = true;
                     tab.selected_sql = None;
                     tab.last_edit_instant = Some(std::time::Instant::now());
                     let (prefix, suggestions) =
@@ -3870,30 +4192,86 @@ impl MysqlRustyApp {
             return;
         }
         let mut open = self.show_save_snippet_modal;
-        let mut save_snippet = false;
+        let mut save_to_library = false;
+        let mut save_as_file = false;
 
-        egui::Window::new("Save Query as Snippet")
+        egui::Window::new("Save Query")
             .open(&mut open)
-            .default_width(380.0)
+            .default_width(480.0)
             .show(ctx, |ui| {
-                ui.label("Snippet Title / Name:");
+                ui.label(RichText::new("Query Name / Title:").strong());
                 ui.add(
                     egui::TextEdit::singleline(&mut self.new_snippet_title)
+                        .hint_text("e.g. Monthly Revenue by Category")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Database Tag:");
+                    let current_db = if self.new_snippet_db.is_empty() {
+                        "Any / None"
+                    } else {
+                        &self.new_snippet_db
+                    };
+                    egui::ComboBox::from_id_salt("save_query_db_combo")
+                        .selected_text(current_db)
+                        .width(180.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(self.new_snippet_db.is_empty(), "Any / None").clicked() {
+                                self.new_snippet_db.clear();
+                            }
+                            for db in &self.databases {
+                                let is_sel = &self.new_snippet_db == db;
+                                if ui.selectable_label(is_sel, db).clicked() {
+                                    self.new_snippet_db = db.clone();
+                                }
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+
+                ui.label("Description / Notes (Optional):");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.new_snippet_desc)
+                        .desired_rows(2)
+                        .hint_text("Add context, filters, or notes for this query...")
                         .desired_width(ui.available_width()),
                 );
 
+                if let Some(tab) = self.tabs.get(self.active_tab_idx) {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("SQL Preview:").strong().small());
+                    egui::ScrollArea::vertical()
+                        .max_height(100.0)
+                        .show(ui, |ui| {
+                            ui.code(&tab.sql);
+                        });
+                }
+
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save Snippet").clicked() {
-                        save_snippet = true;
+                    let save_btn = egui::Button::new(
+                        RichText::new("Save to Library")
+                            .color(Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(Color32::from_rgb(14, 116, 144));
+                    if ui.add(save_btn).clicked() {
+                        save_to_library = true;
                     }
+
+                    if ui.button("Save as .sql File...").on_hover_text("Save query as a standalone .sql file on disk").clicked() {
+                        save_as_file = true;
+                    }
+
                     if ui.button("Cancel").clicked() {
                         self.show_save_snippet_modal = false;
                     }
                 });
             });
 
-        if save_snippet {
+        if save_to_library {
             self.show_save_snippet_modal = false;
             if let Some(tab) = self.tabs.get(self.active_tab_idx) {
                 let title = if self.new_snippet_title.trim().is_empty() {
@@ -3901,14 +4279,21 @@ impl MysqlRustyApp {
                 } else {
                     self.new_snippet_title.trim().to_string()
                 };
+                let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
                 self.config.snippets.push(SavedSnippet {
                     id: Uuid::new_v4().to_string(),
                     title,
                     sql: tab.sql.clone(),
+                    database: if self.new_snippet_db.trim().is_empty() { None } else { Some(self.new_snippet_db.trim().to_string()) },
+                    description: self.new_snippet_desc.trim().to_string(),
+                    created_at: now_str,
                 });
                 let _ = self.config.save();
-                self.status_banner = "Saved SQL snippet successfully.".to_string();
+                self.status_banner = "Saved query to app library successfully.".to_string();
             }
+        } else if save_as_file {
+            self.show_save_snippet_modal = false;
+            self.save_active_tab_to_file(true);
         } else if !open {
             self.show_save_snippet_modal = false;
         }

@@ -419,4 +419,30 @@ mod tests {
         assert!(md.contains("| 1 | active |"));
         assert!(md.contains("| 2 | NULL |"));
     }
+
+    #[test]
+    fn test_saved_query_model_and_tab_dirty_title() {
+        use crate::app::QueryTab;
+        use crate::config::SavedSnippet;
+
+        let mut tab = QueryTab::new("My Analytics", "SELECT COUNT(*) FROM orders;");
+        assert_eq!(tab.display_title(), "My Analytics");
+        assert!(!tab.is_dirty);
+
+        tab.is_dirty = true;
+        assert_eq!(tab.display_title(), "My Analytics *");
+
+        let snip = SavedSnippet {
+            id: "test-uuid-1".to_string(),
+            title: "Orders by Month".to_string(),
+            sql: "SELECT MONTH(created_at), COUNT(*) FROM orders GROUP BY 1;".to_string(),
+            database: Some("ecommerce".to_string()),
+            description: "Aggregates revenue by month".to_string(),
+            created_at: "2026-11-12".to_string(),
+        };
+
+        assert_eq!(snip.title, "Orders by Month");
+        assert_eq!(snip.database.as_deref(), Some("ecommerce"));
+        assert_eq!(snip.description, "Aggregates revenue by month");
+    }
 }

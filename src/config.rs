@@ -238,7 +238,15 @@ pub struct SavedSnippet {
     pub id: String,
     pub title: String,
     pub sql: String,
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub created_at: String,
 }
+
+pub type SavedQuery = SavedSnippet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -262,11 +270,17 @@ impl Default for AppConfig {
                     id: Uuid::new_v4().to_string(),
                     title: "Top Customers by Revenue (JOIN + GROUP BY)".to_string(),
                     sql: "SELECT \n    u.id,\n    u.full_name,\n    u.email,\n    u.country,\n    COUNT(o.id) AS total_orders,\n    ROUND(SUM(o.total_amount), 2) AS lifetime_value\nFROM users u\nJOIN orders o ON o.user_id = u.id\nWHERE o.status = 'paid'\nGROUP BY u.id, u.full_name, u.email, u.country\nORDER BY lifetime_value DESC\nLIMIT 25;".to_string(),
+                    database: None,
+                    description: "Calculates customer lifetime orders and total spend".to_string(),
+                    created_at: "2026-11-12".to_string(),
                 },
                 SavedSnippet {
                     id: Uuid::new_v4().to_string(),
                     title: "Inspect Table & Index Sizes".to_string(),
                     sql: "SELECT \n    table_name AS `Table`,\n    engine AS `Engine`,\n    table_rows AS `Approx Rows`,\n    ROUND((data_length + index_length) / 1024 / 1024, 2) AS `Size (MB)`\nFROM information_schema.TABLES\nWHERE table_schema = DATABASE()\nORDER BY (data_length + index_length) DESC;".to_string(),
+                    database: None,
+                    description: "Queries information_schema for physical table disk usage in MB".to_string(),
+                    created_at: "2026-11-12".to_string(),
                 },
             ],
         }
