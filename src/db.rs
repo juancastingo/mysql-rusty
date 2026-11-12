@@ -291,14 +291,33 @@ impl ActiveSession {
         let mut ssh_guard = None;
 
         if profile.ssh.enabled && !profile.ssh.ssh_host.trim().is_empty() {
-            let local_port = profile.ssh.local_bind_port;
-            let forward_spec = format!("{}:{}:{}", local_port, profile.host, profile.port);
+            // Support "hostname:port" format in ssh_host
+            let (ssh_host, ssh_port) = if let Some((h, p)) = profile.ssh.ssh_host.trim().split_once(':') {
+                (h.trim().to_string(), p.trim().parse::<u16>().unwrap_or(profile.ssh.ssh_port))
+            } else {
+                (profile.ssh.ssh_host.trim().to_string(), profile.ssh.ssh_port)
+            };
+
+            // Find an open local port (prefer local_bind_port if available, otherwise bind to free ephemeral port)
+            let local_port = {
+                let preferred = profile.ssh.local_bind_port;
+                if preferred > 0 && std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+                    preferred
+                } else {
+                    std::net::TcpListener::bind("127.0.0.1:0")
+                        .and_then(|l| l.local_addr())
+                        .map(|a| a.port())
+                        .unwrap_or(if preferred > 0 { preferred } else { 13306 })
+                }
+            };
+
+            let forward_spec = format!("{}:{}:{}", local_port, profile.host.trim(), profile.port);
             let mut cmd = Command::new("ssh");
             cmd.arg("-N")
                 .arg("-L")
                 .arg(&forward_spec)
                 .arg("-p")
-                .arg(profile.ssh.ssh_port.to_string())
+                .arg(ssh_port.to_string())
                 .arg("-o")
                 .arg("ExitOnForwardFailure=yes")
                 .arg("-o")
@@ -310,21 +329,41 @@ impl ActiveSession {
             }
 
             let target = if profile.ssh.ssh_user.trim().is_empty() {
-                profile.ssh.ssh_host.clone()
+                ssh_host
             } else {
-                format!("{}@{}", profile.ssh.ssh_user, profile.ssh.ssh_host)
+                format!("{}@{}", profile.ssh.ssh_user.trim(), ssh_host)
             };
             cmd.arg(target)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped());
 
-            let child = cmd
+            let mut child = cmd
                 .spawn()
                 .context("Failed to start SSH tunnel subprocess (`ssh`)")?;
 
             // Brief wait for tunnel bind
-            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+            // Check if ssh process exited prematurely
+            if let Ok(Some(exit_status)) = child.try_wait() {
+                let mut err_msg = String::new();
+                if let Some(mut err_pipe) = child.stderr.take() {
+                    use tokio::io::AsyncReadExt;
+                    let _ = err_pipe.read_to_string(&mut err_msg).await;
+                }
+                let clean_err = err_msg.trim();
+                return Err(anyhow!(
+                    "SSH tunnel failed (exit code: {}):\n{}",
+                    exit_status,
+                    if clean_err.is_empty() {
+                        "SSH process closed connection immediately. Check username (e.g. 'ec2-user' vs 'ubuntu'), private key permissions, and security groups."
+                    } else {
+                        clean_err
+                    }
+                ));
+            }
+
             connect_host = "127.0.0.1".to_string();
             connect_port = local_port;
             ssh_guard = Some(Arc::new(Mutex::new(SshTunnelGuard { child })));

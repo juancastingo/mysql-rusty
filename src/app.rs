@@ -47,6 +47,7 @@ pub enum AsyncEvent {
         processes: Result<QueryResult, String>,
     },
     QueryKilled(Result<u64, String>),
+    TestConnectionResult(Result<String, String>),
 }
 
 #[derive(Clone)]
@@ -148,6 +149,9 @@ pub struct MysqlRustyApp {
     is_chat_loading: bool,
     is_inline_ai_loading: bool,
 
+    testing_connection: bool,
+    test_connection_result: Option<Result<String, String>>,
+
     status_banner: String,
 }
 
@@ -191,6 +195,8 @@ impl MysqlRustyApp {
             chat_input: String::new(),
             is_chat_loading: false,
             is_inline_ai_loading: false,
+            testing_connection: false,
+            test_connection_result: None,
             status_banner: "Ready — Select a connection to begin.".to_string(),
         }
     }
@@ -617,6 +623,10 @@ impl MysqlRustyApp {
                         }
                         Err(e) => self.status_banner = format!("Failed to kill query: {e}"),
                     }
+                }
+                AsyncEvent::TestConnectionResult(res) => {
+                    self.testing_connection = false;
+                    self.test_connection_result = Some(res);
                 }
             }
         }
@@ -2351,11 +2361,12 @@ impl MysqlRustyApp {
         }
         let mut open = self.show_connection_modal;
         let mut save_and_connect = false;
+        let mut save_only = false;
 
         egui::Window::new("MySQL / MariaDB Connection Profile")
             .open(&mut open)
             .resizable(false)
-            .default_width(420.0)
+            .default_width(460.0)
             .show(ctx, |ui| {
                 egui::Grid::new("conn_form_grid")
                     .num_columns(2)
@@ -2446,22 +2457,163 @@ impl MysqlRustyApp {
                             ui.end_row();
 
                             ui.label("SSH Private Key:");
-                            ui.text_edit_singleline(&mut self.editing_connection.ssh.ssh_key_path);
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut self.editing_connection.ssh.ssh_key_path);
+                                if ui.small_button("📁 ...").on_hover_text("Browse SSH private key file").clicked() {
+                                    let default_dir = dirs::home_dir().map(|h| h.join(".ssh")).unwrap_or_else(|| std::path::PathBuf::from("/"));
+                                    if let Some(path) = rfd::FileDialog::new().set_directory(default_dir).pick_file() {
+                                        self.editing_connection.ssh.ssh_key_path = path.to_string_lossy().to_string();
+                                    }
+                                }
+                            });
                             ui.end_row();
                         });
                 }
 
+                // Test Connection Result feedback
+                if self.testing_connection {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Testing connection (handshake, SSH tunnel & auth)...")
+                                .color(Color32::from_rgb(56, 189, 248)),
+                        );
+                    });
+                } else if let Some(res) = &self.test_connection_result {
+                    ui.add_space(8.0);
+                    match res {
+                        Ok(msg) => {
+                            egui::Frame::group(ui.style())
+                                .fill(Color32::from_rgb(6, 78, 59))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(16, 185, 129)))
+                                .inner_margin(8.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new("✓")
+                                                .color(Color32::from_rgb(16, 185, 129))
+                                                .strong(),
+                                        );
+                                        ui.label(
+                                            RichText::new(msg)
+                                                .color(Color32::from_rgb(209, 250, 229))
+                                                .small(),
+                                        );
+                                    });
+                                });
+                        }
+                        Err(err) => {
+                            egui::Frame::group(ui.style())
+                                .fill(Color32::from_rgb(69, 10, 10))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                                .inner_margin(8.0)
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            RichText::new("✕ Connection Failed")
+                                                .color(Color32::from_rgb(239, 68, 68))
+                                                .strong(),
+                                        );
+                                        ui.label(
+                                            RichText::new(err)
+                                                .color(Color32::from_rgb(254, 202, 202))
+                                                .small(),
+                                        );
+                                        if err.contains("Permission denied") || err.contains("SSH") {
+                                            ui.add_space(2.0);
+                                            ui.label(
+                                                RichText::new("Tip: For AWS EC2 / Amazon Linux bastion, SSH User is usually 'ec2-user' (not 'ubuntu'). Verify key file path and permissions.")
+                                                    .color(Color32::from_rgb(253, 224, 71))
+                                                    .small(),
+                                            );
+                                        }
+                                    });
+                                });
+                        }
+                    }
+                }
+
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Save & Connect").clicked() {
-                        save_and_connect = true;
+                    if ui
+                        .add_enabled(!self.testing_connection, egui::Button::new("Test Connection"))
+                        .on_hover_text("Test network, SSH tunnel, credentials and MySQL ping")
+                        .clicked()
+                    {
+                        self.testing_connection = true;
+                        self.test_connection_result = None;
+                        let mut test_prof = self.editing_connection.clone();
+                        if let Some((h, p)) = test_prof
+                            .ssh
+                            .ssh_host
+                            .trim()
+                            .split_once(':')
+                            .map(|(h, p)| (h.trim().to_string(), p.trim().to_string()))
+                        {
+                            test_prof.ssh.ssh_host = h;
+                            if let Ok(port) = p.parse::<u16>() {
+                                test_prof.ssh.ssh_port = port;
+                            }
+                        }
+                        let tx = self.tx.clone();
+                        self.rt.spawn(async move {
+                            let res = match ActiveSession::connect(test_prof).await {
+                                Ok(session) => {
+                                    match session.execute_query("", "SELECT VERSION(), CURRENT_USER();", None).await {
+                                        Ok(qr) => {
+                                            let v = qr.rows.first().and_then(|r| r.first()).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
+                                            let u = qr.rows.first().and_then(|r| r.get(1)).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
+                                            Ok(format!("Connection successful!\n• MySQL Version: {v}\n• Authenticated User: {u}"))
+                                        }
+                                        Err(_) => Ok("Connection successful (handshake & auth succeeded)!".to_string()),
+                                    }
+                                }
+                                Err(e) => Err(format!("{e:#}")),
+                            };
+                            let _ = tx.send(AsyncEvent::TestConnectionResult(res));
+                        });
                     }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(
+                                RichText::new("Save & Connect")
+                                    .color(Color32::from_rgb(56, 189, 248))
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            save_and_connect = true;
+                        }
+                        if ui.button("Save").clicked() {
+                            save_only = true;
+                        }
+                    });
                 });
             });
 
         self.show_connection_modal = open;
-        if save_and_connect {
-            let prof = self.editing_connection.clone();
+        if !open {
+            self.test_connection_result = None;
+            self.testing_connection = false;
+        }
+
+        if save_and_connect || save_only {
+            let mut prof = self.editing_connection.clone();
+            if let Some((h, p)) = prof
+                .ssh
+                .ssh_host
+                .trim()
+                .split_once(':')
+                .map(|(h, p)| (h.trim().to_string(), p.trim().to_string()))
+            {
+                prof.ssh.ssh_host = h;
+                if let Ok(port) = p.parse::<u16>() {
+                    prof.ssh.ssh_port = port;
+                }
+            }
+
             if let Some(existing) = self
                 .config
                 .connections
@@ -2474,7 +2626,11 @@ impl MysqlRustyApp {
             }
             let _ = self.config.save();
             self.show_connection_modal = false;
-            self.connect_to_profile(prof);
+            self.test_connection_result = None;
+
+            if save_and_connect {
+                self.connect_to_profile(prof);
+            }
         }
     }
 
