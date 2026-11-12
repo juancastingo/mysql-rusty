@@ -44,6 +44,37 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Environment {
+    Development,
+    Staging,
+    Production,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self::Development
+    }
+}
+
+impl Environment {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Development => "Dev",
+            Self::Staging => "Staging",
+            Self::Production => "Production",
+        }
+    }
+
+    pub fn color_rgb(&self) -> (u8, u8, u8) {
+        match self {
+            Self::Development => (34, 197, 94),  // Emerald green
+            Self::Staging => (234, 179, 8),     // Amber yellow
+            Self::Production => (239, 68, 68),  // Bright red
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: String,
@@ -59,6 +90,10 @@ pub struct ConnectionProfile {
     pub ssl_accept_invalid_certs: bool,
     pub ssh: SshTunnelConfig,
     pub is_demo: bool,
+    #[serde(default)]
+    pub environment: Environment,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl Default for ConnectionProfile {
@@ -76,6 +111,8 @@ impl Default for ConnectionProfile {
             ssl_accept_invalid_certs: true,
             ssh: SshTunnelConfig::default(),
             is_demo: false,
+            environment: Environment::Development,
+            read_only: false,
         }
     }
 }
@@ -95,6 +132,8 @@ impl ConnectionProfile {
             ssl_accept_invalid_certs: true,
             ssh: SshTunnelConfig::default(),
             is_demo: true,
+            environment: Environment::Development,
+            read_only: false,
         }
     }
 }

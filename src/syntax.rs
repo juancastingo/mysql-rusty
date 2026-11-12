@@ -367,3 +367,59 @@ pub fn extract_statement_at_cursor(sql: &str, cursor_char_idx: usize) -> (String
     (first.text.clone(), (first.trimmed_start, first.trimmed_end))
 }
 
+/// Checks if an SQL statement is potentially destructive (DROP, TRUNCATE, or UPDATE/DELETE without a WHERE clause).
+pub fn is_potentially_destructive(sql: &str) -> Option<&'static str> {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let upper = trimmed.to_uppercase();
+
+    if upper.starts_with("DROP TABLE")
+        || upper.starts_with("DROP DATABASE")
+        || upper.starts_with("DROP SCHEMA")
+    {
+        return Some("DROP statement permanently removes schemas or tables.");
+    }
+
+    if upper.starts_with("TRUNCATE") {
+        return Some("TRUNCATE statement empties the entire table immediately.");
+    }
+
+    if upper.starts_with("ALTER TABLE") && upper.contains(" DROP ") {
+        return Some("ALTER TABLE with DROP column/constraint deletes schema structures permanently.");
+    }
+
+    if upper.starts_with("UPDATE ") || upper.starts_with("UPDATE\n") || upper.starts_with("UPDATE\t") {
+        let has_where = upper.split_whitespace().any(|word| word == "WHERE" || word.starts_with("WHERE;"));
+        if !has_where {
+            return Some("UPDATE without a WHERE clause will overwrite EVERY single row in the table!");
+        }
+    }
+
+    if upper.starts_with("DELETE ") || upper.starts_with("DELETE\n") || upper.starts_with("DELETE\t") {
+        let has_where = upper.split_whitespace().any(|word| word == "WHERE" || word.starts_with("WHERE;"));
+        if !has_where {
+            return Some("DELETE without a WHERE clause will delete EVERY single row in the table!");
+        }
+    }
+
+    None
+}
+
+/// Checks if an SQL statement is a write/mutation query.
+pub fn is_write_query(sql: &str) -> bool {
+    let trimmed = sql.trim();
+    let upper = trimmed.to_uppercase();
+    upper.starts_with("INSERT ")
+        || upper.starts_with("UPDATE ")
+        || upper.starts_with("DELETE ")
+        || upper.starts_with("DROP ")
+        || upper.starts_with("ALTER ")
+        || upper.starts_with("TRUNCATE ")
+        || upper.starts_with("CREATE ")
+        || upper.starts_with("REPLACE ")
+}
+
+

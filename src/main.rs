@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod er_diagram;
 mod export;
+mod schema_diff;
 mod syntax;
 mod table_designer;
 
