@@ -29,4 +29,4 @@ dirs = "6.0"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 rfd = "0.15"
 keyring = "4.2.0"
-egui_plot = "0.37.0"
+egui_plot = "0.38.0"

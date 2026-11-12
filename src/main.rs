@@ -252,4 +252,171 @@ mod tests {
         let _ = get_secret("test_key");
         let _ = delete_secret("test_key");
     }
+
+    #[test]
+    fn test_safety_guard_destructive_detection() {
+        use crate::syntax::{is_potentially_destructive, is_write_query};
+
+        assert!(is_potentially_destructive("DROP TABLE users;").is_some());
+        assert!(is_potentially_destructive("TRUNCATE TABLE logs;").is_some());
+        assert!(is_potentially_destructive("UPDATE users SET active = 0;").is_some());
+        assert!(is_potentially_destructive("DELETE FROM sessions;").is_some());
+        assert!(is_potentially_destructive("ALTER TABLE orders DROP COLUMN notes;").is_some());
+
+        // Safe with WHERE
+        assert!(is_potentially_destructive("UPDATE users SET active = 0 WHERE id = 42;").is_none());
+        assert!(is_potentially_destructive("DELETE FROM sessions WHERE expired = 1;").is_none());
+        assert!(is_potentially_destructive("SELECT * FROM users;").is_none());
+
+        // Write query classification
+        assert!(is_write_query("INSERT INTO users VALUES (1, 'Alex');"));
+        assert!(is_write_query("UPDATE users SET name = 'Bob' WHERE id = 1;"));
+        assert!(is_write_query("DELETE FROM users WHERE id = 1;"));
+        assert!(is_write_query("DROP TABLE obsolete;"));
+        assert!(!is_write_query("SELECT * FROM users;"));
+        assert!(!is_write_query("SHOW PROCESSLIST;"));
+    }
+
+    #[test]
+    fn test_schema_diff_and_sync() {
+        use crate::db::{ColumnInfo, DatabaseSchema, TableSchema};
+        use crate::schema_diff::diff_schemas;
+
+        let col_id = ColumnInfo {
+            name: "id".to_string(),
+            data_type: "INT".to_string(),
+            is_nullable: false,
+            is_primary_key: true,
+            default_value: None,
+            extra: "auto_increment".to_string(),
+        };
+
+        let col_name = ColumnInfo {
+            name: "name".to_string(),
+            data_type: "VARCHAR(255)".to_string(),
+            is_nullable: false,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        };
+
+        let col_email = ColumnInfo {
+            name: "email".to_string(),
+            data_type: "VARCHAR(191)".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        };
+
+        let source = DatabaseSchema {
+            name: "prod_db".to_string(),
+            tables: vec![
+                TableSchema {
+                    name: "users".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 10,
+                    columns: vec![col_id.clone(), col_name.clone(), col_email.clone()],
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+                TableSchema {
+                    name: "audit_logs".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 0,
+                    columns: vec![col_id.clone()],
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+            ],
+        };
+
+        let target = DatabaseSchema {
+            name: "dev_db".to_string(),
+            tables: vec![TableSchema {
+                name: "users".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                engine: "InnoDB".to_string(),
+                approx_rows: 5,
+                columns: vec![col_id.clone(), col_name.clone()], // missing email
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        };
+
+        let report = diff_schemas(&source, &target);
+        assert!(report.migration_sql.contains("CREATE TABLE IF NOT EXISTS `audit_logs`"));
+        assert!(report.migration_sql.contains("ALTER TABLE `users`"));
+        assert!(report.migration_sql.contains("ADD COLUMN `email` VARCHAR(191) NULL"));
+        assert_eq!(report.summary.len(), 2);
+    }
+
+    #[test]
+    fn test_mock_data_and_markdown_export() {
+        use crate::db::{CellValue, ColumnInfo, QueryResult, TableSchema};
+        use crate::export::{generate_mock_data_sql, to_markdown_table};
+
+        let table = TableSchema {
+            name: "customers".to_string(),
+            table_type: "BASE TABLE".to_string(),
+            engine: "InnoDB".to_string(),
+            approx_rows: 0,
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "INT".to_string(),
+                    is_nullable: false,
+                    is_primary_key: true,
+                    default_value: None,
+                    extra: "auto_increment".to_string(),
+                },
+                ColumnInfo {
+                    name: "full_name".to_string(),
+                    data_type: "VARCHAR(255)".to_string(),
+                    is_nullable: false,
+                    is_primary_key: false,
+                    default_value: None,
+                    extra: String::new(),
+                },
+                ColumnInfo {
+                    name: "email".to_string(),
+                    data_type: "VARCHAR(191)".to_string(),
+                    is_nullable: false,
+                    is_primary_key: false,
+                    default_value: None,
+                    extra: String::new(),
+                },
+            ],
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+        };
+
+        let sql = generate_mock_data_sql(&table, 5);
+        assert!(sql.contains("INSERT INTO `customers` (`full_name`, `email`) VALUES"));
+        assert!(sql.contains("@example.com") || sql.contains("@testmail.org"));
+
+        let q_res = QueryResult {
+            sql: "SELECT 1".to_string(),
+            database: "test".to_string(),
+            columns: vec!["id".to_string(), "status".to_string()],
+            column_types: vec!["INT".to_string(), "VARCHAR".to_string()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("active".to_string())],
+                vec![CellValue::Integer(2), CellValue::Null],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "OK".to_string(),
+        };
+
+        let md = to_markdown_table(&q_res);
+        assert!(md.contains("| id | status |"));
+        assert!(md.contains("| 1 | active |"));
+        assert!(md.contains("| 2 | NULL |"));
+    }
 }

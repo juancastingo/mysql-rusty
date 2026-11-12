@@ -337,13 +337,13 @@ impl MysqlRustyApp {
     }
 
     fn execute_sql_in_current_tab(&mut self, raw_sql: String, prefix_override: Option<&str>) {
-        let Some(session) = self.active_session.clone() else {
+        if self.active_session.is_none() {
             self.status_banner = "Not connected to any database session.".to_string();
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 tab.last_error = Some("Not connected to any database. Please click 'Connect' on a profile in the Servers tab.".to_string());
             }
             return;
-        };
+        }
         let sql = match prefix_override {
             Some(prefix) => format!("{prefix} {}", raw_sql.trim()),
             None => raw_sql.trim().to_string(),
@@ -722,7 +722,40 @@ impl MysqlRustyApp {
                 AsyncEvent::ServerAdminLoaded { status, processes } => {
                     self.is_server_admin_loading = false;
                     match status {
-                        Ok(metrics) => self.server_status_metrics = metrics,
+                        Ok(metrics) => {
+                            let now = std::time::Instant::now();
+                            let current_questions = metrics
+                                .get("Questions")
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            let current_threads = metrics
+                                .get("Threads_connected")
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(1.0);
+
+                            if let (Some(last_time), Some(last_q)) =
+                                (self.last_poll_instant, self.last_questions_count)
+                            {
+                                let elapsed = now.duration_since(last_time).as_secs_f64();
+                                if elapsed > 0.05 {
+                                    let delta_q = current_questions.saturating_sub(last_q) as f64;
+                                    let qps = delta_q / elapsed;
+                                    let idx = self.qps_history.len() as f64;
+                                    self.qps_history.push([idx, qps]);
+                                    self.threads_history.push([idx, current_threads]);
+                                    if self.qps_history.len() > 60 {
+                                        self.qps_history.remove(0);
+                                        self.threads_history.remove(0);
+                                    }
+                                }
+                            } else {
+                                self.qps_history.push([0.0, 0.0]);
+                                self.threads_history.push([0.0, current_threads]);
+                            }
+                            self.last_poll_instant = Some(now);
+                            self.last_questions_count = Some(current_questions);
+                            self.server_status_metrics = metrics;
+                        }
                         Err(e) => self.status_banner = format!("Server status error: {e}"),
                     }
                     match processes {
@@ -839,6 +872,10 @@ impl eframe::App for MysqlRustyApp {
         self.render_connection_modal(&ctx);
         self.render_ai_settings_modal(&ctx);
         self.render_table_designer_modal(&ctx);
+        self.render_safety_modal(&ctx);
+        self.render_schema_diff_modal(&ctx);
+        self.render_mock_data_modal(&ctx);
+        self.render_save_snippet_modal(&ctx);
     }
 }
 
@@ -1327,6 +1364,14 @@ impl MysqlRustyApp {
                                     }
                                 }
                             }
+                            if ui
+                                .small_button("🎲 Mock Data")
+                                .on_hover_text("Generate realistic random seed data for this table")
+                                .clicked()
+                            {
+                                self.mock_data_target_table = Some(table.name.clone());
+                                self.show_mock_data_modal = true;
+                            }
                             if ui.small_button("Insert Name").clicked() {
                                 pending_sql_action = Some((table.name.clone(), false));
                             }
@@ -1414,6 +1459,11 @@ impl MysqlRustyApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&prof.name).strong().size(13.0));
+                            let (er, eg, eb) = prof.environment.color_rgb();
+                            ui.colored_label(Color32::from_rgb(er, eg, eb), format!("[{}]", prof.environment.label()));
+                            if prof.read_only {
+                                ui.colored_label(Color32::from_rgb(251, 146, 60), "[🔒 Read-Only]");
+                            }
                             if is_active {
                                 egui::Frame::new()
                                     .fill(Color32::from_rgb(6, 78, 59))
@@ -1478,40 +1528,110 @@ impl MysqlRustyApp {
 
     fn render_snippets_and_history(&mut self, ui: &mut Ui) {
         let mut load_sql: Option<String> = None;
+        let mut delete_snippet_id: Option<String> = None;
 
-        ui.label(RichText::new("Saved SQL Snippets").strong());
-        for snip in &self.config.snippets {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new(&snip.title).strong().small());
-                if ui.small_button("Load into Editor").clicked() {
-                    load_sql = Some(snip.sql.clone());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("📑 SQL Snippets").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("➕ Save Active").clicked() {
+                    self.show_save_snippet_modal = true;
+                    if let Some(tab) = self.tabs.get(self.active_tab_idx) {
+                        self.new_snippet_title = if !tab.title.is_empty() {
+                            tab.title.clone()
+                        } else {
+                            "My Snippet".to_string()
+                        };
+                    }
                 }
             });
-        }
+        });
 
-        ui.separator();
-        ui.label(RichText::new("Recent Query History").strong());
+        ui.add(
+            egui::TextEdit::singleline(&mut self.snippet_search_filter)
+                .hint_text("Search snippets and history...")
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(4.0);
+
+        let filter = self.snippet_search_filter.to_lowercase();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for entry in &self.config.history {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&entry.timestamp).small().weak());
-                        ui.label(
-                            RichText::new(format!(
-                                "{} rows • {} ms",
-                                entry.row_count, entry.duration_ms
-                            ))
-                            .small()
-                            .color(Color32::from_rgb(56, 189, 248)),
-                        );
+            for snip in &self.config.snippets {
+                if !filter.is_empty()
+                    && !snip.title.to_lowercase().contains(&filter)
+                    && !snip.sql.to_lowercase().contains(&filter)
+                {
+                    continue;
+                }
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(17, 24, 39))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(31, 41, 55)))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&snip.title).strong().small());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("🗑").on_hover_text("Delete Snippet").clicked() {
+                                    delete_snippet_id = Some(snip.id.clone());
+                                }
+                            });
+                        });
+                        ui.label(RichText::new(&snip.sql).monospace().small().weak());
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Load into Tab").clicked() {
+                                load_sql = Some(snip.sql.clone());
+                            }
+                            if ui.small_button("Open New Tab").clicked() {
+                                self.tabs.push(QueryTab::new(&snip.title, &snip.sql));
+                                self.active_tab_idx = self.tabs.len() - 1;
+                            }
+                        });
                     });
-                    ui.label(RichText::new(&entry.sql).monospace().small());
-                    if ui.small_button("Reuse SQL").clicked() {
-                        load_sql = Some(entry.sql.clone());
-                    }
-                });
+                ui.add_space(4.0);
+            }
+
+            ui.separator();
+            ui.label(RichText::new("🕒 Recent Query History").strong());
+            ui.add_space(2.0);
+
+            for entry in self.config.history.iter().rev() {
+                if !filter.is_empty()
+                    && !entry.sql.to_lowercase().contains(&filter)
+                    && !entry.database.to_lowercase().contains(&filter)
+                {
+                    continue;
+                }
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(15, 23, 42))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(30, 41, 59)))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&entry.timestamp).small().weak());
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} rows • {} ms",
+                                    entry.row_count, entry.duration_ms
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(56, 189, 248)),
+                            );
+                        });
+                        ui.label(RichText::new(&entry.sql).monospace().small());
+                        if ui.small_button("Reuse SQL").clicked() {
+                            load_sql = Some(entry.sql.clone());
+                        }
+                    });
+                ui.add_space(4.0);
             }
         });
+
+        if let Some(id) = delete_snippet_id {
+            self.config.snippets.retain(|s| s.id != id);
+            let _ = self.config.save();
+        }
 
         if let Some(sql) = load_sql {
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
@@ -1788,6 +1908,35 @@ impl MysqlRustyApp {
                                                                     RichText::new("SSH TUNNEL")
                                                                         .size(10.5)
                                                                         .color(Color32::from_rgb(56, 189, 248))
+                                                                        .strong(),
+                                                                );
+                                                            });
+                                                    }
+                                                    let (er, eg, eb) = prof.environment.color_rgb();
+                                                    egui::Frame::new()
+                                                        .fill(Color32::from_rgb(er / 5, eg / 5, eb / 5))
+                                                        .stroke(Stroke::new(1.0, Color32::from_rgb(er, eg, eb)))
+                                                        .corner_radius(egui::CornerRadius::same(4))
+                                                        .inner_margin(egui::Margin::symmetric(6, 2))
+                                                        .show(ui, |ui| {
+                                                            ui.label(
+                                                                RichText::new(prof.environment.label().to_uppercase())
+                                                                    .size(10.5)
+                                                                    .color(Color32::from_rgb(er, eg, eb))
+                                                                    .strong(),
+                                                            );
+                                                        });
+                                                    if prof.read_only {
+                                                        egui::Frame::new()
+                                                            .fill(Color32::from_rgb(67, 20, 7))
+                                                            .stroke(Stroke::new(1.0, Color32::from_rgb(251, 146, 60)))
+                                                            .corner_radius(egui::CornerRadius::same(4))
+                                                            .inner_margin(egui::Margin::symmetric(6, 2))
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    RichText::new("🔒 READ-ONLY")
+                                                                        .size(10.5)
+                                                                        .color(Color32::from_rgb(251, 146, 60))
                                                                         .strong(),
                                                                 );
                                                             });
@@ -2215,11 +2364,12 @@ impl MysqlRustyApp {
     }
 
     fn render_results_grid(&mut self, ui: &mut Ui) {
-        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
-            return;
+        let (is_running, has_result) = match self.tabs.get(self.active_tab_idx) {
+            Some(t) => (t.is_running, t.last_result.is_some()),
+            None => return,
         };
 
-        if tab.is_running {
+        if is_running {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Executing SQL query...");
@@ -2227,20 +2377,31 @@ impl MysqlRustyApp {
             return;
         }
 
-        let Some(result) = tab.last_result.clone() else {
+        if !has_result {
             ui.label(RichText::new("Run a query (Ctrl+Enter) to view results here.").weak());
             return;
-        };
+        }
 
-        // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
+        let result = self.tabs[self.active_tab_idx].last_result.clone().unwrap();
         let mut trigger_commit_edits = false;
-        ui.horizontal_wrapped(|ui| {
+        let mut trigger_ai_prompt: Option<String> = None;
+        let pending_edits;
+
+        {
+            let tab = &mut self.tabs[self.active_tab_idx];
+
+            // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
+            ui.horizontal_wrapped(|ui| {
             ui.label("Filter rows:");
             ui.add(
                 egui::TextEdit::singleline(&mut tab.row_filter)
                     .desired_width(170.0)
                     .hint_text("Search any cell..."),
             );
+
+            ui.separator();
+            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "📋 Table");
+            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Chart, "📊 Chart");
 
             ui.separator();
             ui.label(
@@ -2280,6 +2441,38 @@ impl MysqlRustyApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button(
+                        RichText::new("🤖 AI Insights")
+                            .color(Color32::from_rgb(192, 132, 252))
+                            .strong(),
+                    )
+                    .on_hover_text("Analyze these query results with AI")
+                    .clicked()
+                {
+                    let preview_rows: Vec<String> = result
+                        .rows
+                        .iter()
+                        .take(25)
+                        .map(|r| {
+                            r.iter()
+                                .map(|c| c.display_text())
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        })
+                        .collect();
+                    trigger_ai_prompt = Some(format!(
+                        "Please analyze these database query results:\nQuery: `{}`\nColumns: {}\nSample Rows (first {}):\n{}\n\nProvide key metrics, patterns, summary statistics, and notable takeaways concisely.",
+                        result.sql,
+                        result.columns.join(", "),
+                        preview_rows.len(),
+                        preview_rows.join("\n")
+                    ));
+                }
+                if ui.small_button("Copy Markdown").clicked() {
+                    let md = to_markdown_table(&result);
+                    ui.ctx().copy_text(md);
+                }
                 if ui.small_button("Export CSV").clicked() {
                     if let Ok(csv_data) = to_csv_string(&result) {
                         if let Some(path) = rfd::FileDialog::new()
@@ -2287,11 +2480,8 @@ impl MysqlRustyApp {
                             .save_file()
                         {
                             let _ = save_string_to_path(&path, &csv_data);
-                            self.status_banner = format!("Saved CSV to {}", path.display());
                         } else {
                             ui.ctx().copy_text(csv_data);
-                            self.status_banner =
-                                "Copied CSV export to system clipboard.".to_string();
                         }
                     }
                 }
@@ -2302,11 +2492,8 @@ impl MysqlRustyApp {
                             .save_file()
                         {
                             let _ = save_string_to_path(&path, &json_data);
-                            self.status_banner = format!("Saved JSON to {}", path.display());
                         } else {
                             ui.ctx().copy_text(json_data);
-                            self.status_banner =
-                                "Copied JSON export to system clipboard.".to_string();
                         }
                     }
                 }
@@ -2317,12 +2504,16 @@ impl MysqlRustyApp {
                         .unwrap_or("exported_rows");
                     let inserts = to_sql_inserts(&result, tbl);
                     ui.ctx().copy_text(inserts);
-                    self.status_banner = "Copied SQL INSERT statements to clipboard.".to_string();
                 }
             });
         });
 
         ui.add_space(4.0);
+
+        if tab.view_mode == ResultViewMode::Chart {
+            Self::draw_results_chart(ui, tab, &result);
+            return;
+        }
 
         // Filter & sort rows
         let filter_lower = tab.row_filter.to_lowercase();
@@ -2467,17 +2658,24 @@ impl MysqlRustyApp {
                 });
             });
 
+            pending_edits = tab.pending_edits.clone();
+        }
+
+        if let Some(prompt) = trigger_ai_prompt {
+            self.show_ai_panel = true;
+            self.send_chat_prompt(Some(prompt));
+        }
+
         if trigger_commit_edits {
             if let (Some(session), Some(table_name)) =
                 (self.active_session.clone(), result.editable_table.clone())
             {
-                let edits = tab.pending_edits.clone();
-                let tab_id = tab.id.clone();
+                let tab_id = self.tabs[self.active_tab_idx].id.clone();
                 let db = self.active_database.clone();
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
                     let res = session
-                        .apply_cell_edits(&db, &table_name, &edits)
+                        .apply_cell_edits(&db, &table_name, &pending_edits)
                         .await
                         .map_err(|e| format!("{e:#}"));
                     let _ = tx.send(AsyncEvent::CellEditsApplied {
@@ -2487,6 +2685,101 @@ impl MysqlRustyApp {
                 });
             }
         }
+    }
+
+    fn draw_results_chart(ui: &mut Ui, tab: &mut QueryTab, result: &QueryResult) {
+        if result.columns.is_empty() || result.rows.is_empty() {
+            ui.label("No query result data available to chart.");
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Chart Type:").strong());
+            ui.selectable_value(&mut tab.chart_type, ChartType::Bar, "📊 Bar");
+            ui.selectable_value(&mut tab.chart_type, ChartType::Line, "📈 Line");
+
+            ui.separator();
+            ui.label(RichText::new("X Axis (Label):").strong());
+            let current_x = result
+                .columns
+                .get(tab.chart_x_col)
+                .cloned()
+                .unwrap_or_default();
+            egui::ComboBox::from_id_salt("chart_x_axis_cb")
+                .selected_text(current_x)
+                .show_ui(ui, |ui| {
+                    for (i, col) in result.columns.iter().enumerate() {
+                        ui.selectable_value(&mut tab.chart_x_col, i, col);
+                    }
+                });
+
+            ui.separator();
+            ui.label(RichText::new("Y Axis (Metric):").strong());
+            let current_y = result
+                .columns
+                .get(tab.chart_y_col)
+                .cloned()
+                .unwrap_or_default();
+            egui::ComboBox::from_id_salt("chart_y_axis_cb")
+                .selected_text(current_y)
+                .show_ui(ui, |ui| {
+                    for (i, col) in result.columns.iter().enumerate() {
+                        ui.selectable_value(&mut tab.chart_y_col, i, col);
+                    }
+                });
+        });
+        ui.separator();
+
+        let y_col = tab.chart_y_col;
+        let x_col = tab.chart_x_col;
+        let chart_type = tab.chart_type;
+        let col_name = result.columns.get(y_col).cloned().unwrap_or_default();
+
+        Plot::new("result_visual_chart")
+            .legend(egui_plot::Legend::default())
+            .height(ui.available_height().max(250.0))
+            .show(ui, |plot_ui| {
+                if chart_type == ChartType::Bar {
+                    let mut bars = Vec::new();
+                    for (i, row) in result.rows.iter().enumerate() {
+                        if let Some(cell) = row.get(y_col) {
+                            let val = match cell {
+                                crate::db::CellValue::Integer(v) => *v as f64,
+                                crate::db::CellValue::Float(v) => *v,
+                                crate::db::CellValue::Text(s) => s.parse::<f64>().unwrap_or(0.0),
+                                _ => 0.0,
+                            };
+                            let label = row
+                                .get(x_col)
+                                .map(|c| c.display_text())
+                                .unwrap_or_default();
+                            bars.push(Bar::new(i as f64, val).width(0.65).name(label));
+                        }
+                    }
+                    plot_ui.bar_chart(
+                        BarChart::new(&col_name, bars)
+                            .color(Color32::from_rgb(56, 189, 248)),
+                    );
+                } else {
+                    let mut pts = Vec::new();
+                    for (i, row) in result.rows.iter().enumerate() {
+                        if let Some(cell) = row.get(y_col) {
+                            let val = match cell {
+                                crate::db::CellValue::Integer(v) => *v as f64,
+                                crate::db::CellValue::Float(v) => *v,
+                                crate::db::CellValue::Text(s) => s.parse::<f64>().unwrap_or(0.0),
+                                _ => 0.0,
+                            };
+                            pts.push([i as f64, val]);
+                        }
+                    }
+                    plot_ui.line(
+                        Line::new(&col_name, PlotPoints::new(pts))
+                            .color(Color32::from_rgb(45, 212, 191))
+                            .width(2.5),
+                    );
+                }
+            });
     }
 
     fn render_er_relationships(&mut self, ui: &mut Ui) {
@@ -2511,6 +2804,130 @@ impl MysqlRustyApp {
             ui.label(format!("• Rows Affected: `{}`", res.affected_rows));
             if let Some(last_id) = res.last_insert_id {
                 ui.label(format!("• Last Insert ID: `{last_id}`"));
+            }
+
+            // Visual EXPLAIN Tree
+            let is_explain = res.sql.trim().to_uppercase().starts_with("EXPLAIN")
+                || res
+                    .columns
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case("select_type"));
+            if is_explain && !res.rows.is_empty() {
+                ui.separator();
+                ui.heading(
+                    RichText::new("🌳 Visual Execution Plan (EXPLAIN Tree)")
+                        .color(Color32::from_rgb(56, 189, 248))
+                        .size(15.0),
+                );
+                ui.add_space(4.0);
+
+                let col_table_idx = res
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("table"));
+                let col_type_idx = res
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("type"));
+                let col_key_idx = res
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("key"));
+                let col_rows_idx = res
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("rows"));
+                let col_extra_idx = res
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("Extra"));
+
+                let mut has_full_scan = false;
+
+                for (idx, row) in res.rows.iter().enumerate() {
+                    let table_name = col_table_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_else(|| format!("Node #{idx}"));
+                    let access_type = col_type_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_else(|| "ALL".to_string());
+                    let key_used = col_key_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_else(|| "NULL".to_string());
+                    let rows_est = col_rows_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_else(|| "—".to_string());
+                    let extra = col_extra_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_default();
+
+                    let (type_color, type_badge) = match access_type.to_uppercase().as_str() {
+                        "ALL" => {
+                            has_full_scan = true;
+                            (Color32::from_rgb(239, 68, 68), "FULL TABLE SCAN ⚠️")
+                        }
+                        "INDEX" => (Color32::from_rgb(249, 115, 22), "FULL INDEX SCAN"),
+                        "RANGE" => (Color32::from_rgb(234, 179, 8), "INDEX RANGE SCAN"),
+                        "REF" | "EQ_REF" | "CONST" => {
+                            (Color32::from_rgb(34, 197, 94), "INDEX LOOKUP ✅")
+                        }
+                        _ => (Color32::from_rgb(148, 163, 184), "SCAN"),
+                    };
+
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(17, 24, 39))
+                        .stroke(Stroke::new(1.0, type_color))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Step {}: `{}`", idx + 1, table_name))
+                                        .strong()
+                                        .size(13.0),
+                                );
+                                ui.colored_label(type_color, format!("[{type_badge}]"));
+                                ui.label(
+                                    RichText::new(format!("Est. Rows: {rows_est}")).small().weak(),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("🔑 Index Used: `{key_used}`"))
+                                        .small()
+                                        .color(Color32::from_rgb(56, 189, 248)),
+                                );
+                                if !extra.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("Extra: {extra}")).small().weak(),
+                                    );
+                                }
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+
+                if has_full_scan {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(69, 10, 10))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(
+                                    "⚠️ Optimization Tip: Table performs a FULL TABLE SCAN (`ALL`). Creating an index on the join or WHERE filter columns can drastically reduce query latency.",
+                                )
+                                .color(Color32::from_rgb(254, 202, 202))
+                                .small(),
+                            );
+                        });
+                }
             }
         }
         if let Some(schema) = self.schemas.get(&self.active_database) {
@@ -2575,6 +2992,48 @@ impl MysqlRustyApp {
                     });
             }
         });
+
+        if !self.qps_history.is_empty() || !self.threads_history.is_empty() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("📈 Live QPS (Queries / Sec)")
+                            .strong()
+                            .small()
+                            .color(Color32::from_rgb(56, 189, 248)),
+                    );
+                    Plot::new("qps_history_plot")
+                        .height(85.0)
+                        .width(ui.available_width() * 0.49)
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                Line::new("QPS", PlotPoints::new(self.qps_history.clone()))
+                                    .color(Color32::from_rgb(56, 189, 248))
+                                    .width(2.0),
+                            );
+                        });
+                });
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("📊 Active Connections (Threads)")
+                            .strong()
+                            .small()
+                            .color(Color32::from_rgb(52, 211, 153)),
+                    );
+                    Plot::new("threads_history_plot")
+                        .height(85.0)
+                        .width(ui.available_width())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                Line::new("Threads", PlotPoints::new(self.threads_history.clone()))
+                                    .color(Color32::from_rgb(52, 211, 153))
+                                    .width(2.0),
+                            );
+                        });
+                });
+            });
+        }
 
         ui.add_space(8.0);
         ui.label(RichText::new("Live Process List (SHOW FULL PROCESSLIST):").strong());
@@ -2698,6 +3157,36 @@ impl MysqlRustyApp {
 
                         ui.label("Default Database:");
                         ui.text_edit_singleline(&mut self.editing_connection.default_database);
+                        ui.end_row();
+
+                        ui.label("Environment Badge:");
+                        egui::ComboBox::from_id_salt("env_badge_modal_combo")
+                            .selected_text(self.editing_connection.environment.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.editing_connection.environment,
+                                    Environment::Development,
+                                    "Development (Dev)",
+                                );
+                                ui.selectable_value(
+                                    &mut self.editing_connection.environment,
+                                    Environment::Staging,
+                                    "Staging",
+                                );
+                                ui.selectable_value(
+                                    &mut self.editing_connection.environment,
+                                    Environment::Production,
+                                    "Production (Strict Guard)",
+                                );
+                            });
+                        ui.end_row();
+
+                        ui.label("Security Mode:");
+                        ui.checkbox(
+                            &mut self.editing_connection.read_only,
+                            "🔒 Read-Only (Prevent write queries)",
+                        )
+                        .on_hover_text("When checked, blocks all INSERT, UPDATE, DELETE, DROP, and ALTER queries.");
                         ui.end_row();
 
                         ui.label("SSL Mode:");
@@ -3095,6 +3584,333 @@ impl MysqlRustyApp {
                     self.table_designer_draft = None;
                 }
             }
+        }
+    }
+
+    fn render_safety_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_safety_modal {
+            return;
+        }
+        let mut open = self.show_safety_modal;
+        let mut execute_confirmed = false;
+
+        egui::Window::new("🛡️ Safety Confirmation & Production Guard")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(69, 10, 10))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(&self.safety_warning_msg)
+                                .color(Color32::from_rgb(254, 202, 202))
+                                .strong(),
+                        );
+                    });
+
+                ui.add_space(8.0);
+                ui.label(RichText::new("Target Statement:").strong());
+                egui::ScrollArea::vertical()
+                    .max_height(110.0)
+                    .show(ui, |ui| {
+                        ui.code(&self.pending_safe_sql);
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("⚠️ Proceed & Execute Statement")
+                                    .color(Color32::from_rgb(239, 68, 68))
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(127, 29, 29)),
+                        )
+                        .clicked()
+                    {
+                        execute_confirmed = true;
+                    }
+
+                    if ui.button("Cancel (Recommended)").clicked() {
+                        self.show_safety_modal = false;
+                        self.pending_safe_sql.clear();
+                    }
+                });
+            });
+
+        if execute_confirmed {
+            self.show_safety_modal = false;
+            let sql = std::mem::take(&mut self.pending_safe_sql);
+            self.execute_sql_forced(sql);
+        } else if !open {
+            self.show_safety_modal = false;
+            self.pending_safe_sql.clear();
+        }
+    }
+
+    fn render_schema_diff_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_schema_diff_modal {
+            return;
+        }
+        let mut open = self.show_schema_diff_modal;
+        let mut open_in_tab_sql = None;
+
+        egui::Window::new("🔄 Schema Diff & DDL Synchronization")
+            .open(&mut open)
+            .default_width(650.0)
+            .default_height(480.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Source DB:").strong());
+                    egui::ComboBox::from_id_salt("diff_src_cb")
+                        .selected_text(if self.diff_source_db.is_empty() {
+                            "Select Source..."
+                        } else {
+                            &self.diff_source_db
+                        })
+                        .show_ui(ui, |ui| {
+                            for db in &self.databases {
+                                ui.selectable_value(&mut self.diff_source_db, db.clone(), db);
+                            }
+                        });
+
+                    ui.label(RichText::new("Target DB:").strong());
+                    egui::ComboBox::from_id_salt("diff_tgt_cb")
+                        .selected_text(if self.diff_target_db.is_empty() {
+                            "Select Target..."
+                        } else {
+                            &self.diff_target_db
+                        })
+                        .show_ui(ui, |ui| {
+                            for db in &self.databases {
+                                ui.selectable_value(&mut self.diff_target_db, db.clone(), db);
+                            }
+                        });
+
+                    if ui.button("⚡ Compare").clicked() {
+                        if let (Some(src), Some(tgt)) = (
+                            self.schemas.get(&self.diff_source_db),
+                            self.schemas.get(&self.diff_target_db),
+                        ) {
+                            self.current_diff_report = Some(diff_schemas(src, tgt));
+                        } else {
+                            self.status_banner =
+                                "Please ensure both database schemas are loaded before comparing."
+                                    .to_string();
+                        }
+                    }
+                });
+                ui.separator();
+
+                if let Some(report) = &self.current_diff_report {
+                    ui.label(
+                        RichText::new(format!(
+                            "Diff Summary ({} changes detected):",
+                            report.summary.len()
+                        ))
+                        .strong(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(130.0)
+                        .show(ui, |ui| {
+                            for item in &report.summary {
+                                let color = if item.starts_with('+') {
+                                    Color32::from_rgb(52, 211, 153)
+                                } else if item.starts_with('~') {
+                                    Color32::from_rgb(250, 204, 21)
+                                } else if item.starts_with('-') {
+                                    Color32::from_rgb(251, 146, 60)
+                                } else {
+                                    Color32::from_rgb(148, 163, 184)
+                                };
+                                ui.colored_label(color, item);
+                            }
+                        });
+
+                    ui.separator();
+                    ui.label(RichText::new("Generated DDL Migration SQL:").strong());
+                    let mut sql_view = report.migration_sql.as_str();
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut sql_view)
+                                    .font(egui::TextStyle::Monospace)
+                                    .code_editor()
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("📋 Copy Migration Script").clicked() {
+                            ui.ctx().copy_text(report.migration_sql.clone());
+                            self.status_banner = "Copied migration DDL to clipboard.".to_string();
+                        }
+                        if ui.button("▶ Open in Query Tab").clicked() {
+                            open_in_tab_sql = Some(report.migration_sql.clone());
+                        }
+                    });
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(30.0);
+                        ui.label(RichText::new("Select Source and Target databases above, then click '⚡ Compare' to generate a synchronization DDL script.").weak());
+                    });
+                }
+            });
+
+        if let Some(sql) = open_in_tab_sql {
+            self.show_schema_diff_modal = false;
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Migration Sync {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        } else if !open {
+            self.show_schema_diff_modal = false;
+        }
+    }
+
+    fn render_mock_data_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_mock_data_modal {
+            return;
+        }
+        let mut open = self.show_mock_data_modal;
+        let mut generate_to_tab = None;
+        let mut insert_directly = None;
+
+        let table_opt = self.mock_data_target_table.clone();
+        let schema_opt = self.schemas.get(&self.active_database).cloned();
+
+        egui::Window::new("🎲 Intelligent Mock Data Generator")
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                if let (Some(tbl_name), Some(schema)) = (table_opt.as_ref(), schema_opt.as_ref()) {
+                    if let Some(table) = schema.tables.iter().find(|t| t.name == *tbl_name) {
+                        ui.label(
+                            RichText::new(format!(
+                                "Target Table: `{tbl_name}` ({} columns)",
+                                table.columns.len()
+                            ))
+                            .strong(),
+                        );
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Rows to generate:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.mock_data_row_count).range(1..=1000),
+                            );
+                            if ui.small_button("10").clicked() {
+                                self.mock_data_row_count = 10;
+                            }
+                            if ui.small_button("25").clicked() {
+                                self.mock_data_row_count = 25;
+                            }
+                            if ui.small_button("50").clicked() {
+                                self.mock_data_row_count = 50;
+                            }
+                            if ui.small_button("100").clicked() {
+                                self.mock_data_row_count = 100;
+                            }
+                        });
+
+                        ui.separator();
+                        let preview_sql =
+                            generate_mock_data_sql(table, self.mock_data_row_count.min(8));
+                        ui.label(RichText::new("Data Preview (Sample rows):").strong());
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .show(ui, |ui| {
+                                ui.code(preview_sql);
+                            });
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("📋 Open in Query Tab").clicked() {
+                                let full_sql =
+                                    generate_mock_data_sql(table, self.mock_data_row_count);
+                                generate_to_tab = Some((tbl_name.clone(), full_sql));
+                            }
+                            if ui.button("▶ Insert Directly into DB").clicked() {
+                                let full_sql =
+                                    generate_mock_data_sql(table, self.mock_data_row_count);
+                                insert_directly = Some(full_sql);
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.show_mock_data_modal = false;
+                            }
+                        });
+                    } else {
+                        ui.label("Table not found in active database schema.");
+                    }
+                } else {
+                    ui.label("No active database or table selected.");
+                }
+            });
+
+        if let Some((tbl, sql)) = generate_to_tab {
+            self.show_mock_data_modal = false;
+            self.tabs.push(QueryTab::new(format!("Seed {tbl}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        } else if let Some(sql) = insert_directly {
+            self.show_mock_data_modal = false;
+            self.execute_sql_forced(sql);
+        } else if !open {
+            self.show_mock_data_modal = false;
+        }
+    }
+
+    fn render_save_snippet_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_save_snippet_modal {
+            return;
+        }
+        let mut open = self.show_save_snippet_modal;
+        let mut save_snippet = false;
+
+        egui::Window::new("➕ Save Query as Snippet")
+            .open(&mut open)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label("Snippet Title / Name:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_snippet_title)
+                        .desired_width(ui.available_width()),
+                );
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save Snippet").clicked() {
+                        save_snippet = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_save_snippet_modal = false;
+                    }
+                });
+            });
+
+        if save_snippet {
+            self.show_save_snippet_modal = false;
+            if let Some(tab) = self.tabs.get(self.active_tab_idx) {
+                let title = if self.new_snippet_title.trim().is_empty() {
+                    "Saved Query".to_string()
+                } else {
+                    self.new_snippet_title.trim().to_string()
+                };
+                self.config.snippets.push(SavedSnippet {
+                    id: Uuid::new_v4().to_string(),
+                    title,
+                    sql: tab.sql.clone(),
+                });
+                let _ = self.config.save();
+                self.status_banner = "Saved SQL snippet successfully.".to_string();
+            }
+        } else if !open {
+            self.show_save_snippet_modal = false;
         }
     }
 }

@@ -17,10 +17,29 @@ A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for 
   - Custom SQL lexer and syntax highlighter (keywords, functions, types, strings, numbers, comments).
   - **Tier 1 (<1 ms):** Local schema-aware suggestions for tables, `alias.column` completions, Foreign Key `JOIN ... ON` clauses, and SQL keywords.
   - **Tier 2 (AI Ghost Text):** Inline Copilot-style ghost completions rendered in muted italic cyan right after the cursor (`Tab` to accept, `Ctrl+Space` to trigger from LLM/CLI).
-- **Interactive Results Grid:**
+- **Interactive Results Grid & 1-Click Data Visualization:**
   - Virtualized multi-column table with column sorting, instant client-side row filtering, and execution metrics.
   - **Inline Cell Editing:** Double-click any cell on a single-table query with a Primary Key to edit values inline and commit parameterized `UPDATE` statements.
-  - **One-Click Exports:** Export results to **CSV**, **JSON**, or **SQL `INSERT`** statements.
+  - **1-Click Interactive Charts (`egui_plot`):** Switch instantly between `📋 Table` and `📊 Chart` (Bar and Line charts) with configurable X/Y axis dropdowns.
+  - **AI Insights:** One-click `🤖 AI Insights` button to analyze query results and extract key trends, statistics, and anomalies.
+  - **One-Click Exports:** Export results to **CSV**, **JSON**, **Markdown Table** (copy to clipboard for Notion/GitHub), or **SQL `INSERT`** statements.
+- **Production Guard & Safe Mode (Security):**
+  - **Environment Badging:** Tag connections as `Dev` (green), `Staging` (yellow), or `Production` (red).
+  - **Read-Only Mode:** Lock any profile to block all mutation queries (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`).
+  - **Destructive Query Confirmation Modal:** Intercepts unconstrained `UPDATE` / `DELETE` (without `WHERE`), `DROP`, or `TRUNCATE` before execution.
+- **Visual EXPLAIN Plan Tree:**
+  - Color-coded graphical breakdown of execution steps (`ALL` in red, `range` in yellow, `ref/const` in green).
+  - Alerts and bottleneck detection for filesort, temporary tables, and missing indexes.
+- **Schema Diff & Synchronization:**
+  - Visual comparison between any two databases (e.g. `dev` vs `prod`).
+  - Generates executable `ALTER TABLE` and `CREATE TABLE` migration DDL scripts.
+- **Intelligent Mock Data Generator (Seeder):**
+  - Generate 10 to 1,000 realistic random rows respecting columns (names, emails, prices, dates, statuses) directly into the database or as an SQL script.
+- **Server Administration & Real-Time Metrics:**
+  - Live charts for Queries/sec (QPS) and Active Connections (Threads).
+  - Live `SHOW FULL PROCESSLIST` with instant `🛑 Kill Query` action.
+- **Snippets & Query Bookmarks:**
+  - Save, organize, and load frequent queries with one click; filter history and snippets instantly.
 - **Dockable AI SQL Copilot & CLI Assistant:**
   - Automatically injects compact DDL (`TABLE ...`, `FK ...`) of the active database into prompts.
   - Supports **Ollama**, **OpenAI-Compatible APIs**, **Anthropic Claude**, **Google Gemini**, and **Local CLI commands** (`agy`, `llm`, etc.).
