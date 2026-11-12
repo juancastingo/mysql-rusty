@@ -342,11 +342,44 @@ impl ActiveSession {
                 .spawn()
                 .context("Failed to start SSH tunnel subprocess (`ssh`)")?;
 
-            // Brief wait for tunnel bind
-            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            // Wait for SSH tunnel to establish and bind to local port (up to 15 seconds)
+            let mut port_ready = false;
+            let start = tokio::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(15);
 
-            // Check if ssh process exited prematurely
-            if let Ok(Some(exit_status)) = child.try_wait() {
+            while start.elapsed() < timeout {
+                // 1. Check if SSH process exited prematurely (e.g. auth failure, unreachable host)
+                if let Ok(Some(exit_status)) = child.try_wait() {
+                    let mut err_msg = String::new();
+                    if let Some(mut err_pipe) = child.stderr.take() {
+                        use tokio::io::AsyncReadExt;
+                        let _ = err_pipe.read_to_string(&mut err_msg).await;
+                    }
+                    let clean_err = err_msg.trim();
+                    return Err(anyhow!(
+                        "SSH tunnel failed (exit code: {}):\n{}",
+                        exit_status,
+                        if clean_err.is_empty() {
+                            "SSH process closed connection immediately. Check username (e.g. 'ec2-user' vs 'ubuntu'), private key permissions, and security groups."
+                        } else {
+                            clean_err
+                        }
+                    ));
+                }
+
+                // 2. Probe if local forwarding port is accepting connections
+                if tokio::net::TcpStream::connect(("127.0.0.1", local_port)).await.is_ok() {
+                    // Small grace period for SSH forwarding pipe initialization
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    port_ready = true;
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+
+            if !port_ready {
+                let _ = child.kill().await;
                 let mut err_msg = String::new();
                 if let Some(mut err_pipe) = child.stderr.take() {
                     use tokio::io::AsyncReadExt;
@@ -354,10 +387,9 @@ impl ActiveSession {
                 }
                 let clean_err = err_msg.trim();
                 return Err(anyhow!(
-                    "SSH tunnel failed (exit code: {}):\n{}",
-                    exit_status,
+                    "Timed out waiting for SSH tunnel to open port 127.0.0.1:{local_port} (waited 15s).\n{}",
                     if clean_err.is_empty() {
-                        "SSH process closed connection immediately. Check username (e.g. 'ec2-user' vs 'ubuntu'), private key permissions, and security groups."
+                        "SSH tunnel did not bind local port in time. Check network latency or firewall."
                     } else {
                         clean_err
                     }
