@@ -204,6 +204,87 @@ impl MysqlRustyApp {
         });
     }
 
+    pub(crate) fn refresh_history(&self) {
+        let Some(store) = self.history_store.clone() else {
+            return;
+        };
+        let query = crate::history::HistoryQuery {
+            text: self.history_search_filter.clone(),
+            profile_id: if self.history_filter_current_conn {
+                self.active_profile_id.clone()
+            } else {
+                None
+            },
+            database: if self.history_filter_database.is_empty() {
+                None
+            } else {
+                Some(self.history_filter_database.clone())
+            },
+            only_failed: self.history_filter_failed_only,
+            limit: self.history_limit + 1,
+            offset: 0,
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Ok(records) = store.search(&query) {
+                let _ = tx.send(AsyncEvent::HistoryLoaded(records));
+            }
+        });
+    }
+
+    pub(crate) fn record_history(
+        &mut self,
+        database: String,
+        sql: String,
+        duration_ms: u64,
+        row_count: u64,
+        success: bool,
+        error: Option<String>,
+    ) {
+        let Some(store) = self.history_store.clone() else {
+            return;
+        };
+        let profile_id = self.active_profile_id.clone().unwrap_or_default();
+        let profile_name = self
+            .config
+            .connections
+            .iter()
+            .find(|p| p.id == profile_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Demo".to_string());
+        let record = crate::history::HistoryRecord {
+            id: 0,
+            ts: chrono::Utc::now().to_rfc3339(),
+            profile_id,
+            profile_name,
+            database,
+            sql,
+            duration_ms,
+            row_count,
+            success,
+            error,
+        };
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = store.insert(&record) {
+                tracing::warn!("Failed to insert query history: {e}");
+            }
+        });
+        self.history_dirty = true;
+    }
+
+    pub(crate) fn clear_history(&mut self) {
+        let Some(store) = self.history_store.clone() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = store.clear() {
+                tracing::warn!("Failed to clear query history: {e}");
+            }
+            let _ = tx.send(AsyncEvent::HistoryCleared);
+        });
+    }
+
     pub(crate) fn save_active_tab_direct(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
             return;

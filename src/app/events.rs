@@ -163,26 +163,22 @@ impl MysqlRustyApp {
                                         self.status_banner = res.status_message.clone();
                                     }
                                 }
-                                self.config.history.insert(
-                                    0,
-                                    QueryHistoryEntry {
-                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                        database: res.database.clone(),
-                                        sql: res.sql.clone(),
-                                        duration_ms: res.duration_ms,
-                                        row_count: res.rows.len(),
-                                        success: true,
-                                    },
-                                );
-                                self.config.history.truncate(50);
-                                let _ = self.config.save();
+                                let hist_db = res.database.clone();
+                                let hist_sql = res.sql.clone();
+                                let hist_dur = res.duration_ms;
+                                let hist_rows = res.rows.len() as u64;
                                 tab.last_result = Some(res);
                                 tab.multi_results.clear();
                                 tab.active_result_idx = 0;
                                 tab.last_error = None;
                                 tab.current_page = 0;
+                                self.record_history(
+                                    hist_db, hist_sql, hist_dur, hist_rows, true, None,
+                                );
                             }
                             Err(err) => {
+                                let hist_sql = tab.sql.clone();
+                                let hist_err = err.clone();
                                 if is_connection_error {
                                     if !self.auto_retry_attempted
                                         && !crate::syntax::is_write_query(&tab.sql)
@@ -210,6 +206,8 @@ impl MysqlRustyApp {
                                 tab.last_error = Some(err);
                                 tab.last_result = None;
                                 tab.multi_results.clear();
+                                let db = self.active_database.clone();
+                                self.record_history(db, hist_sql, 0, 0, false, Some(hist_err));
                             }
                         }
                     }
@@ -567,6 +565,16 @@ impl MysqlRustyApp {
                         self.status_banner = format!("Reconnect failed: {err}");
                     }
                 },
+                AsyncEvent::HistoryLoaded(mut records) => {
+                    self.history_has_more = records.len() > self.history_limit;
+                    records.truncate(self.history_limit);
+                    self.history_records = records;
+                }
+                AsyncEvent::HistoryCleared => {
+                    self.history_records.clear();
+                    self.history_has_more = false;
+                    self.status_banner = "Query history cleared.".to_string();
+                }
             }
         }
     }

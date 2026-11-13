@@ -279,12 +279,19 @@ pub struct TrashedConnection {
     pub deleted_at: String,
 }
 
+fn default_history_retention() -> usize {
+    10_000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuerySettings {
     /// Query timeout in seconds (`0` = no timeout).
     pub timeout_secs: u64,
     /// Maximum number of rows buffered in memory per query result.
     pub max_rows: usize,
+    /// Maximum number of query history entries retained in SQLite.
+    #[serde(default = "default_history_retention")]
+    pub history_retention: usize,
 }
 
 impl Default for QuerySettings {
@@ -292,6 +299,7 @@ impl Default for QuerySettings {
         Self {
             timeout_secs: 0,
             max_rows: 10_000,
+            history_retention: default_history_retention(),
         }
     }
 }
@@ -365,6 +373,10 @@ impl AppConfig {
         let dir = Self::config_dir().join("logs");
         let _ = fs::create_dir_all(&dir);
         dir
+    }
+
+    pub fn history_db_path() -> PathBuf {
+        Self::config_dir().join("history.sqlite3")
     }
 
     pub fn load() -> Self {

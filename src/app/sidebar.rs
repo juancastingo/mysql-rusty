@@ -777,115 +777,212 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn render_query_history_panel(&mut self, ui: &mut Ui) {
-        let mut load_sql: Option<String> = None;
+        let mut run_sql: Option<String> = None;
         let mut new_tab_sql: Option<String> = None;
-        let mut clear_all_history = false;
         let mut save_snippet_from_history: Option<SavedSnippet> = None;
+        let mut trigger_clear = false;
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Execution History").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.config.history.is_empty() && ui.small_button("Clear History").clicked() {
-                    clear_all_history = true;
+                if !self.history_records.is_empty() {
+                    if self.history_confirm_clear {
+                        if ui
+                            .small_button(
+                                RichText::new("Confirm Clear")
+                                    .color(Color32::from_rgb(248, 113, 113)),
+                            )
+                            .clicked()
+                        {
+                            self.history_confirm_clear = false;
+                            trigger_clear = true;
+                        }
+                        if ui.small_button("Cancel").clicked() {
+                            self.history_confirm_clear = false;
+                        }
+                    } else if ui.small_button("Clear History").clicked() {
+                        self.history_confirm_clear = true;
+                    }
                 }
             });
         });
         ui.add_space(2.0);
 
-        ui.add(
+        let search_resp = ui.add(
             egui::TextEdit::singleline(&mut self.history_search_filter)
-                .hint_text("Search execution history by SQL or database...")
+                .hint_text("Search SQLite history by SQL or database...")
                 .desired_width(ui.available_width()),
         );
-        ui.add_space(4.0);
-
-        let filter = self.history_search_filter.to_lowercase();
-
-        if self.config.history.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(20.0);
-                ui.label(RichText::new("No executed queries recorded yet.").weak());
-            });
-            return;
+        if search_resp.changed() {
+            self.history_limit = 100;
+            self.history_dirty = true;
+            self.history_last_input = Some(std::time::Instant::now());
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for entry in self.config.history.iter().rev() {
-                if !filter.is_empty()
-                    && !entry.sql.to_lowercase().contains(&filter)
-                    && !entry.database.to_lowercase().contains(&filter)
-                {
-                    continue;
-                }
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(15, 23, 42))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(30, 41, 59)))
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&entry.timestamp).small().weak());
-                            if !entry.database.is_empty() {
-                                ui.colored_label(
-                                    Color32::from_rgb(56, 189, 248),
-                                    format!("[{}]", entry.database),
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(&mut self.history_filter_current_conn, "Current conn")
+                .changed()
+            {
+                self.history_limit = 100;
+                self.refresh_history();
+            }
+            if ui
+                .checkbox(&mut self.history_filter_failed_only, "Failed only")
+                .changed()
+            {
+                self.history_limit = 100;
+                self.refresh_history();
+            }
+            let db_label = if self.history_filter_database.is_empty() {
+                "All DBs".to_string()
+            } else {
+                self.history_filter_database.clone()
+            };
+            egui::ComboBox::from_id_salt("history_db_filter")
+                .selected_text(db_label)
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut self.history_filter_database,
+                            String::new(),
+                            "All DBs",
+                        )
+                        .changed()
+                    {
+                        self.history_limit = 100;
+                        self.refresh_history();
+                    }
+                    for db in &self.databases {
+                        if ui
+                            .selectable_value(&mut self.history_filter_database, db.clone(), db)
+                            .changed()
+                        {
+                            self.history_limit = 100;
+                            self.refresh_history();
+                        }
+                    }
+                });
+        });
+        ui.add_space(4.0);
+
+        if self.history_records.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("No matching queries in history.").weak());
+            });
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for entry in &self.history_records {
+                    let short_ts = entry
+                        .ts
+                        .split('T')
+                        .nth(1)
+                        .and_then(|t| t.get(..8))
+                        .unwrap_or(&entry.ts);
+                    let first_line = entry
+                        .sql
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(90)
+                        .collect::<String>();
+                    let hover_text = if let Some(err) = &entry.error {
+                        format!("{}\n\nError: {err}", entry.sql)
+                    } else {
+                        entry.sql.clone()
+                    };
+
+                    let frame_resp = egui::Frame::new()
+                        .fill(Color32::from_rgb(15, 23, 42))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(30, 41, 59)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if entry.success {
+                                    ui.colored_label(Color32::from_rgb(52, 211, 153), "✓");
+                                } else {
+                                    ui.colored_label(Color32::from_rgb(248, 113, 113), "✗");
+                                }
+                                ui.label(RichText::new(short_ts).small().weak());
+                                if !entry.database.is_empty() {
+                                    ui.colored_label(
+                                        Color32::from_rgb(56, 189, 248),
+                                        format!("[{}]", entry.database),
+                                    );
+                                }
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} rows • {} ms",
+                                        entry.row_count, entry.duration_ms
+                                    ))
+                                    .small()
+                                    .weak(),
                                 );
-                            }
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} rows • {} ms",
-                                    entry.row_count, entry.duration_ms
-                                ))
-                                .small()
-                                .color(Color32::from_rgb(52, 211, 153)),
+                            });
+                            let sql_resp = ui.add(
+                                egui::Label::new(RichText::new(&first_line).monospace().small())
+                                    .sense(egui::Sense::click()),
                             );
-                        });
-                        ui.label(RichText::new(&entry.sql).monospace().small());
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Reuse SQL").clicked() {
-                                load_sql = Some(entry.sql.clone());
-                            }
-                            if ui.small_button("Open in Tab").clicked() {
+                            if sql_resp.clicked() {
                                 new_tab_sql = Some(entry.sql.clone());
                             }
-                            if ui
-                                .small_button("Save to Library")
-                                .on_hover_text("Save query into Library")
-                                .clicked()
-                            {
-                                let title = entry
-                                    .sql
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("Historic Query")
-                                    .trim()
-                                    .chars()
-                                    .take(40)
-                                    .collect::<String>();
-                                let clean_title = if title.is_empty() {
-                                    "Historic Query".to_string()
-                                } else {
-                                    title
-                                };
-                                let new_id = uuid::Uuid::new_v4().to_string();
-                                save_snippet_from_history = Some(SavedSnippet {
-                                    id: new_id,
-                                    title: clean_title,
-                                    sql: entry.sql.clone(),
-                                    database: if entry.database.is_empty() {
-                                        None
+                            sql_resp.on_hover_text(&hover_text);
+
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Run again").clicked() {
+                                    run_sql = Some(entry.sql.clone());
+                                }
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(entry.sql.clone());
+                                    self.status_banner = "Copied SQL to clipboard.".to_string();
+                                }
+                                if ui
+                                    .small_button("Save")
+                                    .on_hover_text("Save query into Library")
+                                    .clicked()
+                                {
+                                    let title = first_line.chars().take(40).collect::<String>();
+                                    let clean_title = if title.is_empty() {
+                                        "Historic Query".to_string()
                                     } else {
-                                        Some(entry.database.clone())
-                                    },
-                                    description: format!("Executed on {}", entry.timestamp),
-                                    created_at: entry.timestamp.clone(),
-                                });
-                            }
-                        });
-                    });
-                ui.add_space(4.0);
-            }
-        });
+                                        title
+                                    };
+                                    save_snippet_from_history = Some(SavedSnippet {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        title: clean_title,
+                                        sql: entry.sql.clone(),
+                                        database: if entry.database.is_empty() {
+                                            None
+                                        } else {
+                                            Some(entry.database.clone())
+                                        },
+                                        description: format!("Executed at {}", entry.ts),
+                                        created_at: entry.ts.clone(),
+                                    });
+                                }
+                            });
+                        })
+                        .response;
+                    frame_resp.on_hover_text(&hover_text);
+                    ui.add_space(4.0);
+                }
+
+                if self.history_has_more
+                    && ui
+                        .centered_and_justified(|ui| ui.button("Load more (100)"))
+                        .inner
+                        .clicked()
+                {
+                    self.history_limit += 100;
+                    self.refresh_history();
+                }
+            });
+        }
 
         if let Some(snip) = save_snippet_from_history {
             let title = snip.title.clone();
@@ -894,17 +991,16 @@ impl MysqlRustyApp {
             self.status_banner = format!("Saved '{title}' to library.");
         }
 
-        if clear_all_history {
-            self.config.history.clear();
-            let _ = self.config.save();
-            self.status_banner = "Query history cleared.".to_string();
+        if trigger_clear {
+            self.clear_history();
         }
 
-        if let Some(sql) = load_sql
-            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
-        {
-            tab.sql = sql;
-            tab.is_dirty = true;
+        if let Some(sql) = run_sql {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                tab.sql = sql;
+                tab.is_dirty = true;
+            }
+            self.execute_current_tab_query(None);
         }
 
         if let Some(sql) = new_tab_sql {

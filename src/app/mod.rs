@@ -26,8 +26,8 @@ use crate::ai::{
     request_chat_assistant, request_inline_completion,
 };
 use crate::config::{
-    AiProvider, AppConfig, ConnectionProfile, Environment, QueryHistoryEntry, SavedScratchpad,
-    SavedSnippet, SslMode, TrashedConnection,
+    AiProvider, AppConfig, ConnectionProfile, Environment, SavedScratchpad, SavedSnippet, SslMode,
+    TrashedConnection,
 };
 use crate::data_diff::{
     DataDiffReport, RowDiffStatus, compute_data_diff, generate_data_diff_sync_sql,
@@ -197,13 +197,53 @@ pub struct MysqlRustyApp {
     last_keepalive_ping: std::time::Instant,
     pending_retry_query: Option<(String, String, Option<usize>)>,
     auto_retry_attempted: bool,
+
+    // SQLite Query History (#15)
+    history_store: Option<Arc<crate::history::HistoryStore>>,
+    history_records: Vec<crate::history::HistoryRecord>,
+    history_filter_current_conn: bool,
+    history_filter_database: String,
+    history_filter_failed_only: bool,
+    history_limit: usize,
+    history_has_more: bool,
+    history_last_input: Option<std::time::Instant>,
+    history_dirty: bool,
+    history_confirm_clear: bool,
 }
 
 impl MysqlRustyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: Arc<Runtime>) -> Self {
         configure_modern_dark_theme(&cc.egui_ctx);
         let (tx, rx) = unbounded_channel();
-        let config = AppConfig::load();
+        let mut config = AppConfig::load();
+        let history_store = match crate::history::HistoryStore::open(&AppConfig::history_db_path())
+        {
+            Ok(store) => {
+                if !config.history.is_empty() {
+                    for old in config.history.drain(..) {
+                        let _ = store.insert(&crate::history::HistoryRecord {
+                            id: 0,
+                            ts: old.timestamp,
+                            profile_id: String::new(),
+                            profile_name: "(imported)".to_string(),
+                            database: old.database,
+                            sql: old.sql,
+                            duration_ms: old.duration_ms,
+                            row_count: old.row_count as u64,
+                            success: old.success,
+                            error: None,
+                        });
+                    }
+                    let _ = config.save();
+                }
+                let _ = store.prune(config.query.history_retention);
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open SQLite history store: {e}");
+                None
+            }
+        };
 
         let restored_tabs: Vec<QueryTab> = if !config.scratchpads.is_empty() {
             config
@@ -327,6 +367,16 @@ impl MysqlRustyApp {
             last_keepalive_ping: std::time::Instant::now(),
             pending_retry_query: None,
             auto_retry_attempted: false,
+            history_store,
+            history_records: Vec::new(),
+            history_filter_current_conn: false,
+            history_filter_database: String::new(),
+            history_filter_failed_only: false,
+            history_limit: 100,
+            history_has_more: false,
+            history_last_input: None,
+            history_dirty: true,
+            history_confirm_clear: false,
         }
     }
 }
@@ -334,6 +384,18 @@ impl MysqlRustyApp {
 impl eframe::App for MysqlRustyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_async_events();
+
+        // Debounced SQLite History Refresh (200ms)
+        if self.history_dirty
+            && self
+                .history_last_input
+                .map(|t| t.elapsed().as_millis() >= 200)
+                .unwrap_or(true)
+        {
+            self.history_dirty = false;
+            self.history_last_input = None;
+            self.refresh_history();
+        }
 
         // Periodic Connection Keepalive Ping (every 60 seconds)
         if self.active_session.is_some()

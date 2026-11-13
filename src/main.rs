@@ -8,6 +8,7 @@ mod db_integration_tests;
 mod demo;
 mod er_diagram;
 mod export;
+mod history;
 mod schema_diff;
 mod syntax;
 mod table_designer;

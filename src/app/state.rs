@@ -58,6 +58,8 @@ pub enum AsyncEvent {
     },
     KeepaliveResult(Result<(), String>),
     Reconnected(Result<(String, Arc<ActiveSession>), String>),
+    HistoryLoaded(Vec<crate::history::HistoryRecord>),
+    HistoryCleared,
 }
 
 pub struct CsvImportWizard {
