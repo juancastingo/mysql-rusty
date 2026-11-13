@@ -68,7 +68,7 @@ impl Environment {
 
     pub fn color_rgb(&self) -> (u8, u8, u8) {
         match self {
-            Self::Development => (34, 197, 94),  // Emerald green
+            Self::Development => (34, 197, 94), // Emerald green
             Self::Staging => (234, 179, 8),     // Amber yellow
             Self::Production => (239, 68, 68),  // Bright red
         }
@@ -393,7 +393,11 @@ impl AppConfig {
             let _ = set_secret(&key, &conn.password);
             if get_secret(&key).as_deref() == Some(&conn.password) {
                 // Keyring confirmed storage: clean password from disk config
-                if let Some(c) = config_to_save.connections.iter_mut().find(|c| c.id == conn.id) {
+                if let Some(c) = config_to_save
+                    .connections
+                    .iter_mut()
+                    .find(|c| c.id == conn.id)
+                {
                     c.password.clear();
                 }
             }
@@ -451,4 +455,3 @@ pub fn delete_secret(key: &str) -> Result<()> {
     }
     Ok(())
 }
-

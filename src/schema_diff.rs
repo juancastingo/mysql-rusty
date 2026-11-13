@@ -14,7 +14,11 @@ impl SchemaDiffReport {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         format!(
             "-- ========================================================\n-- Schema Diff Migration: `{}` -> `{}`\n-- Generated at: {}\n-- ========================================================\n\n-- >>> UP MIGRATION (APPLY CHANGES)\n{}\n\n-- >>> SUMMARY OF CHANGES:\n-- {}\n",
-            self.source_name, self.target_name, now, self.migration_sql, self.summary.join("\n-- ")
+            self.source_name,
+            self.target_name,
+            now,
+            self.migration_sql,
+            self.summary.join("\n-- ")
         )
     }
 }
@@ -132,8 +136,11 @@ pub fn diff_schemas(source: &DatabaseSchema, target: &DatabaseSchema) -> SchemaD
     // 2. Alter Existing Tables (present in both, but columns / keys differ)
     for src_tbl in &source.tables {
         if let Some(tgt_tbl) = target_tables.get(src_tbl.name.as_str()) {
-            let tgt_cols: HashMap<&str, &ColumnInfo> =
-                tgt_tbl.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+            let tgt_cols: HashMap<&str, &ColumnInfo> = tgt_tbl
+                .columns
+                .iter()
+                .map(|c| (c.name.as_str(), c))
+                .collect();
 
             let mut table_alters = Vec::new();
 

@@ -110,7 +110,10 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
                 row_vals.push("NULL".to_string());
             } else if field_trimmed.parse::<i64>().is_ok() {
                 row_vals.push(field_trimmed.to_string());
-            } else if field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0') || field_trimmed == "0" || field_trimmed.starts_with("0.") {
+            } else if field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0')
+                || field_trimmed == "0"
+                || field_trimmed.starts_with("0.")
+            {
                 row_vals.push(field_trimmed.to_string());
             } else if field_trimmed.eq_ignore_ascii_case("true") {
                 row_vals.push("1".to_string());
@@ -134,7 +137,10 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
 }
 
 /// Inspects a CSV content string and returns its headers, first N sample rows, and total row count.
-pub fn inspect_csv_content(csv_content: &str, max_samples: usize) -> Result<(Vec<String>, Vec<Vec<String>>, usize)> {
+pub fn inspect_csv_content(
+    csv_content: &str,
+    max_samples: usize,
+) -> Result<(Vec<String>, Vec<Vec<String>>, usize)> {
     let trimmed = csv_content.trim();
     if trimmed.is_empty() {
         return Err(anyhow::anyhow!("CSV file is empty."));
@@ -144,7 +150,11 @@ pub fn inspect_csv_content(csv_content: &str, max_samples: usize) -> Result<(Vec
         .trim(csv::Trim::All)
         .from_reader(trimmed.as_bytes());
 
-    let headers: Vec<String> = reader.headers()?.iter().map(|h| h.trim().to_string()).collect();
+    let headers: Vec<String> = reader
+        .headers()?
+        .iter()
+        .map(|h| h.trim().to_string())
+        .collect();
     let mut sample_rows = Vec::new();
     let mut total_count = 0;
 
@@ -174,7 +184,10 @@ pub fn generate_csv_import_sql(
         .iter()
         .filter(|(_, db)| !db.trim().is_empty())
         .filter_map(|(csv_col, db_col)| {
-            headers.iter().position(|h| h == csv_col).map(|idx| (idx, db_col))
+            headers
+                .iter()
+                .position(|h| h == csv_col)
+                .map(|idx| (idx, db_col))
         })
         .collect();
 
@@ -215,7 +228,10 @@ pub fn generate_csv_import_sql(
                 row_vals.push("NULL".to_string());
             } else if field_trimmed.parse::<i64>().is_ok() {
                 row_vals.push(field_trimmed.to_string());
-            } else if (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0')) || field_trimmed == "0" || field_trimmed.starts_with("0.") {
+            } else if (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
+                || field_trimmed == "0"
+                || field_trimmed.starts_with("0.")
+            {
                 row_vals.push(field_trimmed.to_string());
             } else if field_trimmed.eq_ignore_ascii_case("true") {
                 row_vals.push("1".to_string());
@@ -252,7 +268,14 @@ pub fn to_markdown_table(result: &QueryResult) -> String {
     out.push_str("| ");
     out.push_str(&result.columns.join(" | "));
     out.push_str(" |\n| ");
-    out.push_str(&result.columns.iter().map(|_| "---").collect::<Vec<_>>().join(" | "));
+    out.push_str(
+        &result
+            .columns
+            .iter()
+            .map(|_| "---")
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
     out.push_str(" |\n");
     for row in &result.rows {
         out.push_str("| ");
@@ -293,18 +316,35 @@ pub fn generate_mock_data_sql(table: &TableSchema, count: usize) -> String {
         "Alex", "Maria", "Carlos", "Emma", "David", "Sofia", "Liam", "Lucia", "Noah", "Elena",
     ];
     let last_names = [
-        "Smith", "Garcia", "Johnson", "Rodriguez", "Brown", "Martinez", "Davis", "Lopez", "Wilson",
+        "Smith",
+        "Garcia",
+        "Johnson",
+        "Rodriguez",
+        "Brown",
+        "Martinez",
+        "Davis",
+        "Lopez",
+        "Wilson",
         "Gonzalez",
     ];
     let statuses = ["active", "pending", "completed", "cancelled", "processing"];
     let domains = ["example.com", "testmail.org", "company.io", "sample.net"];
     let cities = [
-        "New York", "Madrid", "London", "Buenos Aires", "Tokyo", "Berlin", "Paris", "Toronto",
+        "New York",
+        "Madrid",
+        "London",
+        "Buenos Aires",
+        "Tokyo",
+        "Berlin",
+        "Paris",
+        "Toronto",
     ];
     let countries = ["USA", "Spain", "Germany", "Japan", "Argentina", "UK"];
 
     let mut out = format!("-- Mock Seed Data for `{clean_table}` ({count} rows)\n");
-    out.push_str(&format!("INSERT INTO `{clean_table}` ({col_names}) VALUES\n"));
+    out.push_str(&format!(
+        "INSERT INTO `{clean_table}` ({col_names}) VALUES\n"
+    ));
 
     let mut row_strings = Vec::with_capacity(count);
     for i in 1..=count {
@@ -376,7 +416,11 @@ pub fn generate_mock_data_sql(table: &TableSchema, count: usize) -> String {
 }
 
 /// Formats all unique non-null values from a specific column as a SQL `IN (...)` clause.
-pub fn format_column_as_sql_in(result: &QueryResult, col_idx: usize, row_indices: &[usize]) -> String {
+pub fn format_column_as_sql_in(
+    result: &QueryResult,
+    col_idx: usize,
+    row_indices: &[usize],
+) -> String {
     let mut vals = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for &r_idx in row_indices {
@@ -399,7 +443,11 @@ pub fn format_column_as_sql_in(result: &QueryResult, col_idx: usize, row_indices
 }
 
 /// Formats all values from a specific column as a JavaScript/TypeScript array.
-pub fn format_column_as_js_array(result: &QueryResult, col_idx: usize, row_indices: &[usize]) -> String {
+pub fn format_column_as_js_array(
+    result: &QueryResult,
+    col_idx: usize,
+    row_indices: &[usize],
+) -> String {
     let mut vals = Vec::new();
     for &r_idx in row_indices {
         if let Some(cell) = result.rows.get(r_idx).and_then(|r| r.get(col_idx)) {
@@ -411,7 +459,10 @@ pub fn format_column_as_js_array(result: &QueryResult, col_idx: usize, row_indic
             if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() {
                 vals.push(text);
             } else {
-                vals.push(format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"")));
+                vals.push(format!(
+                    "\"{}\"",
+                    text.replace('\\', "\\\\").replace('"', "\\\"")
+                ));
             }
         }
     }
@@ -619,5 +670,3 @@ pub fn generate_table_dump_sql(
     }
     out
 }
-
-

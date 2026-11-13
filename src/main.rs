@@ -51,7 +51,8 @@ mod tests {
 
     #[test]
     fn test_extract_statement_at_cursor() {
-        let sql = "SELECT 'first;one' AS col1; SELECT \"second;two\"; SELECT 3 -- comment with ; \n;";
+        let sql =
+            "SELECT 'first;one' AS col1; SELECT \"second;two\"; SELECT 3 -- comment with ; \n;";
         // Statement 1 is from char 0 to 27
         let (stmt1, (s1, e1)) = extract_statement_at_cursor(sql, 5);
         assert_eq!(stmt1, "SELECT 'first;one' AS col1;");
@@ -95,8 +96,11 @@ mod tests {
             "full_name".to_string(),
             "email".to_string(),
         ];
-        let (tbl, pk) =
-            detect_editable_table_and_pk("SELECT id, full_name, email FROM users LIMIT 10", &cols, Some(&schema));
+        let (tbl, pk) = detect_editable_table_and_pk(
+            "SELECT id, full_name, email FROM users LIMIT 10",
+            &cols,
+            Some(&schema),
+        );
         assert_eq!(tbl.as_deref(), Some("users"));
         assert_eq!(pk.as_deref(), Some("id"));
     }
@@ -133,7 +137,11 @@ mod tests {
     fn test_heuristic_ghost_completion_and_sql_extraction() {
         let schema = build_demo_schema("ecommerce_prod");
         let ghost = compute_heuristic_ghost_completion("SELECT * FROM orders", Some(&schema));
-        assert!(ghost.unwrap().contains("JOIN users ON orders.user_id = users.id"));
+        assert!(
+            ghost
+                .unwrap()
+                .contains("JOIN users ON orders.user_id = users.id")
+        );
 
         let md = "Here is the query:\n```sql\nSELECT id FROM users;\n```\nDone.";
         assert_eq!(
@@ -151,7 +159,8 @@ mod tests {
         let select_ghost = compute_heuristic_ghost_completion("SELECT *", Some(&schema));
         assert!(select_ghost.unwrap().contains("FROM users LIMIT 50;"));
 
-        let where_ghost = compute_heuristic_ghost_completion("SELECT * FROM users WHERE", Some(&schema));
+        let where_ghost =
+            compute_heuristic_ghost_completion("SELECT * FROM users WHERE", Some(&schema));
         assert!(where_ghost.unwrap().contains("id = 1 LIMIT 50;"));
 
         let insert_ghost = compute_heuristic_ghost_completion("INSERT INTO users", Some(&schema));
@@ -176,8 +185,11 @@ mod tests {
         let schema = build_demo_schema("ecommerce_prod");
 
         // 1. Alias resolution from `FROM users AS usr`
-        let (_, alias_items) =
-            compute_local_completions("SELECT usr.em FROM users AS usr WHERE usr.em", Some(&schema), 10);
+        let (_, alias_items) = compute_local_completions(
+            "SELECT usr.em FROM users AS usr WHERE usr.em",
+            Some(&schema),
+            10,
+        );
         assert!(alias_items.iter().any(|i| i.label == "usr.email"));
 
         // 2. Substring / word-boundary matching (`mail` matches `email`)
@@ -186,8 +198,7 @@ mod tests {
         assert!(fuzzy_items.iter().any(|i| i.label == "email"));
 
         // 3. Clause awareness: after `FROM `, tables are suggested first
-        let (_, from_items) =
-            compute_local_completions("SELECT * FROM ", Some(&schema), 5);
+        let (_, from_items) = compute_local_completions("SELECT * FROM ", Some(&schema), 5);
         assert!(!from_items.is_empty());
         assert_eq!(from_items[0].kind, crate::ai::CompletionKind::Table);
 
@@ -251,7 +262,9 @@ mod tests {
         assert!(create_ddl.contains("CREATE TABLE `products`"));
         assert!(create_ddl.contains("PRIMARY KEY (`id`)"));
         assert!(create_ddl.contains("KEY `idx_title` (`title`)"));
-        assert!(create_ddl.contains("CONSTRAINT `fk_prod_cat` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)"));
+        assert!(create_ddl.contains(
+            "CONSTRAINT `fk_prod_cat` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)"
+        ));
         assert!(create_ddl.contains("ENGINE=InnoDB"));
 
         // 2. ALTER TABLE mode
@@ -278,8 +291,12 @@ mod tests {
         alter_draft.columns.retain(|c| c.name != "country");
 
         let alter_ddl = alter_draft.generate_ddl_diff();
-        assert!(alter_ddl.contains("ALTER TABLE `users` ADD COLUMN `phone_number` VARCHAR(30) NULL;"));
-        assert!(alter_ddl.contains("ALTER TABLE `users` MODIFY COLUMN `email` VARCHAR(320) NOT NULL;"));
+        assert!(
+            alter_ddl.contains("ALTER TABLE `users` ADD COLUMN `phone_number` VARCHAR(30) NULL;")
+        );
+        assert!(
+            alter_ddl.contains("ALTER TABLE `users` MODIFY COLUMN `email` VARCHAR(320) NOT NULL;")
+        );
         assert!(alter_ddl.contains("ALTER TABLE `users` DROP COLUMN `country`;"));
     }
 
@@ -292,18 +309,27 @@ mod tests {
             .await
             .expect("Failed to connect to demo sandbox");
 
-        let procs = session.list_processes().await.expect("Failed to list processes");
+        let procs = session
+            .list_processes()
+            .await
+            .expect("Failed to list processes");
         assert!(procs.columns.contains(&"Id".to_string()));
         assert!(procs.columns.contains(&"User".to_string()));
         assert!(procs.columns.contains(&"Command".to_string()));
         assert!(!procs.rows.is_empty());
 
-        let status = session.server_status_summary().await.expect("Failed to get server status");
+        let status = session
+            .server_status_summary()
+            .await
+            .expect("Failed to get server status");
         assert!(status.contains_key("Uptime"));
         assert!(status.contains_key("Threads_connected"));
         assert!(status.contains_key("Questions"));
 
-        let vars = session.list_server_variables().await.expect("Failed to get server variables");
+        let vars = session
+            .list_server_variables()
+            .await
+            .expect("Failed to get server variables");
         assert!(!vars.is_empty());
         assert!(vars.iter().any(|(k, _)| k == "max_connections"));
         assert!(vars.iter().any(|(k, _)| k == "version"));
@@ -341,7 +367,9 @@ mod tests {
 
         let csv = "id,name,price,in_stock,notes\n1,Widget,19.99,true,NULL\n2,Gadget,42.0,false,\"Best widget ever; tested!\"\n3,Doohickey,100,true,";
         let sql = parse_csv_to_batch_insert("inventory", csv).expect("Failed to parse CSV");
-        assert!(sql.starts_with("INSERT INTO `inventory` (`id`, `name`, `price`, `in_stock`, `notes`) VALUES"));
+        assert!(sql.starts_with(
+            "INSERT INTO `inventory` (`id`, `name`, `price`, `in_stock`, `notes`) VALUES"
+        ));
         assert!(sql.contains("(1, 'Widget', 19.99, 1, NULL)"));
         assert!(sql.contains("(2, 'Gadget', 42.0, 0, 'Best widget ever; tested!')"));
         assert!(sql.contains("(3, 'Doohickey', 100, 1, NULL)"));
@@ -397,7 +425,9 @@ mod tests {
 
         // Write query classification
         assert!(is_write_query("INSERT INTO users VALUES (1, 'Alex');"));
-        assert!(is_write_query("UPDATE users SET name = 'Bob' WHERE id = 1;"));
+        assert!(is_write_query(
+            "UPDATE users SET name = 'Bob' WHERE id = 1;"
+        ));
         assert!(is_write_query("DELETE FROM users WHERE id = 1;"));
         assert!(is_write_query("DROP TABLE obsolete;"));
         assert!(!is_write_query("SELECT * FROM users;"));
@@ -474,9 +504,17 @@ mod tests {
         };
 
         let report = diff_schemas(&source, &target);
-        assert!(report.migration_sql.contains("CREATE TABLE IF NOT EXISTS `audit_logs`"));
+        assert!(
+            report
+                .migration_sql
+                .contains("CREATE TABLE IF NOT EXISTS `audit_logs`")
+        );
         assert!(report.migration_sql.contains("ALTER TABLE `users`"));
-        assert!(report.migration_sql.contains("ADD COLUMN `email` VARCHAR(191) NULL"));
+        assert!(
+            report
+                .migration_sql
+                .contains("ADD COLUMN `email` VARCHAR(191) NULL")
+        );
         assert_eq!(report.summary.len(), 2);
     }
 
@@ -605,7 +643,10 @@ mod tests {
         // 5. Query without semicolon
         let q4 = "SELECT * FROM orders WHERE status = 'paid'";
         let q4_l10 = apply_limit_to_sql(q4, Some(10));
-        assert_eq!(q4_l10, "SELECT * FROM orders WHERE status = 'paid' LIMIT 10;");
+        assert_eq!(
+            q4_l10,
+            "SELECT * FROM orders WHERE status = 'paid' LIMIT 10;"
+        );
     }
 
     #[test]
@@ -614,9 +655,15 @@ mod tests {
         use crate::config::AppConfig;
 
         assert_eq!(sanitize_filename("My Custom Query"), "My_Custom_Query");
-        assert_eq!(sanitize_filename("test/unsafe*name?.sql"), "test_unsafe_name");
+        assert_eq!(
+            sanitize_filename("test/unsafe*name?.sql"),
+            "test_unsafe_name"
+        );
         assert_eq!(sanitize_filename(""), "query");
-        assert_eq!(sanitize_filename("  spaces_and_tabs  .sql"), "spaces_and_tabs");
+        assert_eq!(
+            sanitize_filename("  spaces_and_tabs  .sql"),
+            "spaces_and_tabs"
+        );
 
         let qdir = AppConfig::queries_dir();
         assert!(qdir.exists() || qdir.to_str().is_some());
@@ -624,11 +671,11 @@ mod tests {
 
     #[test]
     fn test_productivity_sql_helpers() {
-        use std::collections::HashMap;
         use crate::syntax::{
             expand_sql_macro_with_cursor, extract_sql_parameters, split_sql_statements,
             substitute_sql_parameters,
         };
+        use std::collections::HashMap;
 
         let script = "SELECT 1; SELECT 'a;b' AS txt; -- comment;ignored\nSELECT 2;";
         let stmts = split_sql_statements(script);
@@ -670,8 +717,14 @@ mod tests {
             database: "demo".to_string(),
             columns: vec!["id".to_string(), "name".to_string()],
             rows: vec![
-                vec![CellValue::Text("1".to_string()), CellValue::Text("Alice".to_string())],
-                vec![CellValue::Text("2".to_string()), CellValue::Text("O'Brien".to_string())],
+                vec![
+                    CellValue::Text("1".to_string()),
+                    CellValue::Text("Alice".to_string()),
+                ],
+                vec![
+                    CellValue::Text("2".to_string()),
+                    CellValue::Text("O'Brien".to_string()),
+                ],
                 vec![CellValue::Null, CellValue::Null],
             ],
             affected_rows: 0,
@@ -696,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_row_copy_dump_and_data_diff() {
-        use crate::data_diff::{compute_data_diff, generate_data_diff_sync_sql, RowDiffStatus};
+        use crate::data_diff::{RowDiffStatus, compute_data_diff, generate_data_diff_sync_sql};
         use crate::db::{CellValue, ColumnInfo, QueryResult, TableSchema};
         use crate::export::{
             format_rows_as_json, format_rows_as_sql_insert, format_rows_as_sql_update,
@@ -724,8 +777,14 @@ mod tests {
             database: "prod".to_string(),
             columns: vec!["id".to_string(), "name".to_string()],
             rows: vec![
-                vec![CellValue::Integer(1), CellValue::Text("Alice V2".to_string())],
-                vec![CellValue::Integer(3), CellValue::Text("Charlie".to_string())],
+                vec![
+                    CellValue::Integer(1),
+                    CellValue::Text("Alice V2".to_string()),
+                ],
+                vec![
+                    CellValue::Integer(3),
+                    CellValue::Text("Charlie".to_string()),
+                ],
             ],
             affected_rows: 0,
             last_insert_id: None,
@@ -780,10 +839,12 @@ mod tests {
         assert_eq!(report.modified_count, 1);
         assert_eq!(report.left_only_count, 1);
         assert_eq!(report.right_only_count, 1);
-        assert!(report
-            .entries
-            .iter()
-            .any(|e| e.key_display == "1" && e.status == RowDiffStatus::Modified));
+        assert!(
+            report
+                .entries
+                .iter()
+                .any(|e| e.key_display == "1" && e.status == RowDiffStatus::Modified)
+        );
 
         let sync = generate_data_diff_sync_sql("users", &report, 0);
         assert!(sync.contains("UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;"));

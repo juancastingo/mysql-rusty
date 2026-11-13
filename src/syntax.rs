@@ -2,26 +2,135 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontFamily, FontId};
 
 const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "ON", "AS",
-    "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "BETWEEN", "EXISTS", "GROUP", "BY", "ORDER",
-    "ASC", "DESC", "HAVING", "LIMIT", "OFFSET", "UNION", "ALL", "DISTINCT", "INSERT", "INTO",
-    "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE", "TABLE", "VIEW",
-    "INDEX", "DATABASE", "SCHEMA", "IF", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT",
-    "AUTO_INCREMENT", "UNIQUE", "CONSTRAINT", "CASE", "WHEN", "THEN", "ELSE", "END", "EXPLAIN",
-    "SHOW", "DESCRIBE", "DESC", "USE", "BEGIN", "COMMIT", "ROLLBACK", "TRANSACTION", "WITH",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "OUTER",
+    "ON",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS",
+    "NULL",
+    "LIKE",
+    "BETWEEN",
+    "EXISTS",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "ASC",
+    "DESC",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "ALL",
+    "DISTINCT",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
+    "TABLE",
+    "VIEW",
+    "INDEX",
+    "DATABASE",
+    "SCHEMA",
+    "IF",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "DEFAULT",
+    "AUTO_INCREMENT",
+    "UNIQUE",
+    "CONSTRAINT",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "EXPLAIN",
+    "SHOW",
+    "DESCRIBE",
+    "DESC",
+    "USE",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "TRANSACTION",
+    "WITH",
 ];
 
 const SQL_FUNCTIONS: &[&str] = &[
-    "COUNT", "SUM", "AVG", "MIN", "MAX", "ROUND", "COALESCE", "IFNULL", "CONCAT", "SUBSTRING",
-    "LOWER", "UPPER", "TRIM", "LENGTH", "NOW", "CURDATE", "DATE_FORMAT", "DATEDIFF", "YEAR",
-    "MONTH", "DAY", "CAST", "CONVERT", "JSON_EXTRACT", "ROW_NUMBER", "RANK", "DENSE_RANK",
-    "DATABASE", "VERSION",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ROUND",
+    "COALESCE",
+    "IFNULL",
+    "CONCAT",
+    "SUBSTRING",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "LENGTH",
+    "NOW",
+    "CURDATE",
+    "DATE_FORMAT",
+    "DATEDIFF",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "CAST",
+    "CONVERT",
+    "JSON_EXTRACT",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "DATABASE",
+    "VERSION",
 ];
 
 const SQL_TYPES: &[&str] = &[
-    "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "UNSIGNED", "VARCHAR", "CHAR", "TEXT",
-    "LONGTEXT", "MEDIUMTEXT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "BOOLEAN", "BOOL", "DATE",
-    "DATETIME", "TIMESTAMP", "TIME", "JSON", "ENUM", "BLOB",
+    "INT",
+    "INTEGER",
+    "BIGINT",
+    "SMALLINT",
+    "TINYINT",
+    "UNSIGNED",
+    "VARCHAR",
+    "CHAR",
+    "TEXT",
+    "LONGTEXT",
+    "MEDIUMTEXT",
+    "DECIMAL",
+    "NUMERIC",
+    "FLOAT",
+    "DOUBLE",
+    "BOOLEAN",
+    "BOOL",
+    "DATE",
+    "DATETIME",
+    "TIMESTAMP",
+    "TIME",
+    "JSON",
+    "ENUM",
+    "BLOB",
 ];
 
 /// Converts a character index into a valid UTF-8 byte offset in `text`.
@@ -413,20 +522,36 @@ pub fn is_potentially_destructive(sql: &str) -> Option<&'static str> {
     }
 
     if upper.starts_with("ALTER TABLE") && upper.contains(" DROP ") {
-        return Some("ALTER TABLE with DROP column/constraint deletes schema structures permanently.");
+        return Some(
+            "ALTER TABLE with DROP column/constraint deletes schema structures permanently.",
+        );
     }
 
-    if upper.starts_with("UPDATE ") || upper.starts_with("UPDATE\n") || upper.starts_with("UPDATE\t") {
-        let has_where = upper.split_whitespace().any(|word| word == "WHERE" || word.starts_with("WHERE;"));
+    if upper.starts_with("UPDATE ")
+        || upper.starts_with("UPDATE\n")
+        || upper.starts_with("UPDATE\t")
+    {
+        let has_where = upper
+            .split_whitespace()
+            .any(|word| word == "WHERE" || word.starts_with("WHERE;"));
         if !has_where {
-            return Some("UPDATE without a WHERE clause will overwrite EVERY single row in the table!");
+            return Some(
+                "UPDATE without a WHERE clause will overwrite EVERY single row in the table!",
+            );
         }
     }
 
-    if upper.starts_with("DELETE ") || upper.starts_with("DELETE\n") || upper.starts_with("DELETE\t") {
-        let has_where = upper.split_whitespace().any(|word| word == "WHERE" || word.starts_with("WHERE;"));
+    if upper.starts_with("DELETE ")
+        || upper.starts_with("DELETE\n")
+        || upper.starts_with("DELETE\t")
+    {
+        let has_where = upper
+            .split_whitespace()
+            .any(|word| word == "WHERE" || word.starts_with("WHERE;"));
         if !has_where {
-            return Some("DELETE without a WHERE clause will delete EVERY single row in the table!");
+            return Some(
+                "DELETE without a WHERE clause will delete EVERY single row in the table!",
+            );
         }
     }
 
@@ -554,7 +679,8 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
         if prev_ok && i + 5 <= n {
             let slice: String = chars[i..i + 5].iter().collect();
             if slice.eq_ignore_ascii_case("LIMIT") {
-                let next_ok = i + 5 == n || (!chars[i + 5].is_alphanumeric() && chars[i + 5] != '_');
+                let next_ok =
+                    i + 5 == n || (!chars[i + 5].is_alphanumeric() && chars[i + 5] != '_');
                 if next_ok {
                     last_limit_pos = Some(i);
                     i += 5;
@@ -575,7 +701,9 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
     if upper_after.contains(')') {
         return None;
     }
-    for kw in &["WHERE", "ORDER BY", "GROUP BY", "HAVING", "JOIN", "UNION", "SELECT", "FROM"] {
+    for kw in &[
+        "WHERE", "ORDER BY", "GROUP BY", "HAVING", "JOIN", "UNION", "SELECT", "FROM",
+    ] {
         if upper_after.split_whitespace().any(|w| w == *kw) {
             return None;
         }
@@ -586,12 +714,15 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
         return None;
     }
 
-    let byte_limit_start = sql
-        .char_indices()
-        .nth(limit_char_idx)
-        .map(|(b, _)| b)?;
+    let byte_limit_start = sql.char_indices().nth(limit_char_idx).map(|(b, _)| b)?;
 
-    let last_char_idx = limit_char_idx + 5 + after_limit_str.trim_end().trim_end_matches(';').chars().count();
+    let last_char_idx = limit_char_idx
+        + 5
+        + after_limit_str
+            .trim_end()
+            .trim_end_matches(';')
+            .chars()
+            .count();
     let byte_clause_end = sql
         .char_indices()
         .nth(last_char_idx)
@@ -847,7 +978,9 @@ pub fn extract_sql_parameters(sql: &str) -> Vec<String> {
                 in_double_quote = true;
             } else if ch == '`' {
                 in_backtick = true;
-            } else if ch == ':' && (i == 0 || !chars[i - 1].is_ascii_alphanumeric() && chars[i - 1] != ':') {
+            } else if ch == ':'
+                && (i == 0 || !chars[i - 1].is_ascii_alphanumeric() && chars[i - 1] != ':')
+            {
                 if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_') {
                     let mut j = i + 1;
                     while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
@@ -989,11 +1122,12 @@ pub fn expand_sql_macro_with_cursor(token: &str) -> Option<(&'static str, usize)
         "cnt*" => Some(("SELECT COUNT(*) AS total FROM ;", 30)), // before ";"
         "join*" => Some(("INNER JOIN  ON .id = ._id", 11)), // after "INNER JOIN "
         "ins*" => Some(("INSERT INTO  () VALUES ();", 12)), // after "INSERT INTO "
-        "upd*" => Some(("UPDATE  SET  WHERE ;", 7)), // after "UPDATE "
-        "del*" => Some(("DELETE FROM  WHERE ;", 12)), // after "DELETE FROM "
-        "grp*" => Some(("SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;", 7)), // after "SELECT "
+        "upd*" => Some(("UPDATE  SET  WHERE ;", 7)),       // after "UPDATE "
+        "del*" => Some(("DELETE FROM  WHERE ;", 12)),      // after "DELETE FROM "
+        "grp*" => Some((
+            "SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;",
+            7,
+        )), // after "SELECT "
         _ => None,
     }
 }
-
-

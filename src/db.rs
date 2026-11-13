@@ -87,7 +87,9 @@ impl DatabaseSchema {
             let name_lower = t.name.to_lowercase();
             // Check if table name appears in query as a distinct token or with backticks
             if sql_lower.contains(&format!("`{name_lower}`"))
-                || sql_lower.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == name_lower)
+                || sql_lower
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == name_lower)
             {
                 relevant_tables.push(t);
                 mentioned_names.push(t.name.clone());
@@ -254,7 +256,10 @@ impl Default for DemoStore {
         map.insert("order_items".to_string(), demo_order_items_table());
         map.insert("payments".to_string(), demo_payments_table());
         map.insert("events_daily".to_string(), demo_events_daily_table());
-        map.insert("pageviews_summary".to_string(), demo_pageviews_summary_table());
+        map.insert(
+            "pageviews_summary".to_string(),
+            demo_pageviews_summary_table(),
+        );
         map.insert("tables".to_string(), demo_tables_table());
         map.insert("columns".to_string(), demo_columns_table());
         Self {
@@ -287,11 +292,18 @@ impl ActiveSession {
 
         if profile.ssh.enabled && !profile.ssh.ssh_host.trim().is_empty() {
             // Support "hostname:port" format in ssh_host
-            let (ssh_host, ssh_port) = if let Some((h, p)) = profile.ssh.ssh_host.trim().split_once(':') {
-                (h.trim().to_string(), p.trim().parse::<u16>().unwrap_or(profile.ssh.ssh_port))
-            } else {
-                (profile.ssh.ssh_host.trim().to_string(), profile.ssh.ssh_port)
-            };
+            let (ssh_host, ssh_port) =
+                if let Some((h, p)) = profile.ssh.ssh_host.trim().split_once(':') {
+                    (
+                        h.trim().to_string(),
+                        p.trim().parse::<u16>().unwrap_or(profile.ssh.ssh_port),
+                    )
+                } else {
+                    (
+                        profile.ssh.ssh_host.trim().to_string(),
+                        profile.ssh.ssh_port,
+                    )
+                };
 
             // Find an open local port (prefer local_bind_port if available, otherwise bind to free ephemeral port)
             let local_port = {
@@ -363,7 +375,10 @@ impl ActiveSession {
                 }
 
                 // 2. Probe if local forwarding port is accepting connections
-                if tokio::net::TcpStream::connect(("127.0.0.1", local_port)).await.is_ok() {
+                if tokio::net::TcpStream::connect(("127.0.0.1", local_port))
+                    .await
+                    .is_ok()
+                {
                     // Small grace period for SSH forwarding pipe initialization
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     port_ready = true;
@@ -414,7 +429,10 @@ impl ActiveSession {
         let host_for_err = connect_host.clone();
         let format_conn_err = move |e: anyhow::Error| -> anyhow::Error {
             let err_str = format!("{e:#}");
-            if err_str.contains("Connection refused") || err_str.contains("os error 111") || err_str.contains("os error 61") {
+            if err_str.contains("Connection refused")
+                || err_str.contains("os error 111")
+                || err_str.contains("os error 61")
+            {
                 anyhow::anyhow!(
                     "Connection refused (os error 111): No MySQL/MariaDB service is listening on {host_for_err}:{connect_port}.\n\n\
                      • If your database is running on your personal computer, note that mysql-rusty runs in a remote virtual machine, so '127.0.0.1' points to this remote VM. Enter your computer's public/LAN IP or use the built-in SSH Tunnel option.\n\
@@ -626,9 +644,7 @@ impl ActiveSession {
         }
 
         match self {
-            Self::DemoSandbox { store, .. } => {
-                execute_demo_query(store, database, trimmed, schema)
-            }
+            Self::DemoSandbox { store, .. } => execute_demo_query(store, database, trimmed, schema),
             Self::RealMysql { pool, .. } => {
                 let start = Instant::now();
                 let mut conn = pool.get_conn().await?;
@@ -665,11 +681,7 @@ impl ActiveSession {
                     detect_editable_table_and_pk(trimmed, &columns, schema);
 
                 let status_message = if !columns.is_empty() {
-                    format!(
-                        "{} rows returned in {} ms",
-                        rows.len(),
-                        duration_ms
-                    )
+                    format!("{} rows returned in {} ms", rows.len(), duration_ms)
                 } else {
                     format!(
                         "Query executed successfully ({} rows affected) in {} ms",
@@ -870,7 +882,10 @@ impl ActiveSession {
                 map.insert("Threads_connected".to_string(), "14".to_string());
                 map.insert("Questions".to_string(), "148293".to_string());
                 map.insert("Slow_queries".to_string(), "3".to_string());
-                map.insert("Innodb_buffer_pool_bytes_data".to_string(), "1073741824".to_string());
+                map.insert(
+                    "Innodb_buffer_pool_bytes_data".to_string(),
+                    "1073741824".to_string(),
+                );
                 Ok(map)
             }
             Self::RealMysql { pool, .. } => {
@@ -1895,15 +1910,40 @@ fn demo_pageviews_summary_table() -> QueryResult {
 
 fn demo_tables_table() -> QueryResult {
     let rows = vec![
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("products".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("orders".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
-        vec![CellValue::Text("analytics_dw".into()), CellValue::Text("events_daily".into()), CellValue::Text("BASE TABLE".into()), CellValue::Text("InnoDB".into())],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("users".into()),
+            CellValue::Text("BASE TABLE".into()),
+            CellValue::Text("InnoDB".into()),
+        ],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("products".into()),
+            CellValue::Text("BASE TABLE".into()),
+            CellValue::Text("InnoDB".into()),
+        ],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("orders".into()),
+            CellValue::Text("BASE TABLE".into()),
+            CellValue::Text("InnoDB".into()),
+        ],
+        vec![
+            CellValue::Text("analytics_dw".into()),
+            CellValue::Text("events_daily".into()),
+            CellValue::Text("BASE TABLE".into()),
+            CellValue::Text("InnoDB".into()),
+        ],
     ];
     QueryResult {
         sql: "SELECT * FROM information_schema.TABLES".into(),
         database: "information_schema".into(),
-        columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "TABLE_TYPE".into(), "ENGINE".into()],
+        columns: vec![
+            "TABLE_SCHEMA".into(),
+            "TABLE_NAME".into(),
+            "TABLE_TYPE".into(),
+            "ENGINE".into(),
+        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1916,15 +1956,40 @@ fn demo_tables_table() -> QueryResult {
 
 fn demo_columns_table() -> QueryResult {
     let rows = vec![
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("id".into()), CellValue::Text("bigint unsigned".into())],
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("full_name".into()), CellValue::Text("varchar(100)".into())],
-        vec![CellValue::Text("ecommerce_prod".into()), CellValue::Text("users".into()), CellValue::Text("email".into()), CellValue::Text("varchar(150)".into())],
-        vec![CellValue::Text("analytics_dw".into()), CellValue::Text("events_daily".into()), CellValue::Text("event_date".into()), CellValue::Text("date".into())],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("users".into()),
+            CellValue::Text("id".into()),
+            CellValue::Text("bigint unsigned".into()),
+        ],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("users".into()),
+            CellValue::Text("full_name".into()),
+            CellValue::Text("varchar(100)".into()),
+        ],
+        vec![
+            CellValue::Text("ecommerce_prod".into()),
+            CellValue::Text("users".into()),
+            CellValue::Text("email".into()),
+            CellValue::Text("varchar(150)".into()),
+        ],
+        vec![
+            CellValue::Text("analytics_dw".into()),
+            CellValue::Text("events_daily".into()),
+            CellValue::Text("event_date".into()),
+            CellValue::Text("date".into()),
+        ],
     ];
     QueryResult {
         sql: "SELECT * FROM information_schema.COLUMNS".into(),
         database: "information_schema".into(),
-        columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "COLUMN_NAME".into(), "DATA_TYPE".into()],
+        columns: vec![
+            "TABLE_SCHEMA".into(),
+            "TABLE_NAME".into(),
+            "COLUMN_NAME".into(),
+            "DATA_TYPE".into(),
+        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1989,7 +2054,9 @@ fn execute_demo_query(
     }
 
     if lower.starts_with("use ") {
-        let target = sql[4..].trim().trim_matches(|c| c == ';' || c == '`' || c == ' ');
+        let target = sql[4..]
+            .trim()
+            .trim_matches(|c| c == ';' || c == '`' || c == ' ');
         return Ok(QueryResult {
             sql: sql.to_string(),
             database: target.to_string(),
@@ -2091,9 +2158,17 @@ fn execute_demo_query(
     if lower.starts_with("select") && !lower.contains("from") {
         let expr = sql.trim()[6..].trim().trim_end_matches(';');
         let (col_name, val) = match expr.to_lowercase().as_str() {
-            "version()" | "@@version" => ("VERSION()", CellValue::Text("8.0.36-MySQL-Rusty-Sandbox".into())),
-            "now()" | "current_timestamp()" => ("NOW()", CellValue::Text(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())),
-            "user()" | "current_user()" => ("USER()", CellValue::Text("demo_admin@localhost".into())),
+            "version()" | "@@version" => (
+                "VERSION()",
+                CellValue::Text("8.0.36-MySQL-Rusty-Sandbox".into()),
+            ),
+            "now()" | "current_timestamp()" => (
+                "NOW()",
+                CellValue::Text(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+            ),
+            "user()" | "current_user()" => {
+                ("USER()", CellValue::Text("demo_admin@localhost".into()))
+            }
             "connection_id()" => ("CONNECTION_ID()", CellValue::Integer(1)),
             _ => (expr, CellValue::Text(expr.to_string())),
         };
@@ -2107,7 +2182,10 @@ fn execute_demo_query(
             duration_ms: 1,
             editable_table: None,
             primary_key_column: None,
-            status_message: format!("1 row in set at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+            status_message: format!(
+                "1 row in set at {} (Sandbox)",
+                chrono::Local::now().format("%H:%M:%S")
+            ),
         });
     }
 
@@ -2154,7 +2232,10 @@ fn execute_demo_query(
             duration_ms: 3,
             editable_table: None,
             primary_key_column: None,
-            status_message: format!("3 aggregated rows in 3 ms at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+            status_message: format!(
+                "3 aggregated rows in 3 ms at {} (Sandbox)",
+                chrono::Local::now().format("%H:%M:%S")
+            ),
         });
     }
 
@@ -2187,7 +2268,10 @@ fn execute_demo_query(
                         duration_ms: 1,
                         editable_table: None,
                         primary_key_column: None,
-                        status_message: format!("1 row in set at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+                        status_message: format!(
+                            "1 row in set at {} (Sandbox)",
+                            chrono::Local::now().format("%H:%M:%S")
+                        ),
                     });
                 }
             }
@@ -2209,7 +2293,11 @@ fn execute_demo_query(
 
                         if where_clean.contains("id =") || where_clean.contains("id=") {
                             if let Some(id_str) = where_clean.split('=').nth(1) {
-                                if let Ok(id_val) = id_str.trim().trim_matches(|c| c == ';' || c == ' ').parse::<i64>() {
+                                if let Ok(id_val) = id_str
+                                    .trim()
+                                    .trim_matches(|c| c == ';' || c == ' ')
+                                    .parse::<i64>()
+                                {
                                     cloned.rows.retain(|r| {
                                         if let Some(CellValue::Integer(i)) = r.first() {
                                             *i == id_val
@@ -2245,7 +2333,10 @@ fn execute_demo_query(
     }
 
     // Check for DDL / modification statements
-    if lower.starts_with("insert into") || lower.starts_with("update ") || lower.starts_with("delete from") {
+    if lower.starts_with("insert into")
+        || lower.starts_with("update ")
+        || lower.starts_with("delete from")
+    {
         return Ok(QueryResult {
             sql: sql.to_string(),
             database: database.to_string(),
@@ -2256,11 +2347,17 @@ fn execute_demo_query(
             duration_ms: 1,
             editable_table: None,
             primary_key_column: None,
-            status_message: format!("1 row affected at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+            status_message: format!(
+                "1 row affected at {} (Sandbox)",
+                chrono::Local::now().format("%H:%M:%S")
+            ),
         });
     }
 
-    if lower.starts_with("create table") || lower.starts_with("alter table") || lower.starts_with("drop table") {
+    if lower.starts_with("create table")
+        || lower.starts_with("alter table")
+        || lower.starts_with("drop table")
+    {
         return Ok(QueryResult {
             sql: sql.to_string(),
             database: database.to_string(),
@@ -2271,13 +2368,19 @@ fn execute_demo_query(
             duration_ms: 2,
             editable_table: None,
             primary_key_column: None,
-            status_message: format!("Query OK, 0 rows affected at {} (Sandbox)", chrono::Local::now().format("%H:%M:%S")),
+            status_message: format!(
+                "Query OK, 0 rows affected at {} (Sandbox)",
+                chrono::Local::now().format("%H:%M:%S")
+            ),
         });
     }
 
     Err(anyhow!(
         "Table '{database}.{}' doesn't exist (or syntax not recognized by Sandbox). Available tables in `{database}`: {}",
-        sql.split_whitespace().last().unwrap_or("unknown").trim_matches(';'),
+        sql.split_whitespace()
+            .last()
+            .unwrap_or("unknown")
+            .trim_matches(';'),
         match database {
             "analytics_dw" => "events_daily, pageviews_summary",
             "information_schema" => "TABLES, COLUMNS",

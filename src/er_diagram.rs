@@ -76,7 +76,11 @@ impl ErCanvasState {
             );
             ui.separator();
 
-            if ui.button("Auto-Layout").on_hover_text("Rearrange table nodes into a clean grid").clicked() {
+            if ui
+                .button("Auto-Layout")
+                .on_hover_text("Rearrange table nodes into a clean grid")
+                .clicked()
+            {
                 self.auto_layout(schema);
             }
             if ui.button("Reset Zoom").clicked() {
@@ -96,9 +100,11 @@ impl ErCanvasState {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new("Tip: Drag nodes to move • Drag background to pan • Scroll to zoom")
-                        .weak()
-                        .small(),
+                    egui::RichText::new(
+                        "Tip: Drag nodes to move • Drag background to pan • Scroll to zoom",
+                    )
+                    .weak()
+                    .small(),
                 );
             });
         });
@@ -172,7 +178,10 @@ impl ErCanvasState {
             table_rects.insert(table.name.clone(), rect);
 
             for (idx, col) in table.columns.iter().take(visible_cols).enumerate() {
-                let y = screen_top_left.y + header_height + (idx as f32 + 0.5) * row_height + 4.0 * self.zoom;
+                let y = screen_top_left.y
+                    + header_height
+                    + (idx as f32 + 0.5) * row_height
+                    + 4.0 * self.zoom;
                 col_anchor_y.insert((table.name.clone(), col.name.clone()), y);
             }
         }
@@ -255,9 +264,15 @@ impl ErCanvasState {
                     || self.hovered_node.as_ref() == Some(&fk.referenced_table);
 
                 let (curve_color, stroke_width) = if is_hovered {
-                    (Color32::from_rgb(236, 72, 153), 2.8 * self.zoom.clamp(0.8, 1.5))
+                    (
+                        Color32::from_rgb(236, 72, 153),
+                        2.8 * self.zoom.clamp(0.8, 1.5),
+                    )
                 } else {
-                    (Color32::from_rgba_unmultiplied(168, 85, 247, 180), 1.6 * self.zoom.clamp(0.8, 1.5))
+                    (
+                        Color32::from_rgba_unmultiplied(168, 85, 247, 180),
+                        1.6 * self.zoom.clamp(0.8, 1.5),
+                    )
                 };
 
                 // Draw Cubic Bézier Curve
@@ -334,7 +349,8 @@ impl ErCanvasState {
             // Column rows
             let visible_cols = table.columns.len().min(12);
             for (idx, col) in table.columns.iter().take(visible_cols).enumerate() {
-                let y = rect.min.y + header_height + (idx as f32 + 0.5) * row_height + 4.0 * self.zoom;
+                let y =
+                    rect.min.y + header_height + (idx as f32 + 0.5) * row_height + 4.0 * self.zoom;
                 let text_pos = Pos2::new(rect.min.x + 8.0 * self.zoom, y);
 
                 let badge = if col.is_primary_key {

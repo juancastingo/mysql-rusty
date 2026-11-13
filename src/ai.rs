@@ -147,7 +147,9 @@ fn extract_table_refs_in_scope(stmt: &str) -> Vec<TableRef> {
         if expects_table && i + 1 < raw_words.len() {
             let tbl_raw = strip_ident_quotes(raw_words[i + 1]);
             let tbl_upper = tbl_raw.to_uppercase();
-            if !tbl_raw.is_empty() && !is_sql_clause_keyword(&tbl_upper) && !tbl_raw.starts_with('(')
+            if !tbl_raw.is_empty()
+                && !is_sql_clause_keyword(&tbl_upper)
+                && !tbl_raw.starts_with('(')
             {
                 let mut alias = None;
                 if i + 2 < raw_words.len() {
@@ -198,8 +200,18 @@ fn detect_sql_clause(stmt_before_token: &str) -> SqlClause {
         }
         if matches!(
             last.as_str(),
-            "SELECT" | "DISTINCT" | "WHERE" | "AND" | "OR" | "HAVING" | "SET" | "BY" | "CASE"
-                | "WHEN" | "THEN" | "ELSE"
+            "SELECT"
+                | "DISTINCT"
+                | "WHERE"
+                | "AND"
+                | "OR"
+                | "HAVING"
+                | "SET"
+                | "BY"
+                | "CASE"
+                | "WHEN"
+                | "THEN"
+                | "ELSE"
         ) {
             return SqlClause::SelectOrExpr;
         }
@@ -277,7 +289,11 @@ pub fn compute_local_completions(
                     .map(|a| a.eq_ignore_ascii_case(tbl_prefix))
                     .unwrap_or(false);
                 if alias_match || tr.table.eq_ignore_ascii_case(tbl_prefix) {
-                    if let Some(t) = db.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&tr.table)) {
+                    if let Some(t) = db
+                        .tables
+                        .iter()
+                        .find(|t| t.name.eq_ignore_ascii_case(&tr.table))
+                    {
                         matched_tables.push((t, 50));
                     }
                 }
@@ -310,7 +326,8 @@ pub fn compute_local_completions(
                 }
             }
             scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
-            let items: Vec<CompletionItem> = scored.into_iter().take(max_items).map(|(_, i)| i).collect();
+            let items: Vec<CompletionItem> =
+                scored.into_iter().take(max_items).map(|(_, i)| i).collect();
             return (last_token.to_string(), items);
         }
 
@@ -325,7 +342,9 @@ pub fn compute_local_completions(
             || (!prefix_lower.is_empty() && "join".starts_with(&prefix_lower));
         if in_join_ctx {
             for t in &db.tables {
-                let t_in_scope = table_refs.iter().any(|r| r.table.eq_ignore_ascii_case(&t.name));
+                let t_in_scope = table_refs
+                    .iter()
+                    .any(|r| r.table.eq_ignore_ascii_case(&t.name));
                 for fk in &t.foreign_keys {
                     let join_snippet = if upper_before.ends_with("JOIN") {
                         format!(
@@ -363,7 +382,11 @@ pub fn compute_local_completions(
         // 3. Suggest ON conditions between tables in scope
         if clause == SqlClause::On && !table_refs.is_empty() {
             for tr in &table_refs {
-                if let Some(t) = db.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&tr.table)) {
+                if let Some(t) = db
+                    .tables
+                    .iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(&tr.table))
+                {
                     let lhs = tr.alias.as_deref().unwrap_or(&t.name);
                     for fk in &t.foreign_keys {
                         let rhs_ref = table_refs
@@ -372,7 +395,8 @@ pub fn compute_local_completions(
                         let rhs = rhs_ref
                             .and_then(|r| r.alias.as_deref())
                             .unwrap_or(&fk.referenced_table);
-                        let cond = format!("{lhs}.{} = {rhs}.{}", fk.column_name, fk.referenced_column);
+                        let cond =
+                            format!("{lhs}.{} = {rhs}.{}", fk.column_name, fk.referenced_column);
                         if match_score(&cond, &prefix_lower).is_some() || last_token.is_empty() {
                             scored.push((
                                 150,
@@ -420,8 +444,8 @@ pub fn compute_local_completions(
                     .iter()
                     .find(|r| r.table.eq_ignore_ascii_case(&t.name));
                 let scope_bonus = if active_ref.is_some() { 55 } else { -15 };
-                let use_alias_prefix = table_refs.len() > 1
-                    && active_ref.and_then(|r| r.alias.as_ref()).is_some();
+                let use_alias_prefix =
+                    table_refs.len() > 1 && active_ref.and_then(|r| r.alias.as_ref()).is_some();
                 for c in &t.columns {
                     if let Some(m_score) = match_score(&c.name, &prefix_lower) {
                         let insert_text = if use_alias_prefix {
@@ -592,7 +616,9 @@ pub async fn fetch_copilot_session_token(github_token: &str) -> Result<(String, 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("Copilot token exchange returned HTTP {status}: {body}"));
+        return Err(anyhow!(
+            "Copilot token exchange returned HTTP {status}: {body}"
+        ));
     }
 
     let val: serde_json::Value = resp.json().await?;
@@ -629,12 +655,12 @@ pub fn compute_heuristic_ghost_completion(
 
     if let Some(db) = schema {
         let table_refs = extract_table_refs_in_scope(stmt);
-        let active_table = table_refs
-            .last()
-            .and_then(|r| db.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&r.table)));
-        let active_col = active_table
-            .map(primary_col_of)
-            .unwrap_or("id");
+        let active_table = table_refs.last().and_then(|r| {
+            db.tables
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(&r.table))
+        });
+        let active_col = active_table.map(primary_col_of).unwrap_or("id");
         let first_table = db
             .tables
             .first()
@@ -675,11 +701,7 @@ pub fn compute_heuristic_ghost_completion(
                     {
                         return Some(format!(
                             "\nJOIN {} ON {}.{} = {}.{}\nLIMIT 50;",
-                            other.name,
-                            other.name,
-                            fk.column_name,
-                            t.name,
-                            fk.referenced_column
+                            other.name, other.name, fk.column_name, t.name, fk.referenced_column
                         ));
                     }
                 }
@@ -815,7 +837,9 @@ pub async fn request_inline_completion(
     };
 
     match call_provider(config, system_prompt, &user_prompt, true).await {
-        Ok(raw) => Ok(clean_inline_completion_with_suffix(&raw, sql_prefix, sql_suffix)),
+        Ok(raw) => Ok(clean_inline_completion_with_suffix(
+            &raw, sql_prefix, sql_suffix,
+        )),
         Err(err) => Err(err),
     }
 }
@@ -862,7 +886,11 @@ async fn call_provider(
     is_inline: bool,
 ) -> Result<String> {
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(if is_inline { 20 } else { 45 }))
+        .timeout(std::time::Duration::from_secs(if is_inline {
+            20
+        } else {
+            45
+        }))
         .build()?;
 
     match config.provider {
@@ -1347,7 +1375,11 @@ pub fn clean_inline_completion_with_suffix(raw: &str, prefix: &str, suffix: &str
             if !partial_found {
                 // Also check if prefix is non-empty and cleaned literally starts with trimmed prefix
                 let trimmed_p = prefix.trim();
-                if !trimmed_p.is_empty() && cleaned.to_lowercase().starts_with(&trimmed_p.to_lowercase()) {
+                if !trimmed_p.is_empty()
+                    && cleaned
+                        .to_lowercase()
+                        .starts_with(&trimmed_p.to_lowercase())
+                {
                     cleaned = cleaned[trimmed_p.len()..].trim().to_string();
                 }
             }

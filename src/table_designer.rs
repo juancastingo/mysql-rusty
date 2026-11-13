@@ -153,8 +153,16 @@ impl TableDraft {
             "CREATE TABLE `{}` (\n{}\n) ENGINE={} DEFAULT CHARSET={};",
             self.table_name,
             elements.join(",\n"),
-            if self.engine.is_empty() { "InnoDB" } else { &self.engine },
-            if self.charset.is_empty() { "utf8mb4" } else { &self.charset }
+            if self.engine.is_empty() {
+                "InnoDB"
+            } else {
+                &self.engine
+            },
+            if self.charset.is_empty() {
+                "utf8mb4"
+            } else {
+                &self.charset
+            }
         )
     }
 
@@ -164,7 +172,10 @@ impl TableDraft {
 
         // Table rename
         if old.name != self.table_name {
-            stmts.push(format!("ALTER TABLE `{}` RENAME TO `{}`;", old.name, target_tbl));
+            stmts.push(format!(
+                "ALTER TABLE `{}` RENAME TO `{}`;",
+                old.name, target_tbl
+            ));
         }
 
         // Columns diff
@@ -212,10 +223,16 @@ impl TableDraft {
         }
 
         // Indexes diff
-        let old_idx_map: std::collections::HashMap<&str, &IndexInfo> =
-            old.indexes.iter().map(|i| (i.index_name.as_str(), i)).collect();
-        let new_idx_map: std::collections::HashMap<&str, &IndexInfo> =
-            self.indexes.iter().map(|i| (i.index_name.as_str(), i)).collect();
+        let old_idx_map: std::collections::HashMap<&str, &IndexInfo> = old
+            .indexes
+            .iter()
+            .map(|i| (i.index_name.as_str(), i))
+            .collect();
+        let new_idx_map: std::collections::HashMap<&str, &IndexInfo> = self
+            .indexes
+            .iter()
+            .map(|i| (i.index_name.as_str(), i))
+            .collect();
 
         // Dropped indexes
         for old_idx in &old.indexes {
@@ -245,10 +262,16 @@ impl TableDraft {
         }
 
         // Foreign keys diff
-        let old_fk_map: std::collections::HashMap<&str, &ForeignKeyInfo> =
-            old.foreign_keys.iter().map(|f| (f.constraint_name.as_str(), f)).collect();
-        let new_fk_map: std::collections::HashMap<&str, &ForeignKeyInfo> =
-            self.foreign_keys.iter().map(|f| (f.constraint_name.as_str(), f)).collect();
+        let old_fk_map: std::collections::HashMap<&str, &ForeignKeyInfo> = old
+            .foreign_keys
+            .iter()
+            .map(|f| (f.constraint_name.as_str(), f))
+            .collect();
+        let new_fk_map: std::collections::HashMap<&str, &ForeignKeyInfo> = self
+            .foreign_keys
+            .iter()
+            .map(|f| (f.constraint_name.as_str(), f))
+            .collect();
 
         // Dropped FKs
         for old_fk in &old.foreign_keys {
@@ -290,7 +313,10 @@ impl TableDraft {
             // Reverse added columns -> DROP COLUMN
             for col in &self.columns {
                 if !old_col_map.contains_key(col.name.as_str()) {
-                    stmts.push(format!("ALTER TABLE `{target_tbl}` DROP COLUMN `{}`;", col.name));
+                    stmts.push(format!(
+                        "ALTER TABLE `{target_tbl}` DROP COLUMN `{}`;",
+                        col.name
+                    ));
                 }
             }
             // Reverse modified columns -> revert to old col definition
@@ -301,18 +327,27 @@ impl TableDraft {
                         || old_col.default_value != col.default_value
                         || old_col.extra != col.extra;
                     if changed {
-                        stmts.push(format!("ALTER TABLE `{target_tbl}` MODIFY COLUMN {};", Self::format_col_def(old_col)));
+                        stmts.push(format!(
+                            "ALTER TABLE `{target_tbl}` MODIFY COLUMN {};",
+                            Self::format_col_def(old_col)
+                        ));
                     }
                 }
             }
             // Reverse dropped columns -> ADD COLUMN back
             for old_col in &old.columns {
                 if !new_col_map.contains_key(old_col.name.as_str()) {
-                    stmts.push(format!("ALTER TABLE `{target_tbl}` ADD COLUMN {};", Self::format_col_def(old_col)));
+                    stmts.push(format!(
+                        "ALTER TABLE `{target_tbl}` ADD COLUMN {};",
+                        Self::format_col_def(old_col)
+                    ));
                 }
             }
             if old.name != self.table_name {
-                stmts.push(format!("ALTER TABLE `{target_tbl}` RENAME TO `{}`;", old.name));
+                stmts.push(format!(
+                    "ALTER TABLE `{target_tbl}` RENAME TO `{}`;",
+                    old.name
+                ));
             }
             if stmts.is_empty() {
                 "-- No rollback operations required".to_string()
@@ -385,104 +420,129 @@ impl TableDraft {
         ui.separator();
 
         // Tabs or sections for Columns, Indexes, FKs
-        ui.collapsing(RichText::new(format!("Columns ({})", self.columns.len())).strong(), |ui| {
-            let mut remove_idx = None;
-            egui::Grid::new("designer_columns_grid")
-                .striped(true)
-                .min_col_width(80.0)
-                .show(ui, |ui| {
-                    ui.strong("Name");
-                    ui.strong("Type");
-                    ui.strong("PK");
-                    ui.strong("Nullable");
-                    ui.strong("Default Value");
-                    ui.strong("Extra");
-                    ui.strong("Actions");
-                    ui.end_row();
-
-                    for (idx, col) in self.columns.iter_mut().enumerate() {
-                        ui.add(egui::TextEdit::singleline(&mut col.name).desired_width(140.0));
-                        ui.add(egui::TextEdit::singleline(&mut col.data_type).desired_width(120.0));
-                        ui.checkbox(&mut col.is_primary_key, "");
-                        ui.checkbox(&mut col.is_nullable, "");
-
-                        let mut def_buf = col.default_value.clone().unwrap_or_default();
-                        if ui.add(egui::TextEdit::singleline(&mut def_buf).desired_width(100.0)).changed() {
-                            col.default_value = if def_buf.trim().is_empty() {
-                                None
-                            } else {
-                                Some(def_buf)
-                            };
-                        }
-
-                        ui.add(egui::TextEdit::singleline(&mut col.extra).desired_width(100.0));
-                        if ui.small_button("Del").on_hover_text("Remove column").clicked() {
-                            remove_idx = Some(idx);
-                        }
+        ui.collapsing(
+            RichText::new(format!("Columns ({})", self.columns.len())).strong(),
+            |ui| {
+                let mut remove_idx = None;
+                egui::Grid::new("designer_columns_grid")
+                    .striped(true)
+                    .min_col_width(80.0)
+                    .show(ui, |ui| {
+                        ui.strong("Name");
+                        ui.strong("Type");
+                        ui.strong("PK");
+                        ui.strong("Nullable");
+                        ui.strong("Default Value");
+                        ui.strong("Extra");
+                        ui.strong("Actions");
                         ui.end_row();
+
+                        for (idx, col) in self.columns.iter_mut().enumerate() {
+                            ui.add(egui::TextEdit::singleline(&mut col.name).desired_width(140.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut col.data_type).desired_width(120.0),
+                            );
+                            ui.checkbox(&mut col.is_primary_key, "");
+                            ui.checkbox(&mut col.is_nullable, "");
+
+                            let mut def_buf = col.default_value.clone().unwrap_or_default();
+                            if ui
+                                .add(egui::TextEdit::singleline(&mut def_buf).desired_width(100.0))
+                                .changed()
+                            {
+                                col.default_value = if def_buf.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(def_buf)
+                                };
+                            }
+
+                            ui.add(egui::TextEdit::singleline(&mut col.extra).desired_width(100.0));
+                            if ui
+                                .small_button("Del")
+                                .on_hover_text("Remove column")
+                                .clicked()
+                            {
+                                remove_idx = Some(idx);
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                if let Some(idx) = remove_idx {
+                    if self.columns.len() > 1 {
+                        self.columns.remove(idx);
                     }
-                });
-
-            if let Some(idx) = remove_idx {
-                if self.columns.len() > 1 {
-                    self.columns.remove(idx);
                 }
-            }
 
-            if ui.button("+ Add Column").clicked() {
-                let n = self.columns.len() + 1;
-                self.columns.push(ColumnInfo {
-                    name: format!("col_{n}"),
-                    data_type: "VARCHAR(255)".to_string(),
-                    is_nullable: true,
-                    is_primary_key: false,
-                    default_value: None,
-                    extra: String::new(),
-                });
-            }
-        });
+                if ui.button("+ Add Column").clicked() {
+                    let n = self.columns.len() + 1;
+                    self.columns.push(ColumnInfo {
+                        name: format!("col_{n}"),
+                        data_type: "VARCHAR(255)".to_string(),
+                        is_nullable: true,
+                        is_primary_key: false,
+                        default_value: None,
+                        extra: String::new(),
+                    });
+                }
+            },
+        );
 
         ui.add_space(4.0);
-        ui.collapsing(RichText::new(format!("Indexes ({})", self.indexes.len())).strong(), |ui| {
-            let mut remove_idx = None;
-            egui::Grid::new("designer_indexes_grid")
-                .striped(true)
-                .min_col_width(100.0)
-                .show(ui, |ui| {
-                    ui.strong("Index Name");
-                    ui.strong("Column");
-                    ui.strong("Unique");
-                    ui.strong("Actions");
-                    ui.end_row();
-
-                    for (idx, item) in self.indexes.iter_mut().enumerate() {
-                        ui.add(egui::TextEdit::singleline(&mut item.index_name).desired_width(160.0));
-                        ui.add(egui::TextEdit::singleline(&mut item.column_name).desired_width(140.0));
-                        let mut is_unique = !item.non_unique;
-                        if ui.checkbox(&mut is_unique, "").changed() {
-                            item.non_unique = !is_unique;
-                        }
-                        if ui.small_button("Del").clicked() {
-                            remove_idx = Some(idx);
-                        }
+        ui.collapsing(
+            RichText::new(format!("Indexes ({})", self.indexes.len())).strong(),
+            |ui| {
+                let mut remove_idx = None;
+                egui::Grid::new("designer_indexes_grid")
+                    .striped(true)
+                    .min_col_width(100.0)
+                    .show(ui, |ui| {
+                        ui.strong("Index Name");
+                        ui.strong("Column");
+                        ui.strong("Unique");
+                        ui.strong("Actions");
                         ui.end_row();
-                    }
-                });
 
-            if let Some(idx) = remove_idx {
-                self.indexes.remove(idx);
-            }
+                        for (idx, item) in self.indexes.iter_mut().enumerate() {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut item.index_name)
+                                    .desired_width(160.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut item.column_name)
+                                    .desired_width(140.0),
+                            );
+                            let mut is_unique = !item.non_unique;
+                            if ui.checkbox(&mut is_unique, "").changed() {
+                                item.non_unique = !is_unique;
+                            }
+                            if ui.small_button("Del").clicked() {
+                                remove_idx = Some(idx);
+                            }
+                            ui.end_row();
+                        }
+                    });
 
-            if ui.button("+ Add Index").clicked() {
-                let n = self.indexes.len() + 1;
-                self.indexes.push(IndexInfo {
-                    index_name: format!("idx_{n}"),
-                    column_name: self.columns.first().map(|c| c.name.clone()).unwrap_or_default(),
-                    non_unique: true,
-                    index_type: "BTREE".to_string(),
-                });
-            }
-        });
+                if let Some(idx) = remove_idx {
+                    self.indexes.remove(idx);
+                }
+
+                if ui.button("+ Add Index").clicked() {
+                    let n = self.indexes.len() + 1;
+                    self.indexes.push(IndexInfo {
+                        index_name: format!("idx_{n}"),
+                        column_name: self
+                            .columns
+                            .first()
+                            .map(|c| c.name.clone())
+                            .unwrap_or_default(),
+                        non_unique: true,
+                        index_type: "BTREE".to_string(),
+                    });
+                }
+            },
+        );
 
         ui.add_space(4.0);
         ui.collapsing(
@@ -501,10 +561,22 @@ impl TableDraft {
                         ui.end_row();
 
                         for (idx, fk) in self.foreign_keys.iter_mut().enumerate() {
-                            ui.add(egui::TextEdit::singleline(&mut fk.constraint_name).desired_width(140.0));
-                            ui.add(egui::TextEdit::singleline(&mut fk.column_name).desired_width(120.0));
-                            ui.add(egui::TextEdit::singleline(&mut fk.referenced_table).desired_width(120.0));
-                            ui.add(egui::TextEdit::singleline(&mut fk.referenced_column).desired_width(120.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fk.constraint_name)
+                                    .desired_width(140.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fk.column_name)
+                                    .desired_width(120.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fk.referenced_table)
+                                    .desired_width(120.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fk.referenced_column)
+                                    .desired_width(120.0),
+                            );
                             if ui.small_button("Del").clicked() {
                                 remove_idx = Some(idx);
                             }
@@ -532,7 +604,11 @@ impl TableDraft {
 
         // Live DDL preview section
         let ddl = self.generate_ddl_diff();
-        ui.label(RichText::new("Live DDL Preview:").strong().color(Color32::from_rgb(163, 230, 53)));
+        ui.label(
+            RichText::new("Live DDL Preview:")
+                .strong()
+                .color(Color32::from_rgb(163, 230, 53)),
+        );
         egui::ScrollArea::vertical()
             .id_salt("designer_ddl_preview_scroll")
             .max_height(140.0)
@@ -557,8 +633,7 @@ impl TableDraft {
             }
 
             let open_tab_btn = egui::Button::new(
-                RichText::new("Open in Query Tab")
-                    .color(Color32::from_rgb(56, 189, 248)),
+                RichText::new("Open in Query Tab").color(Color32::from_rgb(56, 189, 248)),
             );
             if ui.add(open_tab_btn).clicked() {
                 action = TableDesignerAction::OpenInQueryTab(ddl.clone());
@@ -570,10 +645,13 @@ impl TableDraft {
             );
             if ui
                 .add(migration_btn)
-                .on_hover_text("Generate structured UP/DOWN migration script in a new SQL query tab")
+                .on_hover_text(
+                    "Generate structured UP/DOWN migration script in a new SQL query tab",
+                )
                 .clicked()
             {
-                action = TableDesignerAction::OpenInQueryTab(self.generate_migration_file_content());
+                action =
+                    TableDesignerAction::OpenInQueryTab(self.generate_migration_file_content());
             }
 
             if ui.button("Cancel").clicked() {
