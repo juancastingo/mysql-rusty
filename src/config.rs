@@ -413,6 +413,8 @@ pub struct AppConfig {
     pub scratchpads: Vec<SavedScratchpad>,
     #[serde(default)]
     pub trashed_connections: Vec<TrashedConnection>,
+    #[serde(default)]
+    pub keybindings: std::collections::HashMap<crate::shortcuts::Action, String>,
 }
 
 impl Default for AppConfig {
@@ -428,6 +430,7 @@ impl Default for AppConfig {
             history: Vec::new(),
             scratchpads: Vec::new(),
             trashed_connections: Vec::new(),
+            keybindings: std::collections::HashMap::new(),
             snippets: vec![
                 SavedSnippet {
                     id: Uuid::new_v4().to_string(),

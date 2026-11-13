@@ -245,6 +245,13 @@ pub struct MysqlRustyApp {
 
     // UI Theme & Scale (#26)
     last_applied_theme: Option<egui::Theme>,
+
+    // Keyboard Shortcuts (#27)
+    keymap: crate::shortcuts::Keymap,
+    show_shortcuts_modal: bool,
+    shortcuts_filter: String,
+    rebinding_action: Option<crate::shortcuts::Action>,
+    rebind_conflict_msg: Option<String>,
 }
 
 impl MysqlRustyApp {
@@ -296,6 +303,8 @@ impl MysqlRustyApp {
         } else {
             vec![QueryTab::new("Query 1", "")]
         };
+
+        let keymap = crate::shortcuts::Keymap::from_overrides(&config.keybindings);
 
         Self {
             rt,
@@ -362,6 +371,11 @@ impl MysqlRustyApp {
             qps_history: Vec::new(),
             threads_history: Vec::new(),
             last_applied_theme: None,
+            keymap,
+            show_shortcuts_modal: false,
+            shortcuts_filter: String::new(),
+            rebinding_action: None,
+            rebind_conflict_msg: None,
             last_poll_instant: None,
             last_questions_count: None,
 
@@ -493,68 +507,51 @@ impl eframe::App for MysqlRustyApp {
             let _ = self.config.save();
         }
 
-        // Global keyboard shortcuts (Ctrl+Enter, F5, Ctrl+Shift+Enter, Shift+F5, Ctrl+Shift+F, Ctrl+K, Ctrl+P)
-        let is_modal_open = self.show_connection_modal || self.show_ai_settings_modal;
+        // Global keyboard shortcuts (#27)
+        let is_modal_open =
+            self.show_connection_modal || self.show_ai_settings_modal || self.show_shortcuts_modal;
         if !is_modal_open {
             let mut global_run_stmt = false;
             let mut global_run_query = false;
             let mut global_format_sql = false;
             let mut toggle_palette = false;
+            let mut toggle_shortcuts = false;
 
             ui.ctx().input_mut(|i| {
                 let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
                 let is_shift = i.modifiers.shift;
 
-                let has_enter_press = i.events.iter().any(|e| {
-                    matches!(
-                        e,
-                        egui::Event::Key {
-                            key: Key::Enter,
-                            pressed: true,
-                            ..
-                        }
-                    )
-                });
-
-                if is_ctrl
-                    && (i.consume_key(Modifiers::NONE, Key::K)
-                        || i.consume_key(Modifiers::NONE, Key::P))
+                if self
+                    .keymap
+                    .consume(i, crate::shortcuts::Action::ShortcutsHelp)
+                {
+                    toggle_shortcuts = true;
+                } else if self
+                    .keymap
+                    .consume(i, crate::shortcuts::Action::CommandPalette)
+                    || (is_ctrl && i.consume_key(Modifiers::NONE, Key::P))
                 {
                     toggle_palette = true;
-                } else if is_ctrl && is_shift && has_enter_press {
-                    i.events.retain(|e| {
-                        !matches!(
-                            e,
-                            egui::Event::Key {
-                                key: Key::Enter,
-                                pressed: true,
-                                ..
-                            }
-                        )
-                    });
+                } else if self
+                    .keymap
+                    .consume(i, crate::shortcuts::Action::RunStatement)
+                    || (is_shift && i.consume_key(Modifiers::NONE, Key::F5))
+                {
                     global_run_stmt = true;
-                } else if is_ctrl && has_enter_press {
-                    i.events.retain(|e| {
-                        !matches!(
-                            e,
-                            egui::Event::Key {
-                                key: Key::Enter,
-                                pressed: true,
-                                ..
-                            }
-                        )
-                    });
+                } else if self.keymap.consume(i, crate::shortcuts::Action::RunQuery)
+                    || i.consume_key(Modifiers::NONE, Key::F5)
+                {
                     global_run_query = true;
-                } else if is_shift && i.consume_key(Modifiers::NONE, Key::F5) {
-                    global_run_stmt = true;
-                } else if i.consume_key(Modifiers::NONE, Key::F5) {
-                    global_run_query = true;
-                } else if is_ctrl && is_shift && i.consume_key(Modifiers::NONE, Key::F) {
+                } else if self.keymap.consume(i, crate::shortcuts::Action::FormatSql) {
                     global_format_sql = true;
                 }
             });
 
-            if toggle_palette {
+            if toggle_shortcuts {
+                self.show_shortcuts_modal = !self.show_shortcuts_modal;
+                self.rebinding_action = None;
+                self.rebind_conflict_msg = None;
+            } else if toggle_palette {
                 self.show_command_palette = !self.show_command_palette;
                 self.command_palette_query.clear();
                 self.command_palette_selected = 0;
@@ -564,7 +561,8 @@ impl eframe::App for MysqlRustyApp {
                 self.execute_current_tab_query(None);
             } else if global_format_sql && let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 tab.sql = format_sql_pretty(&tab.sql);
-                self.status_banner = "Formatted SQL query (Ctrl+Shift+F).".to_string();
+                let label = self.keymap.label(crate::shortcuts::Action::FormatSql);
+                self.status_banner = format!("Formatted SQL query ({label}).");
             }
         }
 
@@ -653,6 +651,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_connection_trash_modal(&ctx);
         self.render_data_diff_modal(&ctx);
         self.render_sql_dump_modal(&ctx);
+        self.render_shortcuts_modal(&ctx);
         self.render_table_action_modal(&ctx);
         self.render_table_info_modal(&ctx);
         self.render_backup_modal(&ctx);

@@ -9,12 +9,10 @@ impl MysqlRustyApp {
             return;
         }
 
-        let trigger_save = ui.input_mut(|i| {
-            i.consume_key(Modifiers::COMMAND, Key::S) || i.consume_key(Modifiers::CTRL, Key::S)
-        });
-        let trigger_open = ui.input_mut(|i| {
-            i.consume_key(Modifiers::COMMAND, Key::O) || i.consume_key(Modifiers::CTRL, Key::O)
-        });
+        let trigger_save =
+            ui.input_mut(|i| self.keymap.consume(i, crate::shortcuts::Action::SaveTab));
+        let trigger_open =
+            ui.input_mut(|i| self.keymap.consume(i, crate::shortcuts::Action::OpenFile));
         if trigger_save {
             self.save_active_tab_to_file(false);
         }
@@ -164,18 +162,18 @@ impl MysqlRustyApp {
             let in_tx = self.in_transaction;
             let uncommitted_muts = self.uncommitted_mutations;
             let vim_mode_enabled = self.config.ui.vim_mode;
+            let keymap = self.keymap.clone();
             let editor_palette = self.effective_palette(ui.ctx());
             let initial_font_size = self.config.ui.editor_font_size.clamp(10.0, 28.0);
             let mut editor_font_size = initial_font_size;
             ui.input_mut(|i| {
-                let mods = egui::Modifiers::COMMAND;
-                if i.consume_key(mods, egui::Key::Equals)
-                    || i.consume_key(mods, egui::Key::Plus)
+                if keymap.consume(i, crate::shortcuts::Action::ZoomIn)
+                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
                 {
                     editor_font_size = (editor_font_size + 1.0).clamp(10.0, 28.0);
-                } else if i.consume_key(mods, egui::Key::Minus) {
+                } else if keymap.consume(i, crate::shortcuts::Action::ZoomOut) {
                     editor_font_size = (editor_font_size - 1.0).clamp(10.0, 28.0);
-                } else if i.consume_key(mods, egui::Key::Num0) {
+                } else if keymap.consume(i, crate::shortcuts::Action::ZoomReset) {
                     editor_font_size = 14.0;
                 }
             });
@@ -499,20 +497,18 @@ impl MysqlRustyApp {
                 // #18 Find / Replace shortcuts (Ctrl+F / Ctrl+H / F3 / Esc) & #37 NL2SQL (Ctrl+I)
                 let mut jump_to_match: Option<usize> = None;
                 ui.input_mut(|i| {
-                    let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
-                    let is_shift = i.modifiers.shift;
-                    if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::I) {
+                    if keymap.consume(i, crate::shortcuts::Action::Nl2Sql) {
                         tab.nl2sql_open = !tab.nl2sql_open;
                         if tab.nl2sql_open {
                             tab.nl2sql_autofocus = true;
                         }
-                    } else if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::F) {
+                    } else if keymap.consume(i, crate::shortcuts::Action::Find) {
                         tab.find_open = true;
                         tab.find_autofocus = true;
                         if let Some(sel) = &tab.selected_sql {
                             tab.find_opts.query = sel.lines().next().unwrap_or(sel).to_string();
                         }
-                    } else if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::H) {
+                    } else if keymap.consume(i, crate::shortcuts::Action::Replace) {
                         tab.find_open = true;
                         tab.replace_open = true;
                         tab.find_autofocus = true;
@@ -525,8 +521,7 @@ impl MysqlRustyApp {
                         keep_editor_focus = true;
                     } else if tab.find_open
                         && !tab.find_matches.is_empty()
-                        && is_shift
-                        && i.consume_key(egui::Modifiers::NONE, Key::F3)
+                        && keymap.consume(i, crate::shortcuts::Action::FindPrev)
                     {
                         let len = tab.find_matches.len();
                         tab.find_current = if tab.find_current == 0 {
@@ -537,7 +532,7 @@ impl MysqlRustyApp {
                         jump_to_match = Some(tab.find_current);
                     } else if tab.find_open
                         && !tab.find_matches.is_empty()
-                        && i.consume_key(egui::Modifiers::NONE, Key::F3)
+                        && keymap.consume(i, crate::shortcuts::Action::FindNext)
                     {
                         tab.find_current = (tab.find_current + 1) % tab.find_matches.len();
                         jump_to_match = Some(tab.find_current);
@@ -1067,26 +1062,14 @@ impl MysqlRustyApp {
 
                 if editor_resp.has_focus() {
                     ui.input_mut(|i| {
-                        let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
                         let is_shift = i.modifiers.shift;
-
-                        let has_enter_press = i.events.iter().any(|e| {
-                            matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
-                        });
-
-                        if is_ctrl && is_shift && has_enter_press {
-                            i.events.retain(|e| {
-                                !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
-                            });
+                        if keymap.consume(i, crate::shortcuts::Action::RunStatement)
+                            || (is_shift && i.consume_key(Modifiers::NONE, Key::F5))
+                        {
                             editor_run_stmt = true;
-                        } else if is_ctrl && has_enter_press {
-                            i.events.retain(|e| {
-                                !matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, .. })
-                            });
-                            editor_run_query = true;
-                        } else if is_shift && i.consume_key(Modifiers::NONE, Key::F5) {
-                            editor_run_stmt = true;
-                        } else if i.consume_key(Modifiers::NONE, Key::F5) {
+                        } else if keymap.consume(i, crate::shortcuts::Action::RunQuery)
+                            || i.consume_key(Modifiers::NONE, Key::F5)
+                        {
                             editor_run_query = true;
                         }
                     });

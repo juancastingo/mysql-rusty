@@ -303,6 +303,7 @@ impl MysqlRustyApp {
             OpenLogsFolder,
             OpenRunSqlFile,
             ToggleVimMode,
+            OpenShortcuts,
         }
 
         struct PaletteEntry {
@@ -322,7 +323,10 @@ impl MysqlRustyApp {
             PaletteEntry {
                 category: "Action",
                 label: "Run Query".to_string(),
-                detail: "Execute SQL in current tab (Ctrl+Enter)".to_string(),
+                detail: format!(
+                    "Execute SQL in current tab ({})",
+                    self.keymap.label(crate::shortcuts::Action::RunQuery)
+                ),
                 action: PaletteAction::RunQuery,
             },
             PaletteEntry {
@@ -390,6 +394,15 @@ impl MysqlRustyApp {
                 label: "Toggle Vim Mode".to_string(),
                 detail: "Enable or disable Vim keybindings in SQL editor".to_string(),
                 action: PaletteAction::ToggleVimMode,
+            },
+            PaletteEntry {
+                category: "Help",
+                label: "Keyboard shortcuts".to_string(),
+                detail: format!(
+                    "View and customize keybindings ({})",
+                    self.keymap.label(crate::shortcuts::Action::ShortcutsHelp)
+                ),
+                action: PaletteAction::OpenShortcuts,
             },
         ];
 
@@ -631,7 +644,146 @@ impl MysqlRustyApp {
                     self.tabs.push(QueryTab::new(title, sql));
                     self.active_tab_idx = self.tabs.len() - 1;
                 }
+                PaletteAction::OpenShortcuts => {
+                    self.show_shortcuts_modal = true;
+                    self.rebinding_action = None;
+                    self.rebind_conflict_msg = None;
+                }
             }
+        }
+    }
+
+    pub(crate) fn render_shortcuts_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_shortcuts_modal {
+            return;
+        }
+
+        if let Some(target_action) = self.rebinding_action {
+            let captured = ctx.input(crate::shortcuts::capture_shortcut_from_input);
+            if let Some(sc) = captured {
+                if sc.key == egui::Key::Escape && sc.modifiers == egui::Modifiers::NONE {
+                    self.rebinding_action = None;
+                    self.rebind_conflict_msg = None;
+                } else if let Some(conflict) = self.keymap.find_conflict(sc, target_action) {
+                    self.rebind_conflict_msg = Some(format!(
+                        "{} is already bound to \"{}\". Press another key or Esc to cancel.",
+                        sc.format(),
+                        conflict.label()
+                    ));
+                } else {
+                    self.keymap.set(target_action, sc);
+                    self.config.keybindings = self.keymap.to_overrides();
+                    let _ = self.config.save();
+                    self.rebinding_action = None;
+                    self.rebind_conflict_msg = None;
+                }
+            }
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_shortcuts_modal = false;
+            return;
+        }
+
+        let mut open = self.show_shortcuts_modal;
+        egui::Window::new("Keyboard Shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(600.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Search:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.shortcuts_filter)
+                            .hint_text("Filter actions or shortcuts...")
+                            .desired_width(280.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Reset to defaults").clicked() {
+                            self.keymap.reset_to_defaults();
+                            self.config.keybindings.clear();
+                            let _ = self.config.save();
+                            self.rebinding_action = None;
+                            self.rebind_conflict_msg = None;
+                        }
+                    });
+                });
+
+                if let Some(msg) = &self.rebind_conflict_msg {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(msg)
+                            .small()
+                            .color(Color32::from_rgb(248, 113, 113)),
+                    );
+                }
+
+                ui.separator();
+
+                let filter_lower = self.shortcuts_filter.trim().to_lowercase();
+                egui::ScrollArea::vertical()
+                    .max_height(380.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("shortcuts_help_grid")
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([14.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label(RichText::new("Category").strong());
+                                ui.label(RichText::new("Action").strong());
+                                ui.label(RichText::new("Binding").strong());
+                                ui.label("");
+                                ui.end_row();
+
+                                for &action in crate::shortcuts::Action::all() {
+                                    let binding_str = self.keymap.label(action);
+                                    if !filter_lower.is_empty() {
+                                        let hay = format!(
+                                            "{} {} {}",
+                                            action.category(),
+                                            action.label(),
+                                            binding_str
+                                        )
+                                        .to_lowercase();
+                                        if !hay.contains(&filter_lower) {
+                                            continue;
+                                        }
+                                    }
+
+                                    ui.label(
+                                        RichText::new(action.category())
+                                            .small()
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                    ui.label(action.label());
+
+                                    let is_rebinding = self.rebinding_action == Some(action);
+                                    if is_rebinding {
+                                        ui.label(
+                                            RichText::new("Press new key...")
+                                                .strong()
+                                                .color(Color32::from_rgb(250, 204, 21)),
+                                        );
+                                        if ui.button("Cancel").clicked() {
+                                            self.rebinding_action = None;
+                                            self.rebind_conflict_msg = None;
+                                        }
+                                    } else {
+                                        ui.code(&binding_str);
+                                        if ui.button("Edit").clicked() {
+                                            self.rebinding_action = Some(action);
+                                            self.rebind_conflict_msg = None;
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        self.show_shortcuts_modal = open;
+        if !self.show_shortcuts_modal {
+            self.rebinding_action = None;
+            self.rebind_conflict_msg = None;
         }
     }
 }
