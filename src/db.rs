@@ -507,7 +507,6 @@ impl ActiveSession {
         })
     }
 
-    #[allow(dead_code)]
     pub fn editor_connection_id(&self) -> Option<u64> {
         match self {
             Self::RealMysql { editor_conn_id, .. } => {

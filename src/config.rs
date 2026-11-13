@@ -280,9 +280,28 @@ pub struct TrashedConnection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySettings {
+    /// Query timeout in seconds (`0` = no timeout).
+    pub timeout_secs: u64,
+    /// Maximum number of rows buffered in memory per query result.
+    pub max_rows: usize,
+}
+
+impl Default for QuerySettings {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 0,
+            max_rows: 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub connections: Vec<ConnectionProfile>,
     pub ai: AiConfig,
+    #[serde(default)]
+    pub query: QuerySettings,
     pub history: Vec<QueryHistoryEntry>,
     pub snippets: Vec<SavedSnippet>,
     #[serde(default)]
@@ -299,6 +318,7 @@ impl Default for AppConfig {
                 ConnectionProfile::default(),
             ],
             ai: AiConfig::default(),
+            query: QuerySettings::default(),
             history: Vec::new(),
             scratchpads: Vec::new(),
             trashed_connections: Vec::new(),

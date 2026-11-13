@@ -481,25 +481,54 @@ impl MysqlRustyApp {
         let db = self.active_database.clone();
         let schema = self.schemas.get(&db).cloned();
         let tx = self.tx.clone();
+        let timeout_secs = self.config.query.timeout_secs;
 
         self.status_banner = format!("Running query on `{db}`...");
         let statements = split_sql_statements(&sql);
         let join_handle = self.rt.spawn(async move {
+            async fn run_with_timeout(
+                session: &ActiveSession,
+                db: &str,
+                stmt: &str,
+                schema: Option<&DatabaseSchema>,
+                timeout_secs: u64,
+            ) -> Result<QueryResult, String> {
+                if timeout_secs > 0 {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(timeout_secs),
+                        session.execute_query(db, stmt, schema),
+                    )
+                    .await
+                    {
+                        Ok(res) => res.map_err(|e| format!("{e:#}")),
+                        Err(_) => {
+                            if let Some(conn_id) = session.editor_connection_id() {
+                                let _ = session.kill_query(conn_id).await;
+                            }
+                            Err(format!(
+                                "Query timed out after {timeout_secs}s and was cancelled on the server"
+                            ))
+                        }
+                    }
+                } else {
+                    session
+                        .execute_query(db, stmt, schema)
+                        .await
+                        .map_err(|e| format!("{e:#}"))
+                }
+            }
+
             if statements.len() > 1 {
                 let mut results = Vec::with_capacity(statements.len());
                 for stmt in statements {
-                    let res = session
-                        .execute_query(&db, &stmt, schema.as_ref())
-                        .await
-                        .map_err(|e| format!("{e:#}"));
+                    let res =
+                        run_with_timeout(&session, &db, &stmt, schema.as_ref(), timeout_secs).await;
                     results.push(res);
                 }
                 let _ = tx.send(AsyncEvent::MultiQueryFinished { tab_id, results });
             } else {
-                let res = session
-                    .execute_query(&db, &sql, schema.as_ref())
-                    .await
-                    .map_err(|e| format!("{e:#}"));
+                let res =
+                    run_with_timeout(&session, &db, &sql, schema.as_ref(), timeout_secs).await;
                 let _ = tx.send(AsyncEvent::QueryFinished {
                     tab_id,
                     result: res,

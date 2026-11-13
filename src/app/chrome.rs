@@ -285,8 +285,18 @@ impl MysqlRustyApp {
                                     handle.abort();
                                 }
                                 tab.is_running = false;
-                                tab.last_error =
-                                    Some("Query execution was cancelled by user.".to_string());
+                                tab.last_error = Some("Query cancelled by user".to_string());
+                            }
+                            if let Some(session) = self.active_session.clone()
+                                && let Some(conn_id) = session.editor_connection_id()
+                            {
+                                self.rt.spawn(async move {
+                                    if let Err(err) = session.kill_query(conn_id).await {
+                                        tracing::warn!(conn_id, error = %err, "Failed to KILL QUERY on server");
+                                    } else {
+                                        tracing::info!(conn_id, "Cancelled query on server via KILL QUERY");
+                                    }
+                                });
                             }
                             self.status_banner = "Query cancelled by user.".to_string();
                         }

@@ -225,6 +225,25 @@ impl MysqlRustyApp {
                 ui.small("Capping at 25–40 tokens cuts LLM inference time by ~75%.");
 
                 ui.separator();
+                ui.label(RichText::new("Query Execution").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Query Timeout (seconds, 0 = none):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.query.timeout_secs)
+                            .range(0..=3600)
+                            .speed(1.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Max Rows per Result:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.query.max_rows)
+                            .range(100..=1_000_000)
+                            .speed(100.0),
+                    );
+                });
+
+                ui.separator();
                 if ui.button("Save Configuration").clicked() {
                     should_save = true;
                 }
