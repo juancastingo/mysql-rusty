@@ -793,6 +793,20 @@ impl MysqlRustyApp {
                         }
                     }
                 }
+                AsyncEvent::AiOptimizePlanFinished { tab_id, result } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.ai_plan_loading = false;
+                        match result {
+                            Ok(report) => {
+                                tab.ai_plan_report = Some(report);
+                                tab.ai_plan_error = None;
+                            }
+                            Err(e) => {
+                                tab.ai_plan_error = Some(e);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

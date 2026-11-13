@@ -84,6 +84,10 @@ pub enum AsyncEvent {
         tab_id: String,
         result: Result<crate::ai::Nl2SqlResult, String>,
     },
+    AiOptimizePlanFinished {
+        tab_id: String,
+        result: Result<crate::ai::QueryOptimizationReport, String>,
+    },
 }
 
 pub struct RoutineCallModalState {
@@ -204,6 +208,9 @@ pub struct QueryTab {
     pub nl2sql_loading: bool,
     pub nl2sql_result: Option<crate::ai::Nl2SqlResult>,
     pub nl2sql_error: Option<String>,
+    pub ai_plan_loading: bool,
+    pub ai_plan_report: Option<crate::ai::QueryOptimizationReport>,
+    pub ai_plan_error: Option<String>,
 }
 
 impl QueryTab {
@@ -269,6 +276,9 @@ impl QueryTab {
             nl2sql_loading: false,
             nl2sql_result: None,
             nl2sql_error: None,
+            ai_plan_loading: false,
+            ai_plan_report: None,
+            ai_plan_error: None,
         }
     }
 

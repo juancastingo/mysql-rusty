@@ -1607,6 +1607,100 @@ pub fn extract_sql_code_block(markdown: &str) -> Option<String> {
     None
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryOptimizationReport {
+    pub summary: String,
+    #[serde(default)]
+    pub bottlenecks: Vec<String>,
+    #[serde(default)]
+    pub suggested_indexes: Vec<String>,
+    #[serde(default)]
+    pub rewritten_sql: Option<String>,
+    #[serde(default)]
+    pub raw_response: String,
+}
+
+fn extract_json_block(raw: &str) -> Option<&str> {
+    if let Some(start) = raw.find("```json") {
+        let rest = &raw[start + "```json".len()..];
+        if let Some(end) = rest.find("```") {
+            return Some(rest[..end].trim());
+        }
+    }
+    if let Some(start) = raw.find('{')
+        && let Some(end) = raw.rfind('}')
+        && end > start
+    {
+        return Some(&raw[start..=end]);
+    }
+    None
+}
+
+pub fn parse_optimization_report(raw: &str) -> QueryOptimizationReport {
+    if let Some(json_str) = extract_json_block(raw)
+        && let Ok(mut parsed) = serde_json::from_str::<QueryOptimizationReport>(json_str)
+    {
+        parsed.raw_response = raw.to_string();
+        if let Some(ref sql) = parsed.rewritten_sql {
+            let trimmed = sql.trim();
+            if trimmed.is_empty() {
+                parsed.rewritten_sql = None;
+            } else {
+                parsed.rewritten_sql = Some(crate::syntax::format_sql_pretty(trimmed));
+            }
+        }
+        return parsed;
+    }
+
+    let rewritten_sql = extract_sql_code_block(raw)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| crate::syntax::format_sql_pretty(s.trim()));
+
+    let mut bottlenecks = Vec::new();
+    let mut suggested_indexes = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if upper.contains("CREATE INDEX")
+            && let Some(idx) = trimmed.find("CREATE ")
+        {
+            suggested_indexes.push(trimmed[idx..].trim_matches('`').to_string());
+        } else if (trimmed.starts_with("- ") || trimmed.starts_with("* "))
+            && trimmed.len() > 2
+            && bottlenecks.len() < 6
+        {
+            bottlenecks.push(trimmed[2..].trim().to_string());
+        }
+    }
+
+    QueryOptimizationReport {
+        summary: raw.trim().to_string(),
+        bottlenecks,
+        suggested_indexes,
+        rewritten_sql,
+        raw_response: raw.to_string(),
+    }
+}
+
+pub async fn diagnose_query_plan(
+    config: &AiConfig,
+    sql: &str,
+    plan_output: &str,
+    schema: Option<&DatabaseSchema>,
+) -> Result<QueryOptimizationReport> {
+    let schema_ctx = schema
+        .map(|s| build_nl2sql_schema_context(s, 6_000))
+        .unwrap_or_else(|| "No schema metadata available.".to_string());
+
+    let system_prompt = "You are a senior MySQL/MariaDB query performance engineer. Analyze the SQL query, its EXPLAIN / EXPLAIN ANALYZE plan, and the table schema. Respond ONLY with valid JSON matching this schema: {\"summary\": \"concise plain-English explanation of what the plan does and main cost drivers\", \"bottlenecks\": [\"short tag or issue\", ...], \"suggested_indexes\": [\"CREATE INDEX idx_name ON table(col);\", ...], \"rewritten_sql\": \"optional optimized SQL query or null\"}.";
+
+    let user_prompt =
+        format!("Schema:\n{schema_ctx}\n\nSQL Query:\n{sql}\n\nExecution Plan:\n{plan_output}");
+
+    let raw = call_provider(config, system_prompt, &user_prompt, false).await?;
+    Ok(parse_optimization_report(&raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1754,5 +1848,21 @@ mod tests {
         assert!(ctx_full.contains("FK:"));
         let ctx_capped = build_nl2sql_schema_context(&schema, 120);
         assert!(ctx_capped.len() <= 120);
+    }
+
+    #[test]
+    fn test_parse_optimization_report_json_and_fallback() {
+        let json_raw = "```json\n{\"summary\":\"Full table scan on orders\",\"bottlenecks\":[\"ALL scan on orders\",\"Using filesort\"],\"suggested_indexes\":[\"CREATE INDEX idx_orders_user_status ON orders(user_id, status);\"],\"rewritten_sql\":\"select id from orders where user_id = 1\"}\n```";
+        let report = parse_optimization_report(json_raw);
+        assert_eq!(report.summary, "Full table scan on orders");
+        assert_eq!(report.bottlenecks.len(), 2);
+        assert_eq!(report.suggested_indexes.len(), 1);
+        assert!(report.rewritten_sql.as_deref().unwrap().contains("SELECT"));
+
+        let md_raw = "Main issue:\n- Full table scan on users\nCREATE INDEX idx_users_email ON users(email);\n```sql\nSELECT id FROM users WHERE email = 'a@b.com'\n```";
+        let fallback = parse_optimization_report(md_raw);
+        assert_eq!(fallback.bottlenecks, vec!["Full table scan on users"]);
+        assert_eq!(fallback.suggested_indexes.len(), 1);
+        assert!(fallback.rewritten_sql.is_some());
     }
 }

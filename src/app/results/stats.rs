@@ -10,6 +10,148 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn render_execution_stats(&mut self, ui: &mut Ui) {
+        let Some((tab_id, tab_sql, ai_loading, ai_report, ai_error)) =
+            self.tabs.get(self.active_tab_idx).map(|t| {
+                (
+                    t.id.clone(),
+                    t.sql.clone(),
+                    t.ai_plan_loading,
+                    t.ai_plan_report.clone(),
+                    t.ai_plan_error.clone(),
+                )
+            })
+        else {
+            return;
+        };
+
+        let is_read_only = self
+            .active_profile_id
+            .as_ref()
+            .and_then(|id| self.config.connections.iter().find(|p| &p.id == id))
+            .is_some_and(|p| p.read_only);
+
+        ui.horizontal(|ui| {
+            let can_analyze =
+                self.active_session.is_some() && !tab_sql.trim().is_empty() && !ai_loading;
+            let btn_label = if ai_loading {
+                "Analyzing Plan..."
+            } else {
+                "AI Explain & Optimize"
+            };
+            if ui
+                .add_enabled(can_analyze, egui::Button::new(btn_label))
+                .clicked()
+                && let Some(session) = self.active_session.clone()
+            {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                    tab.ai_plan_loading = true;
+                    tab.ai_plan_error = None;
+                }
+                let tx = self.tx.clone();
+                let ctx = ui.ctx().clone();
+                let db = self.active_database.clone();
+                let ai_config = self.config.ai.clone();
+                let schema = self.schemas.get(&db).cloned();
+                self.rt.spawn(async move {
+                    let res = match session.run_explain_analyze(&db, &tab_sql).await {
+                        Ok(plan_out) => crate::ai::diagnose_query_plan(
+                            &ai_config,
+                            &tab_sql,
+                            &plan_out,
+                            schema.as_ref(),
+                        )
+                        .await
+                        .map_err(|e| format!("{e:#}")),
+                        Err(e) => Err(format!("{e:#}")),
+                    };
+                    let _ = tx.send(AsyncEvent::AiOptimizePlanFinished {
+                        tab_id,
+                        result: res,
+                    });
+                    ctx.request_repaint();
+                });
+            }
+        });
+
+        if let Some(err) = &ai_error {
+            ui.colored_label(
+                Color32::from_rgb(248, 113, 113),
+                format!("AI Explain error: {err}"),
+            );
+        }
+
+        if let Some(report) = &ai_report {
+            ui.add_space(6.0);
+            egui::Frame::new()
+                .fill(Color32::from_rgb(20, 28, 44))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("AI Query Optimizer Diagnosis")
+                            .strong()
+                            .color(Color32::from_rgb(56, 189, 248)),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(&report.summary);
+
+                    if !report.bottlenecks.is_empty() {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Bottlenecks:").strong().small());
+                            for b in &report.bottlenecks {
+                                ui.label(
+                                    RichText::new(format!("[{b}]"))
+                                        .small()
+                                        .color(Color32::from_rgb(251, 191, 36)),
+                                );
+                            }
+                        });
+                    }
+
+                    if let Some(rewritten) = &report.rewritten_sql {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Rewritten SQL:").strong().small());
+                            if ui.small_button("Open in New Tab").clicked() {
+                                self.tabs.push(QueryTab::new("Optimized Query", rewritten));
+                                self.active_tab_idx = self.tabs.len() - 1;
+                            }
+                            if ui.small_button("Copy SQL").clicked() {
+                                ui.ctx().copy_text(rewritten.clone());
+                            }
+                        });
+                        ui.code(rewritten);
+                    }
+
+                    if !report.suggested_indexes.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Suggested Indexes:").strong().small());
+                        for ddl in &report.suggested_indexes {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.monospace(ddl);
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(ddl.clone());
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !is_read_only && self.active_session.is_some(),
+                                        egui::Button::new("Create Index").small(),
+                                    )
+                                    .on_disabled_hover_text("Disabled on read-only connections")
+                                    .clicked()
+                                {
+                                    self.tabs.push(QueryTab::new("Create Index", ddl));
+                                    self.active_tab_idx = self.tabs.len() - 1;
+                                }
+                            });
+                        }
+                    }
+                });
+            ui.add_space(6.0);
+        }
+
         let Some(tab) = self.tabs.get(self.active_tab_idx) else {
             return;
         };

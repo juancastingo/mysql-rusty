@@ -1698,6 +1698,58 @@ impl ActiveSession {
         }
     }
 
+    pub async fn run_explain_analyze(&self, database: &str, sql: &str) -> Result<String> {
+        let statements = crate::syntax::split_sql_statements(sql);
+        let stmt = statements
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("No SQL statement to explain."))?;
+        let trimmed = stmt.trim().trim_end_matches(';').trim();
+        let target_sql = if trimmed
+            .split_whitespace()
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("EXPLAIN"))
+        {
+            trimmed
+                .split_once(char::is_whitespace)
+                .map(|(_, rest)| rest.trim())
+                .unwrap_or(trimmed)
+                .to_string()
+        } else {
+            trimmed.to_string()
+        };
+
+        if crate::syntax::is_write_query(&target_sql) {
+            return Err(anyhow!(
+                "AI Explain & Optimize only runs EXPLAIN on read-only queries."
+            ));
+        }
+
+        let explain_analyze = format!("EXPLAIN ANALYZE {target_sql}");
+        if let Ok(res) = self
+            .execute_query(database, &explain_analyze, None, Some(200))
+            .await
+            && !res.rows.is_empty()
+        {
+            return Ok(crate::export::to_markdown_table(&res));
+        }
+
+        let explain_json = format!("EXPLAIN FORMAT=JSON {target_sql}");
+        if let Ok(res) = self
+            .execute_query(database, &explain_json, None, Some(200))
+            .await
+            && let Some(cell) = res.rows.first().and_then(|r| r.first())
+        {
+            return Ok(cell.display_text());
+        }
+
+        let explain_std = format!("EXPLAIN {target_sql}");
+        let res = self
+            .execute_query(database, &explain_std, None, Some(200))
+            .await?;
+        Ok(crate::export::to_markdown_table(&res))
+    }
+
     pub async fn list_users(&self) -> Result<Vec<UserInfo>> {
         match self {
             Self::DemoSandbox { store, .. } => {
