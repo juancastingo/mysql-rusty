@@ -259,3 +259,90 @@ pub fn diff_schemas(source: &DatabaseSchema, target: &DatabaseSchema) -> SchemaD
         migration_sql,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_schema_diff_and_sync() {
+        use crate::db::{ColumnInfo, DatabaseSchema, TableSchema};
+        use crate::schema_diff::diff_schemas;
+
+        let col_id = ColumnInfo {
+            name: "id".to_string(),
+            data_type: "INT".to_string(),
+            is_nullable: false,
+            is_primary_key: true,
+            default_value: None,
+            extra: "auto_increment".to_string(),
+        };
+
+        let col_name = ColumnInfo {
+            name: "name".to_string(),
+            data_type: "VARCHAR(255)".to_string(),
+            is_nullable: false,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        };
+
+        let col_email = ColumnInfo {
+            name: "email".to_string(),
+            data_type: "VARCHAR(191)".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        };
+
+        let source = DatabaseSchema {
+            name: "prod_db".to_string(),
+            tables: vec![
+                TableSchema {
+                    name: "users".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 10,
+                    columns: vec![col_id.clone(), col_name.clone(), col_email.clone()],
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+                TableSchema {
+                    name: "audit_logs".to_string(),
+                    table_type: "BASE TABLE".to_string(),
+                    engine: "InnoDB".to_string(),
+                    approx_rows: 0,
+                    columns: vec![col_id.clone()],
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+            ],
+        };
+
+        let target = DatabaseSchema {
+            name: "dev_db".to_string(),
+            tables: vec![TableSchema {
+                name: "users".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                engine: "InnoDB".to_string(),
+                approx_rows: 5,
+                columns: vec![col_id.clone(), col_name.clone()], // missing email
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        };
+
+        let report = diff_schemas(&source, &target);
+        assert!(
+            report
+                .migration_sql
+                .contains("CREATE TABLE IF NOT EXISTS `audit_logs`")
+        );
+        assert!(report.migration_sql.contains("ALTER TABLE `users`"));
+        assert!(
+            report
+                .migration_sql
+                .contains("ADD COLUMN `email` VARCHAR(191) NULL")
+        );
+        assert_eq!(report.summary.len(), 2);
+    }
+}

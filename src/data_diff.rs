@@ -230,3 +230,109 @@ pub fn generate_data_diff_sync_sql(
         stmts.join("\n")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_row_copy_dump_and_data_diff() {
+        use crate::data_diff::{RowDiffStatus, compute_data_diff, generate_data_diff_sync_sql};
+        use crate::db::{CellValue, ColumnInfo, QueryResult, TableSchema};
+        use crate::export::{
+            format_rows_as_json, format_rows_as_sql_insert, format_rows_as_sql_update,
+            generate_table_dump_sql,
+        };
+
+        let left = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "dev".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("Alice".to_string())],
+                vec![CellValue::Integer(2), CellValue::Text("Bob".to_string())],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: Some("users".to_string()),
+            primary_key_column: Some("id".to_string()),
+            status_message: "OK".to_string(),
+        };
+
+        let right = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "prod".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec![
+                    CellValue::Integer(1),
+                    CellValue::Text("Alice V2".to_string()),
+                ],
+                vec![
+                    CellValue::Integer(3),
+                    CellValue::Text("Charlie".to_string()),
+                ],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: Some("users".to_string()),
+            primary_key_column: Some("id".to_string()),
+            status_message: "OK".to_string(),
+        };
+
+        let json_one = format_rows_as_json(&left, &[0]);
+        assert!(json_one.contains("\"name\": \"Alice\""));
+
+        let ins = format_rows_as_sql_insert("users", &left, &[0, 1]);
+        assert!(ins.contains("INSERT INTO `users` (`id`, `name`) VALUES"));
+        assert!(ins.contains("(1, 'Alice')"));
+
+        let upd = format_rows_as_sql_update("users", "id", &left, &[0]);
+        assert_eq!(upd, "UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;");
+
+        let schema = TableSchema {
+            name: "users".to_string(),
+            table_type: "BASE TABLE".to_string(),
+            engine: "InnoDB".to_string(),
+            approx_rows: 2,
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "INT".to_string(),
+                    is_nullable: false,
+                    default_value: None,
+                    extra: "auto_increment".to_string(),
+                    is_primary_key: true,
+                },
+                ColumnInfo {
+                    name: "name".to_string(),
+                    data_type: "VARCHAR(100)".to_string(),
+                    is_nullable: false,
+                    default_value: None,
+                    extra: String::new(),
+                    is_primary_key: false,
+                },
+            ],
+            foreign_keys: vec![],
+            indexes: vec![],
+        };
+        let dump = generate_table_dump_sql(&schema, Some(&left), true, true, 1);
+        assert!(dump.contains("DROP TABLE IF EXISTS `users`;"));
+        assert!(dump.contains("CREATE TABLE `users`"));
+        assert!(dump.contains("INSERT INTO `users`"));
+
+        let report = compute_data_diff(&left, &right, 0);
+        assert_eq!(report.modified_count, 1);
+        assert_eq!(report.left_only_count, 1);
+        assert_eq!(report.right_only_count, 1);
+        assert!(
+            report
+                .entries
+                .iter()
+                .any(|e| e.key_display == "1" && e.status == RowDiffStatus::Modified)
+        );
+
+        let sync = generate_data_diff_sync_sql("users", &report, 0);
+        assert!(sync.contains("UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;"));
+    }
+}

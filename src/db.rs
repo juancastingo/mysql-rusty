@@ -1108,3 +1108,61 @@ pub fn detect_editable_table_and_pk(
 
     (None, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo::build_demo_schema;
+    #[test]
+    fn test_detect_editable_table_and_pk() {
+        let schema = build_demo_schema("ecommerce_prod");
+        let cols = vec![
+            "id".to_string(),
+            "full_name".to_string(),
+            "email".to_string(),
+        ];
+        let (tbl, pk) = detect_editable_table_and_pk(
+            "SELECT id, full_name, email FROM users LIMIT 10",
+            &cols,
+            Some(&schema),
+        );
+        assert_eq!(tbl.as_deref(), Some("users"));
+        assert_eq!(pk.as_deref(), Some("id"));
+    }
+    #[tokio::test]
+    async fn test_server_admin_methods() {
+        use crate::config::ConnectionProfile;
+        use crate::db::ActiveSession;
+
+        let session = ActiveSession::connect(ConnectionProfile::demo_profile())
+            .await
+            .expect("Failed to connect to demo sandbox");
+
+        let procs = session
+            .list_processes()
+            .await
+            .expect("Failed to list processes");
+        assert!(procs.columns.contains(&"Id".to_string()));
+        assert!(procs.columns.contains(&"User".to_string()));
+        assert!(procs.columns.contains(&"Command".to_string()));
+        assert!(!procs.rows.is_empty());
+
+        let status = session
+            .server_status_summary()
+            .await
+            .expect("Failed to get server status");
+        assert!(status.contains_key("Uptime"));
+        assert!(status.contains_key("Threads_connected"));
+        assert!(status.contains_key("Questions"));
+
+        let vars = session
+            .list_server_variables()
+            .await
+            .expect("Failed to get server variables");
+        assert!(!vars.is_empty());
+        assert!(vars.iter().any(|(k, _)| k == "max_connections"));
+        assert!(vars.iter().any(|(k, _)| k == "version"));
+
+        session.kill_query(101).await.expect("Failed to kill query");
+    }
+}

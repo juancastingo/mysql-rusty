@@ -163,3 +163,26 @@ pub fn sanitize_filename(name: &str) -> String {
         res
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::AppConfig;
+    #[test]
+    fn test_sanitize_filename_and_queries_dir() {
+        use crate::app::sanitize_filename;
+
+        assert_eq!(sanitize_filename("My Custom Query"), "My_Custom_Query");
+        assert_eq!(
+            sanitize_filename("test/unsafe*name?.sql"),
+            "test_unsafe_name"
+        );
+        assert_eq!(sanitize_filename(""), "query");
+        assert_eq!(
+            sanitize_filename("  spaces_and_tabs  .sql"),
+            "spaces_and_tabs"
+        );
+
+        let qdir = AppConfig::queries_dir();
+        assert!(qdir.exists() || qdir.to_str().is_some());
+    }
+}

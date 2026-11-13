@@ -668,3 +668,128 @@ pub fn generate_table_dump_sql(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_parse_csv_to_batch_insert() {
+        use crate::export::parse_csv_to_batch_insert;
+
+        let csv = "id,name,price,in_stock,notes\n1,Widget,19.99,true,NULL\n2,Gadget,42.0,false,\"Best widget ever; tested!\"\n3,Doohickey,100,true,";
+        let sql = parse_csv_to_batch_insert("inventory", csv).expect("Failed to parse CSV");
+        assert!(sql.starts_with(
+            "INSERT INTO `inventory` (`id`, `name`, `price`, `in_stock`, `notes`) VALUES"
+        ));
+        assert!(sql.contains("(1, 'Widget', 19.99, 1, NULL)"));
+        assert!(sql.contains("(2, 'Gadget', 42.0, 0, 'Best widget ever; tested!')"));
+        assert!(sql.contains("(3, 'Doohickey', 100, 1, NULL)"));
+
+        // Error cases
+        assert!(parse_csv_to_batch_insert("test", "").is_err());
+        assert!(parse_csv_to_batch_insert("test", "id,name\n").is_err());
+    }
+    #[test]
+    fn test_mock_data_and_markdown_export() {
+        use crate::db::{CellValue, ColumnInfo, QueryResult, TableSchema};
+        use crate::export::{generate_mock_data_sql, to_markdown_table};
+
+        let table = TableSchema {
+            name: "customers".to_string(),
+            table_type: "BASE TABLE".to_string(),
+            engine: "InnoDB".to_string(),
+            approx_rows: 0,
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "INT".to_string(),
+                    is_nullable: false,
+                    is_primary_key: true,
+                    default_value: None,
+                    extra: "auto_increment".to_string(),
+                },
+                ColumnInfo {
+                    name: "full_name".to_string(),
+                    data_type: "VARCHAR(255)".to_string(),
+                    is_nullable: false,
+                    is_primary_key: false,
+                    default_value: None,
+                    extra: String::new(),
+                },
+                ColumnInfo {
+                    name: "email".to_string(),
+                    data_type: "VARCHAR(191)".to_string(),
+                    is_nullable: false,
+                    is_primary_key: false,
+                    default_value: None,
+                    extra: String::new(),
+                },
+            ],
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+        };
+
+        let sql = generate_mock_data_sql(&table, 5);
+        assert!(sql.contains("INSERT INTO `customers` (`full_name`, `email`) VALUES"));
+        assert!(sql.contains("@example.com") || sql.contains("@testmail.org"));
+
+        let q_res = QueryResult {
+            sql: "SELECT 1".to_string(),
+            database: "test".to_string(),
+            columns: vec!["id".to_string(), "status".to_string()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("active".to_string())],
+                vec![CellValue::Integer(2), CellValue::Null],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "OK".to_string(),
+        };
+
+        let md = to_markdown_table(&q_res);
+        assert!(md.contains("| id | status |"));
+        assert!(md.contains("| 1 | active |"));
+        assert!(md.contains("| 2 | NULL |"));
+    }
+    #[test]
+    fn test_column_copy_formats() {
+        use crate::export::{format_column_as_js_array, format_column_as_sql_in};
+
+        let result = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "demo".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec![
+                    CellValue::Text("1".to_string()),
+                    CellValue::Text("Alice".to_string()),
+                ],
+                vec![
+                    CellValue::Text("2".to_string()),
+                    CellValue::Text("O'Brien".to_string()),
+                ],
+                vec![CellValue::Null, CellValue::Null],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "OK".to_string(),
+        };
+
+        assert_eq!(format_column_as_sql_in(&result, 0, &[0, 1, 2]), "IN (1, 2)");
+        assert_eq!(
+            format_column_as_sql_in(&result, 1, &[0, 1]),
+            "IN ('Alice', 'O''Brien')"
+        );
+        assert_eq!(format_column_as_js_array(&result, 0, &[0, 1]), "[1, 2]");
+        assert_eq!(
+            format_column_as_js_array(&result, 1, &[0, 1]),
+            "[\"Alice\", \"O'Brien\"]"
+        );
+    }
+}

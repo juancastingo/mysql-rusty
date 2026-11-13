@@ -1443,3 +1443,136 @@ pub fn extract_sql_code_block(markdown: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo::build_demo_schema;
+    #[test]
+    fn test_schema_ddl_and_local_completions() {
+        let schema = build_demo_schema("ecommerce_prod");
+        let ddl = schema.to_ai_ddl_context();
+        assert!(ddl.contains("TABLE `users`"));
+        assert!(ddl.contains("FK: `orders`.`user_id` -> `users`.`id`"));
+
+        let (prefix, items) = compute_local_completions("SELECT * FROM us", Some(&schema), 10);
+        assert_eq!(prefix, "us");
+        assert!(items.iter().any(|i| i.label == "users"));
+
+        let pruned = schema.to_pruned_ai_ddl_context("SELECT * FROM users WHERE");
+        assert!(pruned.contains("TABLE `users`"));
+        assert!(pruned.contains("TABLE `orders`"));
+    }
+    #[test]
+    fn test_clean_inline_completion_overlap_trimming() {
+        // User's exact bug case: LLM repeats 'WHERE serialNumber LIKE ...'
+        let prefix1 = "SELECT * FROM `asset` where serialNumber like ";
+        let raw1 = "WHERE serialNumber LIKE '%your_serial_number%'";
+        assert_eq!(
+            clean_inline_completion(raw1, prefix1),
+            "'%your_serial_number%'"
+        );
+
+        // LLM repeats the full query
+        let raw2 = "SELECT * FROM `asset` WHERE serialNumber LIKE '%pattern%'";
+        assert_eq!(clean_inline_completion(raw2, prefix1), "'%pattern%'");
+
+        // LLM repeats 'WHERE' clause
+        let prefix3 = "SELECT * FROM orders WHERE ";
+        let raw3 = "WHERE status = 'pending'";
+        assert_eq!(clean_inline_completion(raw3, prefix3), "status = 'pending'");
+
+        // Partial identifier completion ('em' -> 'ail')
+        let prefix4 = "SELECT * FROM users WHERE em";
+        let raw4 = "WHERE email = 'admin@example.com'";
+        assert_eq!(
+            clean_inline_completion(raw4, prefix4),
+            "ail = 'admin@example.com'"
+        );
+    }
+    #[test]
+    fn test_heuristic_ghost_completion_and_sql_extraction() {
+        let schema = build_demo_schema("ecommerce_prod");
+        let ghost = compute_heuristic_ghost_completion("SELECT * FROM orders", Some(&schema));
+        assert!(
+            ghost
+                .unwrap()
+                .contains("JOIN users ON orders.user_id = users.id")
+        );
+
+        let md = "Here is the query:\n```sql\nSELECT id FROM users;\n```\nDone.";
+        assert_eq!(
+            extract_sql_code_block(md).as_deref(),
+            Some("SELECT id FROM users;")
+        );
+    }
+    #[test]
+    fn test_three_autocomplete_options_and_heuristic() {
+        use crate::config::{AiConfig, AiProvider};
+        let schema = build_demo_schema("ecommerce_prod");
+
+        // 1. Local Schema heuristic tests
+        let select_ghost = compute_heuristic_ghost_completion("SELECT *", Some(&schema));
+        assert!(select_ghost.unwrap().contains("FROM users LIMIT 50;"));
+
+        let where_ghost =
+            compute_heuristic_ghost_completion("SELECT * FROM users WHERE", Some(&schema));
+        assert!(where_ghost.unwrap().contains("id = 1 LIMIT 50;"));
+
+        let insert_ghost = compute_heuristic_ghost_completion("INSERT INTO users", Some(&schema));
+        assert!(insert_ghost.unwrap().contains("VALUES"));
+
+        // 2. AiConfig default provider is LocalSchema
+        let cfg = AiConfig::default();
+        assert_eq!(cfg.provider, AiProvider::LocalSchema);
+        assert!(cfg.ollama_use_fim);
+
+        // 3. Provider labels
+        assert!(AiProvider::LocalSchema.label().contains("0ms"));
+        assert!(AiProvider::Ollama.label().contains("FIM"));
+        assert!(AiProvider::GitHubCopilot.label().contains("GitHub Copilot"));
+    }
+    #[test]
+    fn test_smart_autocomplete_alias_clause_cursor_and_fim() {
+        use crate::ai::clean_inline_completion_with_suffix;
+        use crate::syntax::{replace_at_cursor, split_sql_at_cursor};
+
+        let schema = build_demo_schema("ecommerce_prod");
+
+        // 1. Alias resolution from `FROM users AS usr`
+        let (_, alias_items) = compute_local_completions(
+            "SELECT usr.em FROM users AS usr WHERE usr.em",
+            Some(&schema),
+            10,
+        );
+        assert!(alias_items.iter().any(|i| i.label == "usr.email"));
+
+        // 2. Substring / word-boundary matching (`mail` matches `email`)
+        let (_, fuzzy_items) =
+            compute_local_completions("SELECT * FROM users WHERE mail", Some(&schema), 10);
+        assert!(fuzzy_items.iter().any(|i| i.label == "email"));
+
+        // 3. Clause awareness: after `FROM `, tables are suggested first
+        let (_, from_items) = compute_local_completions("SELECT * FROM ", Some(&schema), 5);
+        assert!(!from_items.is_empty());
+        assert_eq!(from_items[0].kind, crate::ai::CompletionKind::Table);
+
+        // 4. Cursor-aware split & replacement in middle of query
+        let mut sql = "SELECT * FROM us WHERE id = 1".to_string();
+        let cursor_idx = "SELECT * FROM us".chars().count();
+        let (prefix, suffix) = split_sql_at_cursor(&sql, cursor_idx);
+        assert_eq!(prefix, "SELECT * FROM us");
+        assert_eq!(suffix, " WHERE id = 1");
+        let new_cursor = replace_at_cursor(&mut sql, cursor_idx, "us".len(), "users");
+        assert_eq!(sql, "SELECT * FROM users WHERE id = 1");
+        assert_eq!(new_cursor, "SELECT * FROM users".chars().count());
+
+        // 5. FIM suffix overlap trimming
+        let cleaned = clean_inline_completion_with_suffix(
+            "users WHERE id = 1",
+            "SELECT * FROM ",
+            " WHERE id = 1",
+        );
+        assert_eq!(cleaned, "users");
+    }
+}

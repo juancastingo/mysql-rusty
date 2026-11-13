@@ -444,3 +444,14 @@ pub fn delete_secret(key: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_keyring_fallback() {
+        use crate::config::{delete_secret, get_secret, set_secret};
+        let _ = set_secret("test_key", "secret_value");
+        let _ = get_secret("test_key");
+        let _ = delete_secret("test_key");
+    }
+}

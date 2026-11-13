@@ -211,3 +211,52 @@ pub(crate) struct OpenConnectionWorkspace {
     pub(crate) uncommitted_mutations: usize,
     pub(crate) er_state: ErCanvasState,
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_csv_import_wizard_logic() {
+        use crate::export::{generate_csv_import_sql, inspect_csv_content};
+
+        let csv = "first_name,last_name,email,age\nAlice,Smith,alice@example.com,29\nBob,Jones,bob@example.com,41";
+        let (headers, samples, count) = inspect_csv_content(csv, 5).expect("Failed to inspect CSV");
+        assert_eq!(headers, vec!["first_name", "last_name", "email", "age"]);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(count, 2);
+
+        let mappings = vec![
+            ("first_name".to_string(), "name".to_string()),
+            ("email".to_string(), "user_email".to_string()),
+        ];
+        let sql = generate_csv_import_sql("customers", &headers, &mappings, csv, true)
+            .expect("Failed to generate import SQL");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS `customers`"));
+        assert!(sql.contains("INSERT INTO `customers` (`name`, `user_email`) VALUES"));
+        assert!(sql.contains("('Alice', 'alice@example.com')"));
+    }
+    #[test]
+    fn test_saved_query_model_and_tab_dirty_title() {
+        use crate::app::QueryTab;
+        use crate::config::SavedSnippet;
+
+        let mut tab = QueryTab::new("My Analytics", "SELECT COUNT(*) FROM orders;");
+        assert_eq!(tab.display_title(), "My Analytics");
+        assert!(!tab.is_dirty);
+
+        tab.is_dirty = true;
+        assert_eq!(tab.display_title(), "My Analytics *");
+
+        let snip = SavedSnippet {
+            id: "test-uuid-1".to_string(),
+            title: "Orders by Month".to_string(),
+            sql: "SELECT MONTH(created_at), COUNT(*) FROM orders GROUP BY 1;".to_string(),
+            database: Some("ecommerce".to_string()),
+            description: "Aggregates revenue by month".to_string(),
+            created_at: "2026-11-12".to_string(),
+        };
+
+        assert_eq!(snip.title, "Orders by Month");
+        assert_eq!(snip.database.as_deref(), Some("ecommerce"));
+        assert_eq!(snip.description, "Aggregates revenue by month");
+    }
+}

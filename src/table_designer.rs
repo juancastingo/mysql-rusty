@@ -662,3 +662,100 @@ impl TableDraft {
         action
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::demo::build_demo_schema;
+    #[test]
+    fn test_table_designer_create_and_alter_ddl() {
+        use crate::db::{ColumnInfo, ForeignKeyInfo, IndexInfo};
+        use crate::table_designer::TableDraft;
+
+        // 1. CREATE TABLE mode
+        let mut create_draft = TableDraft::new_empty("products");
+        create_draft.columns.push(ColumnInfo {
+            name: "title".to_string(),
+            data_type: "VARCHAR(255)".to_string(),
+            is_nullable: false,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        });
+        create_draft.indexes.push(IndexInfo {
+            index_name: "idx_title".to_string(),
+            column_name: "title".to_string(),
+            non_unique: true,
+            index_type: "BTREE".to_string(),
+        });
+        create_draft.foreign_keys.push(ForeignKeyInfo {
+            constraint_name: "fk_prod_cat".to_string(),
+            column_name: "category_id".to_string(),
+            referenced_table: "categories".to_string(),
+            referenced_column: "id".to_string(),
+        });
+
+        let create_ddl = create_draft.generate_ddl_diff();
+        assert!(create_ddl.contains("CREATE TABLE `products`"));
+        assert!(create_ddl.contains("PRIMARY KEY (`id`)"));
+        assert!(create_ddl.contains("KEY `idx_title` (`title`)"));
+        assert!(create_ddl.contains(
+            "CONSTRAINT `fk_prod_cat` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)"
+        ));
+        assert!(create_ddl.contains("ENGINE=InnoDB"));
+
+        // 2. ALTER TABLE mode
+        let schema = build_demo_schema("ecommerce_prod");
+        let users_tbl = schema.tables.iter().find(|t| t.name == "users").unwrap();
+        let mut alter_draft = TableDraft::from_table(users_tbl);
+
+        // Add a new column
+        alter_draft.columns.push(ColumnInfo {
+            name: "phone_number".to_string(),
+            data_type: "VARCHAR(30)".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        });
+
+        // Modify email column
+        if let Some(email_col) = alter_draft.columns.iter_mut().find(|c| c.name == "email") {
+            email_col.data_type = "VARCHAR(320)".to_string();
+        }
+
+        // Drop country column
+        alter_draft.columns.retain(|c| c.name != "country");
+
+        let alter_ddl = alter_draft.generate_ddl_diff();
+        assert!(
+            alter_ddl.contains("ALTER TABLE `users` ADD COLUMN `phone_number` VARCHAR(30) NULL;")
+        );
+        assert!(
+            alter_ddl.contains("ALTER TABLE `users` MODIFY COLUMN `email` VARCHAR(320) NOT NULL;")
+        );
+        assert!(alter_ddl.contains("ALTER TABLE `users` DROP COLUMN `country`;"));
+    }
+    #[test]
+    fn test_table_designer_up_down_migration() {
+        use crate::db::ColumnInfo;
+        use crate::table_designer::TableDraft;
+
+        let mut draft = TableDraft::new_empty("audit_logs");
+        draft.columns.push(ColumnInfo {
+            name: "action".to_string(),
+            data_type: "VARCHAR(100)".to_string(),
+            is_nullable: false,
+            default_value: None,
+            extra: String::new(),
+            is_primary_key: false,
+        });
+
+        let (up, down) = draft.generate_up_down_migration();
+        assert!(up.contains("CREATE TABLE `audit_logs`"));
+        assert!(down.contains("DROP TABLE IF EXISTS `audit_logs`"));
+
+        let migration_content = draft.generate_migration_file_content();
+        assert!(migration_content.contains(">>> UP MIGRATION (APPLY)"));
+        assert!(migration_content.contains("<<< DOWN MIGRATION (ROLLBACK)"));
+    }
+}
