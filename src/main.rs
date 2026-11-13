@@ -546,4 +546,71 @@ mod tests {
         let qdir = AppConfig::queries_dir();
         assert!(qdir.exists() || qdir.to_str().is_some());
     }
+
+    #[test]
+    fn test_productivity_sql_helpers() {
+        use std::collections::HashMap;
+        use crate::syntax::{
+            expand_sql_macro, extract_sql_parameters, split_sql_statements,
+            substitute_sql_parameters,
+        };
+
+        let script = "SELECT 1; SELECT 'a;b' AS txt; -- comment;ignored\nSELECT 2;";
+        let stmts = split_sql_statements(script);
+        assert_eq!(stmts.len(), 3);
+        assert_eq!(stmts[0], "SELECT 1;");
+        assert_eq!(stmts[1], "SELECT 'a;b' AS txt;");
+        assert!(stmts[2].ends_with("SELECT 2;"));
+
+        let param_sql = "SELECT * FROM users WHERE id = :user_id AND status = :status AND time_str = '12:30:00';";
+        let params = extract_sql_parameters(param_sql);
+        assert_eq!(params, vec!["user_id".to_string(), "status".to_string()]);
+
+        let mut values = HashMap::new();
+        values.insert("user_id".to_string(), "42".to_string());
+        values.insert("status".to_string(), "active".to_string());
+        let substituted = substitute_sql_parameters(param_sql, &values);
+        assert!(substituted.contains("id = 42"));
+        assert!(substituted.contains("status = 'active'"));
+        assert!(substituted.contains("'12:30:00'"));
+
+        assert_eq!(expand_sql_macro("sel*"), Some("SELECT * FROM  LIMIT 100;"));
+        assert_eq!(expand_sql_macro("cnt*"), Some("SELECT COUNT(*) AS total FROM ;"));
+        assert_eq!(expand_sql_macro("unknown"), None);
+    }
+
+    #[test]
+    fn test_column_copy_formats() {
+        use crate::db::{CellValue, QueryResult};
+        use crate::export::{format_column_as_js_array, format_column_as_sql_in};
+
+        let result = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "demo".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            column_types: vec!["INT".to_string(), "VARCHAR".to_string()],
+            rows: vec![
+                vec![CellValue::Text("1".to_string()), CellValue::Text("Alice".to_string())],
+                vec![CellValue::Text("2".to_string()), CellValue::Text("O'Brien".to_string())],
+                vec![CellValue::Null, CellValue::Null],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: None,
+            primary_key_column: None,
+            status_message: "OK".to_string(),
+        };
+
+        assert_eq!(format_column_as_sql_in(&result, 0, &[0, 1, 2]), "IN (1, 2)");
+        assert_eq!(
+            format_column_as_sql_in(&result, 1, &[0, 1]),
+            "IN ('Alice', 'O''Brien')"
+        );
+        assert_eq!(format_column_as_js_array(&result, 0, &[0, 1]), "[1, 2]");
+        assert_eq!(
+            format_column_as_js_array(&result, 1, &[0, 1]),
+            "[\"Alice\", \"O'Brien\"]"
+        );
+    }
 }

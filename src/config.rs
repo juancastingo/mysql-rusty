@@ -94,6 +94,8 @@ pub struct ConnectionProfile {
     pub environment: Environment,
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub favorite_tables: Vec<String>,
 }
 
 impl Default for ConnectionProfile {
@@ -113,6 +115,7 @@ impl Default for ConnectionProfile {
             is_demo: false,
             environment: Environment::Development,
             read_only: false,
+            favorite_tables: Vec::new(),
         }
     }
 }
@@ -134,6 +137,7 @@ impl ConnectionProfile {
             is_demo: true,
             environment: Environment::Development,
             read_only: false,
+            favorite_tables: Vec::new(),
         }
     }
 }
@@ -249,11 +253,21 @@ pub struct SavedSnippet {
 pub type SavedQuery = SavedSnippet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedScratchpad {
+    pub title: String,
+    pub sql: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub connections: Vec<ConnectionProfile>,
     pub ai: AiConfig,
     pub history: Vec<QueryHistoryEntry>,
     pub snippets: Vec<SavedSnippet>,
+    #[serde(default)]
+    pub scratchpads: Vec<SavedScratchpad>,
 }
 
 impl Default for AppConfig {
@@ -265,6 +279,7 @@ impl Default for AppConfig {
             ],
             ai: AiConfig::default(),
             history: Vec::new(),
+            scratchpads: Vec::new(),
             snippets: vec![
                 SavedSnippet {
                     id: Uuid::new_v4().to_string(),

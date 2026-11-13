@@ -650,4 +650,304 @@ pub fn apply_limit_to_sql(sql: &str, new_limit: Option<usize>) -> String {
     }
 }
 
+/// Splits a multi-statement SQL script into individual trimmed non-empty statements,
+/// respecting string literals, backticks, and comments.
+pub fn split_sql_statements(sql: &str) -> Vec<String> {
+    if sql.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut stmts = Vec::new();
+    let mut current_start = 0;
+
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < n {
+        let ch = chars[i];
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+        } else if in_block_comment {
+            if ch == '*' && i + 1 < n && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 1;
+            }
+        } else if in_single_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '\'' {
+                if i + 1 < n && chars[i + 1] == '\'' {
+                    i += 1;
+                } else {
+                    in_single_quote = false;
+                }
+            }
+        } else if in_double_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '"' {
+                if i + 1 < n && chars[i + 1] == '"' {
+                    i += 1;
+                } else {
+                    in_double_quote = false;
+                }
+            }
+        } else if in_backtick {
+            if ch == '`' {
+                if i + 1 < n && chars[i + 1] == '`' {
+                    i += 1;
+                } else {
+                    in_backtick = false;
+                }
+            }
+        } else {
+            if ch == '-' && i + 1 < n && chars[i + 1] == '-' {
+                in_line_comment = true;
+                i += 1;
+            } else if ch == '#' {
+                in_line_comment = true;
+            } else if ch == '/' && i + 1 < n && chars[i + 1] == '*' {
+                in_block_comment = true;
+                i += 1;
+            } else if ch == '\'' {
+                in_single_quote = true;
+            } else if ch == '"' {
+                in_double_quote = true;
+            } else if ch == '`' {
+                in_backtick = true;
+            } else if ch == ';' {
+                let s: String = chars[current_start..=i].iter().collect();
+                let trimmed = s.trim();
+                if !trimmed.is_empty() && trimmed != ";" {
+                    stmts.push(trimmed.to_string());
+                }
+                current_start = i + 1;
+            }
+        }
+        i += 1;
+    }
+
+    if current_start < n {
+        let s: String = chars[current_start..n].iter().collect();
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            stmts.push(trimmed.to_string());
+        }
+    }
+
+    stmts
+}
+
+/// Extracts unique `:param_name` template parameters from a SQL string,
+/// ignoring tokens inside string literals, backticks, or comments.
+pub fn extract_sql_parameters(sql: &str) -> Vec<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut params = Vec::new();
+
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < n {
+        let ch = chars[i];
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+        } else if in_block_comment {
+            if ch == '*' && i + 1 < n && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 1;
+            }
+        } else if in_single_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '\'' {
+                in_single_quote = false;
+            }
+        } else if in_double_quote {
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+            } else if ch == '"' {
+                in_double_quote = false;
+            }
+        } else if in_backtick {
+            if ch == '`' {
+                in_backtick = false;
+            }
+        } else {
+            if ch == '-' && i + 1 < n && chars[i + 1] == '-' {
+                in_line_comment = true;
+                i += 1;
+            } else if ch == '#' {
+                in_line_comment = true;
+            } else if ch == '/' && i + 1 < n && chars[i + 1] == '*' {
+                in_block_comment = true;
+                i += 1;
+            } else if ch == '\'' {
+                in_single_quote = true;
+            } else if ch == '"' {
+                in_double_quote = true;
+            } else if ch == '`' {
+                in_backtick = true;
+            } else if ch == ':' && (i == 0 || !chars[i - 1].is_ascii_alphanumeric() && chars[i - 1] != ':') {
+                if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_') {
+                    let mut j = i + 1;
+                    while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                        j += 1;
+                    }
+                    let name: String = chars[i + 1..j].iter().collect();
+                    if !params.contains(&name) {
+                        params.push(name);
+                    }
+                    i = j - 1;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    params
+}
+
+/// Substitutes `:param_name` template parameters with safely formatted SQL literals.
+pub fn substitute_sql_parameters(
+    sql: &str,
+    params: &std::collections::HashMap<String, String>,
+) -> String {
+    if params.is_empty() {
+        return sql.to_string();
+    }
+
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(sql.len() + 32);
+
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < n {
+        let ch = chars[i];
+        if in_line_comment {
+            out.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+        } else if in_block_comment {
+            out.push(ch);
+            if ch == '*' && i + 1 < n && chars[i + 1] == '/' {
+                out.push('/');
+                in_block_comment = false;
+                i += 1;
+            }
+        } else if in_single_quote {
+            out.push(ch);
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+                out.push(chars[i]);
+            } else if ch == '\'' {
+                in_single_quote = false;
+            }
+        } else if in_double_quote {
+            out.push(ch);
+            if ch == '\\' && i + 1 < n {
+                i += 1;
+                out.push(chars[i]);
+            } else if ch == '"' {
+                in_double_quote = false;
+            }
+        } else if in_backtick {
+            out.push(ch);
+            if ch == '`' {
+                in_backtick = false;
+            }
+        } else {
+            if ch == '-' && i + 1 < n && chars[i + 1] == '-' {
+                in_line_comment = true;
+                out.push(ch);
+                out.push('-');
+                i += 1;
+            } else if ch == '#' {
+                in_line_comment = true;
+                out.push(ch);
+            } else if ch == '/' && i + 1 < n && chars[i + 1] == '*' {
+                in_block_comment = true;
+                out.push(ch);
+                out.push('*');
+                i += 1;
+            } else if ch == '\'' {
+                in_single_quote = true;
+                out.push(ch);
+            } else if ch == '"' {
+                in_double_quote = true;
+                out.push(ch);
+            } else if ch == '`' {
+                in_backtick = true;
+                out.push(ch);
+            } else if ch == ':'
+                && (i == 0 || (!chars[i - 1].is_ascii_alphanumeric() && chars[i - 1] != ':'))
+                && i + 1 < n
+                && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
+            {
+                let mut j = i + 1;
+                while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
+                let name: String = chars[i + 1..j].iter().collect();
+                if let Some(val) = params.get(&name) {
+                    let trimmed = val.trim();
+                    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+                        out.push_str("NULL");
+                    } else if trimmed.parse::<i64>().is_ok() || trimmed.parse::<f64>().is_ok() {
+                        out.push_str(trimmed);
+                    } else {
+                        out.push('\'');
+                        out.push_str(&trimmed.replace('\'', "''"));
+                        out.push('\'');
+                    }
+                    i = j - 1;
+                } else {
+                    out.push(ch);
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        i += 1;
+    }
+
+    out
+}
+
+/// Expands short SQL productivity macros (e.g. `sel*`, `cnt*`, `join*`) into full templates.
+pub fn expand_sql_macro(token: &str) -> Option<&'static str> {
+    match token.trim().to_lowercase().as_str() {
+        "sel*" => Some("SELECT * FROM  LIMIT 100;"),
+        "selw" => Some("SELECT * FROM  WHERE  LIMIT 100;"),
+        "cnt*" => Some("SELECT COUNT(*) AS total FROM ;"),
+        "join*" => Some("INNER JOIN  ON .id = ._id"),
+        "ins*" => Some("INSERT INTO  () VALUES ();"),
+        "upd*" => Some("UPDATE  SET  WHERE ;"),
+        "del*" => Some("DELETE FROM  WHERE ;"),
+        "grp*" => Some("SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;"),
+        _ => None,
+    }
+}
+
 

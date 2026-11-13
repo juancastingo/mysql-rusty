@@ -13,14 +13,22 @@ A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for 
 - **Schema Explorer & ER Overview:**
   - Live introspection of databases, tables, approximate row counts, columns, primary keys (`🔑`), foreign keys (`🔗`), and indexes via `INFORMATION_SCHEMA`.
   - Quick actions (`SELECT *`, `DDL`, `Insert Name`) and an Entity-Relationship (ER) schema diagram tab.
+  - **Favorite / Pinned Tables (`★` / `☆`):** Pin frequently used tables to the top of the Schema Explorer per connection profile.
 - **Multi-Tab SQL Editor with 2-Tier Autocomplete:**
   - Custom SQL lexer and syntax highlighter (keywords, functions, types, strings, numbers, comments).
   - **Tier 1 (<1 ms):** Local schema-aware suggestions for tables, `alias.column` completions, Foreign Key `JOIN ... ON` clauses, and SQL keywords.
   - **Tier 2 (AI Ghost Text):** Inline Copilot-style ghost completions rendered in muted italic cyan right after the cursor (`Tab` to accept, `Ctrl+Space` to trigger from LLM/CLI).
+  - **Quick SQL Macros (`Tab`):** Expand short abbreviations (`sel*`, `selw`, `cnt*`, `join*`, `ins*`, `upd*`, `del*`, `grp*`) directly in the editor.
+  - **Parameterized Queries (`:param_name`):** Automatic dynamic parameter bar with safe value substitution before execution.
+  - **Persistent Scratchpad Tabs:** Auto-saves open query tabs every 5 seconds and restores them on startup.
+  - **Global Command Palette (`Ctrl+K` / `Ctrl+P`):** Instant fuzzy search across tables, saved snippets, and workbench actions.
   - **Professional SQL Formatter (`Ctrl+Shift+F`):** Built-in beautifier (`sqlformat`) that cleans clauses, indentations, and standardizes keyword casing.
   - **Visual Transaction Controls:** Manual transaction mode with `[Begin Tx]`, `[Commit]`, `[Rollback]` buttons, and uncommitted mutation tracking.
 - **Interactive Results Grid & 1-Click Data Visualization:**
   - Virtualized multi-column table with column sorting, client-side pagination (25, 50, 100, 250, 500, All), and execution metrics.
+  - **Multi-Results Sub-Tabs:** Executing multi-statement SQL scripts renders each result set in its own sub-tab (`Result 1`, `Result 2`, ...).
+  - **Developer Copy Formats:** Right-click any column header to copy values as `SQL IN (...)` or `JS/TS Array`.
+  - **FK "Browse Related Rows":** Right-click any cell with an outgoing or incoming foreign key relationship to jump directly to the related rows in a new tab.
   - **No-Code Visual Filter Bar:** Instant multi-operator column filtering (`contains`, `=`, `!=`, `starts with`, `>`, `<`, `IS NULL`, `IS NOT NULL`).
   - **Cell Value & JSON Inspector (`🔍`):** Modal inspector with pretty-printed JSON detection, character/byte counters, and copy-to-clipboard.
   - **Inline Cell Editing:** Double-click any cell on a single-table query with a Primary Key to edit values inline and commit parameterized `UPDATE` statements.

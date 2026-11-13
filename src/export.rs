@@ -375,4 +375,47 @@ pub fn generate_mock_data_sql(table: &TableSchema, count: usize) -> String {
     out
 }
 
+/// Formats all unique non-null values from a specific column as a SQL `IN (...)` clause.
+pub fn format_column_as_sql_in(result: &QueryResult, col_idx: usize, row_indices: &[usize]) -> String {
+    let mut vals = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for &r_idx in row_indices {
+        if let Some(cell) = result.rows.get(r_idx).and_then(|r| r.get(col_idx)) {
+            if cell.is_null() {
+                continue;
+            }
+            let text = cell.display_text();
+            if !seen.insert(text.clone()) {
+                continue;
+            }
+            if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() {
+                vals.push(text);
+            } else {
+                vals.push(format!("'{}'", text.replace('\'', "''")));
+            }
+        }
+    }
+    format!("IN ({})", vals.join(", "))
+}
+
+/// Formats all values from a specific column as a JavaScript/TypeScript array.
+pub fn format_column_as_js_array(result: &QueryResult, col_idx: usize, row_indices: &[usize]) -> String {
+    let mut vals = Vec::new();
+    for &r_idx in row_indices {
+        if let Some(cell) = result.rows.get(r_idx).and_then(|r| r.get(col_idx)) {
+            if cell.is_null() {
+                vals.push("null".to_string());
+                continue;
+            }
+            let text = cell.display_text();
+            if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() {
+                vals.push(text);
+            } else {
+                vals.push(format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"")));
+            }
+        }
+    }
+    format!("[{}]", vals.join(", "))
+}
+
 
