@@ -349,48 +349,64 @@ pub fn highlight_sql(
     cursor_char_idx: Option<usize>,
     font_size: f32,
 ) -> LayoutJob {
+    highlight_sql_with_palette(
+        text,
+        ghost_suffix,
+        cursor_char_idx,
+        font_size,
+        &crate::theme::dark_palette(),
+    )
+}
+
+pub fn highlight_sql_with_palette(
+    text: &str,
+    ghost_suffix: Option<&str>,
+    cursor_char_idx: Option<usize>,
+    font_size: f32,
+    palette: &crate::theme::Palette,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     let mono = FontId::new(font_size, FontFamily::Monospace);
 
     let kw_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(56, 189, 248), // Sky blue
+        color: palette.keyword,
         ..Default::default()
     };
     let fn_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(192, 132, 252), // Purple
+        color: palette.function,
         ..Default::default()
     };
     let type_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(45, 212, 191), // Teal
+        color: palette.type_,
         ..Default::default()
     };
     let str_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(163, 230, 53), // Lime green
+        color: palette.string,
         ..Default::default()
     };
     let num_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(251, 146, 60), // Orange
+        color: palette.number,
         ..Default::default()
     };
     let comment_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(100, 116, 139), // Slate gray
+        color: palette.comment,
         italics: true,
         ..Default::default()
     };
     let ident_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(226, 232, 240), // Light slate
+        color: palette.identifier,
         ..Default::default()
     };
     let punct_fmt = TextFormat {
         font_id: mono.clone(),
-        color: Color32::from_rgb(148, 163, 184),
+        color: palette.punctuation,
         ..Default::default()
     };
 

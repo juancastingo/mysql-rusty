@@ -98,6 +98,82 @@ pub(crate) fn configure_modern_dark_theme(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+pub(crate) fn configure_modern_light_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::light();
+    visuals.window_fill = egui::Color32::from_rgb(255, 255, 255);
+    visuals.panel_fill = egui::Color32::from_rgb(248, 250, 252);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(241, 245, 249);
+    visuals.faint_bg_color = egui::Color32::from_rgb(241, 245, 249);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(186, 230, 253);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(2, 132, 199));
+
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(248, 250, 252);
+    visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(226, 232, 240));
+    visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(51, 65, 85));
+
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(241, 245, 249);
+    visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(203, 213, 225));
+    visuals.widgets.inactive.fg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59));
+
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 232, 240);
+    visuals.widgets.hovered.bg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(14, 165, 233));
+
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(203, 213, 225);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(2, 132, 199));
+
+    visuals.window_corner_radius = egui::CornerRadius::same(10);
+    visuals.menu_corner_radius = egui::CornerRadius::same(8);
+
+    ctx.set_visuals(visuals.clone());
+    ctx.style_mut_of(egui::Theme::Light, |style| {
+        style.visuals = visuals;
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        style.spacing.window_margin = egui::Margin::same(14);
+        style.spacing.interact_size = egui::vec2(28.0, 24.0);
+        style.spacing.combo_width = 180.0;
+    });
+}
+
+impl super::MysqlRustyApp {
+    pub(crate) fn resolved_egui_theme(&self, ctx: &egui::Context) -> egui::Theme {
+        match self.config.ui.theme {
+            crate::config::ThemePreference::Dark => egui::Theme::Dark,
+            crate::config::ThemePreference::Light => egui::Theme::Light,
+            crate::config::ThemePreference::System => {
+                ctx.system_theme().unwrap_or(egui::Theme::Dark)
+            }
+        }
+    }
+
+    pub(crate) fn effective_palette(&self, ctx: &egui::Context) -> crate::theme::Palette {
+        match self.resolved_egui_theme(ctx) {
+            egui::Theme::Dark => crate::theme::dark_palette(),
+            egui::Theme::Light => crate::theme::light_palette(),
+        }
+    }
+
+    pub(crate) fn apply_ui_theme_and_scale(&mut self, ctx: &egui::Context) {
+        let target_theme = self.resolved_egui_theme(ctx);
+        if self.last_applied_theme != Some(target_theme) {
+            match target_theme {
+                egui::Theme::Dark => configure_modern_dark_theme(ctx),
+                egui::Theme::Light => configure_modern_light_theme(ctx),
+            }
+            self.last_applied_theme = Some(target_theme);
+        }
+        let scale = self.config.ui.ui_scale.clamp(0.75, 2.0);
+        if (ctx.zoom_factor() - scale).abs() > 0.001 {
+            ctx.set_zoom_factor(scale);
+        }
+    }
+}
+
 pub(crate) fn format_uptime_secs(uptime_str: Option<&String>) -> String {
     let Some(s) = uptime_str else {
         return "—".to_string();

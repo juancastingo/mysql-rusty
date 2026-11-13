@@ -22,6 +22,7 @@ mod syntax;
 mod table_designer;
 #[cfg(test)]
 pub mod test_fixtures;
+mod theme;
 mod vim;
 
 use app::MysqlRustyApp;

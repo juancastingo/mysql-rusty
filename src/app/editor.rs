@@ -164,6 +164,21 @@ impl MysqlRustyApp {
             let in_tx = self.in_transaction;
             let uncommitted_muts = self.uncommitted_mutations;
             let vim_mode_enabled = self.config.ui.vim_mode;
+            let editor_palette = self.effective_palette(ui.ctx());
+            let initial_font_size = self.config.ui.editor_font_size.clamp(10.0, 28.0);
+            let mut editor_font_size = initial_font_size;
+            ui.input_mut(|i| {
+                let mods = egui::Modifiers::COMMAND;
+                if i.consume_key(mods, egui::Key::Equals)
+                    || i.consume_key(mods, egui::Key::Plus)
+                {
+                    editor_font_size = (editor_font_size + 1.0).clamp(10.0, 28.0);
+                } else if i.consume_key(mods, egui::Key::Minus) {
+                    editor_font_size = (editor_font_size - 1.0).clamp(10.0, 28.0);
+                } else if i.consume_key(mods, egui::Key::Num0) {
+                    editor_font_size = 14.0;
+                }
+            });
             let mut trigger_tx_action: Option<u8> = None;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
@@ -902,11 +917,12 @@ impl MysqlRustyApp {
                     None
                 };
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                    let mut job = highlight_sql(
+                    let mut job = crate::syntax::highlight_sql_with_palette(
                         buf.as_str(),
                         ghost_clone.as_deref(),
                         Some(cursor_idx_snapshot),
-                        14.0,
+                        editor_font_size,
+                        &editor_palette,
                     );
                     if !find_ranges_clone.is_empty() {
                         crate::syntax::apply_background_ranges(
@@ -1227,6 +1243,11 @@ impl MysqlRustyApp {
                 Some(2) => self.rollback_transaction(),
                 Some(3) => self.start_transaction(),
                 _ => {}
+            }
+
+            if (editor_font_size - initial_font_size).abs() > 0.01 {
+                self.config.ui.editor_font_size = editor_font_size;
+                let _ = self.config.save();
             }
 
             if editor_run_stmt {

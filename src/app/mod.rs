@@ -242,6 +242,9 @@ pub struct MysqlRustyApp {
     user_form_plugin: String,
     user_form_password: String,
     user_form_expire: bool,
+
+    // UI Theme & Scale (#26)
+    last_applied_theme: Option<egui::Theme>,
 }
 
 impl MysqlRustyApp {
@@ -358,6 +361,7 @@ impl MysqlRustyApp {
 
             qps_history: Vec::new(),
             threads_history: Vec::new(),
+            last_applied_theme: None,
             last_poll_instant: None,
             last_questions_count: None,
 
@@ -441,6 +445,7 @@ impl MysqlRustyApp {
 
 impl eframe::App for MysqlRustyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.apply_ui_theme_and_scale(ui.ctx());
         self.process_async_events();
 
         // Debounced SQLite History Refresh (200ms)

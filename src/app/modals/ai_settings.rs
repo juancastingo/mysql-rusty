@@ -247,6 +247,47 @@ impl MysqlRustyApp {
                     "Enable Vim Mode in SQL Editor",
                 );
 
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Appearance").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Theme:");
+                    egui::ComboBox::from_id_salt("settings_theme_combo")
+                        .selected_text(self.config.ui.theme.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.config.ui.theme,
+                                crate::config::ThemePreference::Dark,
+                                "Dark",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.ui.theme,
+                                crate::config::ThemePreference::Light,
+                                "Light",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.ui.theme,
+                                crate::config::ThemePreference::System,
+                                "Follow System",
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("UI Scale:");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.ui.ui_scale, 0.75..=2.0)
+                            .step_by(0.05)
+                            .suffix("x"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Editor Font Size:");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.ui.editor_font_size, 10.0..=28.0)
+                            .step_by(1.0)
+                            .suffix(" px"),
+                    );
+                });
+
                 ui.separator();
                 if ui.button("Save Configuration").clicked() {
                     should_save = true;

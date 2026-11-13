@@ -350,10 +350,53 @@ impl Default for QuerySettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl ThemePreference {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+            Self::System => "Follow System",
+        }
+    }
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+fn default_editor_font_size() -> f32 {
+    14.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
     #[serde(default)]
     pub vim_mode: bool,
+    #[serde(default)]
+    pub theme: ThemePreference,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: f32,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            vim_mode: false,
+            theme: ThemePreference::Dark,
+            ui_scale: default_ui_scale(),
+            editor_font_size: default_editor_font_size(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
