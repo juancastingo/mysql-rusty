@@ -1,0 +1,6 @@
+---
+source: src/export.rs
+expression: "format!(\"{sql_in}\\n{js_arr}\")"
+---
+IN ('O''Brien "Ace"', 'Ñandú 🦀', 'Bob')
+["O'Brien \"Ace\"", "Ñandú 🦀", "Bob"]

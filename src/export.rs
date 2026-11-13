@@ -792,4 +792,82 @@ mod tests {
             "[\"Alice\", \"O'Brien\"]"
         );
     }
+
+    #[test]
+    fn snapshot_export_to_csv() {
+        use crate::test_fixtures::sample_result;
+        let csv = to_csv_string(&sample_result()).unwrap();
+        insta::assert_snapshot!(csv);
+    }
+
+    #[test]
+    fn snapshot_export_to_json() {
+        use crate::test_fixtures::sample_result;
+        let json = to_json_string(&sample_result()).unwrap();
+        insta::assert_snapshot!(json);
+    }
+
+    #[test]
+    fn snapshot_export_to_sql_inserts() {
+        use crate::test_fixtures::sample_result;
+        insta::assert_snapshot!(to_sql_inserts(&sample_result(), "users"));
+    }
+
+    #[test]
+    fn snapshot_export_to_markdown_table() {
+        use crate::test_fixtures::sample_result;
+        insta::assert_snapshot!(to_markdown_table(&sample_result()));
+    }
+
+    #[test]
+    fn snapshot_export_column_formats() {
+        use crate::test_fixtures::sample_result;
+        let res = sample_result();
+        let sql_in = format_column_as_sql_in(&res, 1, &[0, 1, 2]);
+        let js_arr = format_column_as_js_array(&res, 1, &[0, 1, 2]);
+        insta::assert_snapshot!(format!("{sql_in}\n{js_arr}"));
+    }
+
+    #[test]
+    fn snapshot_export_rows_as_json_insert_update() {
+        use crate::test_fixtures::sample_result;
+        let res = sample_result();
+        let json = format_rows_as_json(&res, &[0, 1]);
+        let ins = format_rows_as_sql_insert("users", &res, &[0, 1]);
+        let upd = format_rows_as_sql_update("users", "id", &res, &[0, 1]);
+        insta::assert_snapshot!(format!("{json}\n---\n{ins}\n---\n{upd}"));
+    }
+
+    #[test]
+    fn snapshot_export_table_ddl_and_dump() {
+        use crate::test_fixtures::{sample_result, users_table};
+        let tbl = users_table();
+        let res = sample_result();
+        let ddl = format_table_create_ddl(&tbl);
+        let dump_full = generate_table_dump_sql(&tbl, Some(&res), true, true, 2);
+        let dump_nodrop_nodata = generate_table_dump_sql(&tbl, Some(&res), false, false, 2);
+        insta::assert_snapshot!(format!(
+            "{ddl}\n=== FULL ===\n{dump_full}\n=== NODROP_NODATA ===\n{dump_nodrop_nodata}"
+        ));
+    }
+
+    #[test]
+    fn snapshot_export_csv_import_helpers() {
+        let csv_data = "id,name,active\n1,Alice,true\n2,NULL,false\n3,O'Brien,1\n";
+        let batch = parse_csv_to_batch_insert("users", csv_data).unwrap();
+        let preview = inspect_csv_content(csv_data, 5).unwrap();
+        insta::assert_snapshot!(format!(
+            "{batch}\n=== HEADERS: {:?} ROWS: {} ===",
+            preview.0, preview.2
+        ));
+    }
+
+    #[test]
+    fn test_generate_mock_data_sql_structure() {
+        use crate::test_fixtures::users_table;
+        let sql = generate_mock_data_sql(&users_table(), 5);
+        assert!(sql.contains("INSERT INTO `users`"));
+        let tuple_count = sql.matches("),").count() + 1;
+        assert_eq!(tuple_count, 5);
+    }
 }

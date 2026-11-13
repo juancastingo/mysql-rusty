@@ -1,0 +1,10 @@
+---
+source: src/table_designer.rs
+expression: draft.generate_ddl_diff()
+---
+CREATE TABLE `t` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `title` VARCHAR(120) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

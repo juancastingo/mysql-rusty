@@ -1,0 +1,27 @@
+---
+source: src/export.rs
+expression: "format!(\"{json}\\n---\\n{ins}\\n---\\n{upd}\")"
+---
+[
+  {
+    "bio": "Line1\nLine2, with comma",
+    "id": 1,
+    "name": "O'Brien \"Ace\"",
+    "score": "98.5"
+  },
+  {
+    "bio": null,
+    "id": 2,
+    "name": "Ñandú 🦀",
+    "score": "42"
+  }
+]
+---
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES
+  (1, 'O''Brien "Ace"', 'Line1
+Line2, with comma', 98.5),
+  (2, 'Ñandú 🦀', NULL, 42);
+---
+UPDATE `users` SET `name` = 'O''Brien "Ace"', `bio` = 'Line1
+Line2, with comma', `score` = 98.5 WHERE `id` = 1;
+UPDATE `users` SET `name` = 'Ñandú 🦀', `bio` = NULL, `score` = 42 WHERE `id` = 2;

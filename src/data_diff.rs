@@ -335,4 +335,51 @@ mod tests {
         let sync = generate_data_diff_sync_sql("users", &report, 0);
         assert!(sync.contains("UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;"));
     }
+
+    #[test]
+    fn snapshot_data_diff_report_and_sync_sql() {
+        use crate::data_diff::{compute_data_diff, generate_data_diff_sync_sql};
+        use crate::db::{CellValue, QueryResult};
+        use crate::test_fixtures::sample_result;
+
+        let left = sample_result();
+        let right = QueryResult {
+            sql: left.sql.clone(),
+            database: left.database.clone(),
+            columns: left.columns.clone(),
+            rows: vec![
+                vec![
+                    CellValue::Integer(1),
+                    CellValue::Text("O'Brien \"Changed\"".to_string()),
+                    CellValue::Text("Line1\nLine2, with comma".to_string()),
+                    CellValue::Float(99.0),
+                ],
+                vec![
+                    CellValue::Integer(3),
+                    CellValue::Text("Bob".to_string()),
+                    CellValue::Text("Simple".to_string()),
+                    CellValue::Null,
+                ],
+                vec![
+                    CellValue::Integer(4),
+                    CellValue::Text("Extra".to_string()),
+                    CellValue::Null,
+                    CellValue::Float(1.5),
+                ],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 4,
+            editable_table: left.editable_table.clone(),
+            primary_key_column: left.primary_key_column.clone(),
+            status_message: String::new(),
+        };
+
+        let report = compute_data_diff(&left, &right, 0);
+        assert_eq!(report.modified_count, 1);
+        assert_eq!(report.left_only_count, 1);
+        assert_eq!(report.right_only_count, 1);
+        let sync = generate_data_diff_sync_sql("users", &report, 0);
+        insta::assert_snapshot!(sync);
+    }
 }

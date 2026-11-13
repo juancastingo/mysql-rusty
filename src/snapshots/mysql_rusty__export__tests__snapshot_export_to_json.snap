@@ -1,0 +1,24 @@
+---
+source: src/export.rs
+expression: json
+---
+[
+  {
+    "bio": "Line1\nLine2, with comma",
+    "id": 1,
+    "name": "O'Brien \"Ace\"",
+    "score": 98.5
+  },
+  {
+    "bio": null,
+    "id": 2,
+    "name": "Ñandú 🦀",
+    "score": 42.0
+  },
+  {
+    "bio": "Simple",
+    "id": 3,
+    "name": "Bob",
+    "score": null
+  }
+]

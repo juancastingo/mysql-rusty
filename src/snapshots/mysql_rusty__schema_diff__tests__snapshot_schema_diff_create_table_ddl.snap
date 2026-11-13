@@ -1,0 +1,12 @@
+---
+source: src/schema_diff.rs
+expression: generate_create_table_ddl(&users_table())
+---
+CREATE TABLE IF NOT EXISTS `users` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `email` varchar(255) NOT NULL,
+  `name` varchar(100) NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `idx_users_email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

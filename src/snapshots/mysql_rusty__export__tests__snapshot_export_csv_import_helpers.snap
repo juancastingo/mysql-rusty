@@ -1,0 +1,9 @@
+---
+source: src/export.rs
+expression: "format!(\"{batch}\\n=== HEADERS: {:?} ROWS: {} ===\", preview.0, preview.2)"
+---
+INSERT INTO `users` (`id`, `name`, `active`) VALUES
+  (1, 'Alice', 1),
+  (2, NULL, 0),
+  (3, 'O''Brien', 1);
+=== HEADERS: ["id", "name", "active"] ROWS: 3 ===

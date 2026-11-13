@@ -1,0 +1,15 @@
+---
+source: src/table_designer.rs
+expression: "format!(\"{diff}\\n--- UP ---\\n{up}\\n--- DOWN ---\\n{down}\")"
+---
+ALTER TABLE `users` ADD COLUMN `display_name` varchar(100) NULL;
+ALTER TABLE `users` ADD COLUMN `role` VARCHAR(32) NOT NULL DEFAULT 'member';
+ALTER TABLE `users` DROP COLUMN `name`;
+--- UP ---
+ALTER TABLE `users` ADD COLUMN `display_name` varchar(100) NULL;
+ALTER TABLE `users` ADD COLUMN `role` VARCHAR(32) NOT NULL DEFAULT 'member';
+ALTER TABLE `users` DROP COLUMN `name`;
+--- DOWN ---
+ALTER TABLE `users` DROP COLUMN `display_name`;
+ALTER TABLE `users` DROP COLUMN `role`;
+ALTER TABLE `users` ADD COLUMN `name` varchar(100) NULL;

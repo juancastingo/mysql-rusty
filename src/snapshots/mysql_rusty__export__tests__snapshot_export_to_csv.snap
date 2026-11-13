@@ -1,0 +1,9 @@
+---
+source: src/export.rs
+expression: csv
+---
+id,name,bio,score
+1,"O'Brien ""Ace""","Line1
+Line2, with comma",98.5
+2,Ñandú 🦀,,42
+3,Bob,Simple,

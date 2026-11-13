@@ -1,0 +1,7 @@
+---
+source: src/data_diff.rs
+expression: sync
+---
+UPDATE `users` SET `name` = 'O''Brien "Ace"', `score` = 98.5 WHERE `id` = 1;
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES (2, 'Ñandú 🦀', NULL, 42);
+DELETE FROM `users` WHERE `id` = 4;

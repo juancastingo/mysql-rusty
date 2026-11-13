@@ -1,0 +1,8 @@
+---
+source: src/export.rs
+expression: "to_sql_inserts(&sample_result(), \"users\")"
+---
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES (1, 'O''Brien "Ace"', 'Line1
+Line2, with comma', 98.5);
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES (2, 'Ñandú 🦀', NULL, 42);
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES (3, 'Bob', 'Simple', NULL);

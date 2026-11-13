@@ -758,4 +758,40 @@ mod tests {
         assert!(migration_content.contains(">>> UP MIGRATION (APPLY)"));
         assert!(migration_content.contains("<<< DOWN MIGRATION (ROLLBACK)"));
     }
+
+    #[test]
+    fn snapshot_table_designer_create_mode() {
+        use crate::db::ColumnInfo;
+        use crate::table_designer::TableDraft;
+        let mut draft = TableDraft::new_empty("t");
+        draft.columns.push(ColumnInfo {
+            name: "title".to_string(),
+            data_type: "VARCHAR(120)".to_string(),
+            is_nullable: false,
+            default_value: None,
+            extra: String::new(),
+            is_primary_key: false,
+        });
+        insta::assert_snapshot!(draft.generate_ddl_diff());
+    }
+
+    #[test]
+    fn snapshot_table_designer_alter_mode_and_up_down() {
+        use crate::db::ColumnInfo;
+        use crate::table_designer::TableDraft;
+        use crate::test_fixtures::users_table;
+        let mut state = TableDraft::from_table(&users_table());
+        state.columns[2].name = "display_name".to_string();
+        state.columns.push(ColumnInfo {
+            name: "role".to_string(),
+            data_type: "VARCHAR(32)".to_string(),
+            is_nullable: false,
+            default_value: Some("'member'".to_string()),
+            extra: String::new(),
+            is_primary_key: false,
+        });
+        let diff = state.generate_ddl_diff();
+        let (up, down) = state.generate_up_down_migration();
+        insta::assert_snapshot!(format!("{diff}\n--- UP ---\n{up}\n--- DOWN ---\n{down}"));
+    }
 }

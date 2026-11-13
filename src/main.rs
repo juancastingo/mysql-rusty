@@ -9,6 +9,8 @@ mod export;
 mod schema_diff;
 mod syntax;
 mod table_designer;
+#[cfg(test)]
+pub mod test_fixtures;
 
 use app::MysqlRustyApp;
 use std::sync::Arc;

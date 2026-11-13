@@ -1,0 +1,39 @@
+---
+source: src/export.rs
+expression: "format!(\"{ddl}\\n=== FULL ===\\n{dump_full}\\n=== NODROP_NODATA ===\\n{dump_nodrop_nodata}\")"
+---
+CREATE TABLE `users` (
+  `id` int NOT NULL auto_increment,
+  `email` varchar(255) NOT NULL,
+  `name` varchar(100) NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+=== FULL ===
+-- Dump for table `users`
+DROP TABLE IF EXISTS `users`;
+CREATE TABLE `users` (
+  `id` int NOT NULL auto_increment,
+  `email` varchar(255) NOT NULL,
+  `name` varchar(100) NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES
+  (1, 'O''Brien "Ace"', 'Line1
+Line2, with comma', 98.5),
+  (2, 'Ñandú 🦀', NULL, 42);
+
+INSERT INTO `users` (`id`, `name`, `bio`, `score`) VALUES
+  (3, 'Bob', 'Simple', NULL);
+
+=== NODROP_NODATA ===
+-- Dump for table `users`
+CREATE TABLE `users` (
+  `id` int NOT NULL auto_increment,
+  `email` varchar(255) NOT NULL,
+  `name` varchar(100) NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;

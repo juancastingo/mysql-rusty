@@ -345,4 +345,105 @@ mod tests {
         );
         assert_eq!(report.summary.len(), 2);
     }
+
+    #[test]
+    fn snapshot_schema_diff_create_table_ddl() {
+        use crate::schema_diff::generate_create_table_ddl;
+        use crate::test_fixtures::users_table;
+        insta::assert_snapshot!(generate_create_table_ddl(&users_table()));
+    }
+
+    #[test]
+    fn snapshot_schema_diff_format_column_defs() {
+        use crate::schema_diff::format_column_def;
+        use crate::test_fixtures::users_table;
+        let defs: Vec<String> = users_table()
+            .columns
+            .iter()
+            .map(format_column_def)
+            .collect();
+        insta::assert_snapshot!(defs.join("\n"));
+    }
+
+    #[test]
+    fn test_diff_schemas_identical_is_empty() {
+        use crate::db::DatabaseSchema;
+        use crate::schema_diff::diff_schemas;
+        use crate::test_fixtures::{orders_table, users_table};
+        let schema = DatabaseSchema {
+            name: "app".to_string(),
+            tables: vec![users_table(), orders_table()],
+        };
+        let report = diff_schemas(&schema, &schema);
+        assert!(
+            report
+                .summary
+                .iter()
+                .all(|s| s.to_lowercase().contains("identical"))
+        );
+        assert!(!report.migration_sql.contains("CREATE TABLE"));
+        assert!(!report.migration_sql.contains("ALTER TABLE"));
+    }
+
+    #[test]
+    fn snapshot_schema_diff_missing_table() {
+        use crate::db::DatabaseSchema;
+        use crate::schema_diff::diff_schemas;
+        use crate::test_fixtures::{orders_table, users_table};
+        let source = DatabaseSchema {
+            name: "src".to_string(),
+            tables: vec![users_table(), orders_table()],
+        };
+        let target = DatabaseSchema {
+            name: "tgt".to_string(),
+            tables: vec![users_table()],
+        };
+        let report = diff_schemas(&source, &target);
+        insta::assert_snapshot!(report.migration_sql);
+    }
+
+    #[test]
+    fn snapshot_schema_diff_column_added_and_changed() {
+        use crate::db::{ColumnInfo, DatabaseSchema, IndexInfo};
+        use crate::schema_diff::diff_schemas;
+        use crate::test_fixtures::users_table;
+        let mut src_users = users_table();
+        src_users.columns.push(ColumnInfo {
+            name: "bio".to_string(),
+            data_type: "text".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            default_value: None,
+            extra: String::new(),
+        });
+        src_users.columns[2].data_type = "varchar(200)".to_string();
+        src_users.indexes.push(IndexInfo {
+            index_name: "idx_users_name".to_string(),
+            column_name: "name".to_string(),
+            non_unique: true,
+            index_type: "BTREE".to_string(),
+        });
+        let source = DatabaseSchema {
+            name: "src".to_string(),
+            tables: vec![src_users],
+        };
+        let target = DatabaseSchema {
+            name: "tgt".to_string(),
+            tables: vec![users_table()],
+        };
+        let report = diff_schemas(&source, &target);
+        let content = report
+            .generate_migration_file_content()
+            .lines()
+            .map(|l| {
+                if l.starts_with("-- Generated at: ") {
+                    "-- Generated at: <TIMESTAMP>"
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(content);
+    }
 }
