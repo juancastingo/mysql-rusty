@@ -4,17 +4,12 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SslMode {
     Disabled,
+    #[default]
     Preferred,
     Required,
-}
-
-impl Default for SslMode {
-    fn default() -> Self {
-        Self::Preferred
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,17 +39,12 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Environment {
+    #[default]
     Development,
     Staging,
     Production,
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Self::Development
-    }
 }
 
 impl Environment {
@@ -438,12 +428,11 @@ pub fn set_secret(key: &str, secret: &str) -> Result<()> {
 }
 
 pub fn get_secret(key: &str) -> Option<String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key) {
-        if let Ok(pwd) = entry.get_password() {
-            if !pwd.is_empty() {
-                return Some(pwd);
-            }
-        }
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key)
+        && let Ok(pwd) = entry.get_password()
+        && !pwd.is_empty()
+    {
+        return Some(pwd);
     }
     None
 }

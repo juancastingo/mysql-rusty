@@ -968,10 +968,10 @@ impl MysqlRustyApp {
             Some(prefix) => format!("{prefix} {}", raw_sql.trim()),
             None => raw_sql.trim().to_string(),
         };
-        if let Some(tab) = self.tabs.get(self.active_tab_idx) {
-            if !tab.query_params.is_empty() {
-                sql = substitute_sql_parameters(&sql, &tab.query_params);
-            }
+        if let Some(tab) = self.tabs.get(self.active_tab_idx)
+            && !tab.query_params.is_empty()
+        {
+            sql = substitute_sql_parameters(&sql, &tab.query_params);
         }
         if sql.is_empty() {
             return;
@@ -1368,20 +1368,18 @@ impl MysqlRustyApp {
                     // Keep scratchpad tabs for the very first workspace; start fresh tab for extra connections
                     let initial_tabs = if self.open_workspaces.is_empty() && !self.tabs.is_empty() {
                         let mut tabs_clone = self.tabs.clone();
-                        if let Some(tab) = tabs_clone.first_mut() {
-                            if tab.sql.trim().is_empty() {
-                                if let Some(schema) = schemas_map.get(&active_db) {
-                                    if let Some(first_tbl) = schema.tables.first() {
-                                        tab.sql = format!(
-                                            "SELECT * FROM `{}` LIMIT 100;",
-                                            first_tbl.name
-                                        );
-                                    } else {
-                                        tab.sql = "SHOW TABLES;".to_string();
-                                    }
+                        if let Some(tab) = tabs_clone.first_mut()
+                            && tab.sql.trim().is_empty()
+                        {
+                            if let Some(schema) = schemas_map.get(&active_db) {
+                                if let Some(first_tbl) = schema.tables.first() {
+                                    tab.sql =
+                                        format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name);
                                 } else {
                                     tab.sql = "SHOW TABLES;".to_string();
                                 }
+                            } else {
+                                tab.sql = "SHOW TABLES;".to_string();
                             }
                         }
                         tabs_clone
@@ -1895,11 +1893,9 @@ impl eframe::App for MysqlRustyApp {
                 self.execute_current_statement();
             } else if global_run_query {
                 self.execute_current_tab_query(None);
-            } else if global_format_sql {
-                if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                    tab.sql = format_sql_pretty(&tab.sql);
-                    self.status_banner = "Formatted SQL query (Ctrl+Shift+F).".to_string();
-                }
+            } else if global_format_sql && let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                tab.sql = format_sql_pretty(&tab.sql);
+                self.status_banner = "Formatted SQL query (Ctrl+Shift+F).".to_string();
             }
         }
 
@@ -1936,20 +1932,18 @@ impl eframe::App for MysqlRustyApp {
         }
 
         // Debounced automatic inline AI completion (new edits supersede in-flight requests via inline_req_id)
-        if self.config.ai.enable_inline_autocomplete {
-            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                if let Some(instant) = tab.last_edit_instant {
-                    let debounce = std::time::Duration::from_millis(
-                        self.config.ai.autocomplete_debounce_ms.max(50),
-                    );
-                    if instant.elapsed() >= debounce {
-                        tab.last_edit_instant = None;
-                        self.trigger_inline_ai_completion();
-                    } else {
-                        ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(40));
-                    }
-                }
+        if self.config.ai.enable_inline_autocomplete
+            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+            && let Some(instant) = tab.last_edit_instant
+        {
+            let debounce =
+                std::time::Duration::from_millis(self.config.ai.autocomplete_debounce_ms.max(50));
+            if instant.elapsed() >= debounce {
+                tab.last_edit_instant = None;
+                self.trigger_inline_ai_completion();
+            } else {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(40));
             }
         }
 
@@ -2219,13 +2213,12 @@ impl MysqlRustyApp {
                             .clicked()
                         {
                             self.show_sql_dump_modal = true;
-                            if self.dump_selected_tables.is_empty() {
-                                if let Some(schema) = self.schemas.get(&self.active_database) {
+                            if self.dump_selected_tables.is_empty()
+                                && let Some(schema) = self.schemas.get(&self.active_database) {
                                     for t in &schema.tables {
                                         self.dump_selected_tables.insert(t.name.clone());
                                     }
                                 }
-                            }
                         }
                     }
 
@@ -2319,11 +2312,9 @@ impl MysqlRustyApp {
                         .button("Format SQL")
                         .on_hover_text("Format SQL clauses cleanly")
                         .clicked()
-                    {
-                        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                        && let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                             tab.sql = format_sql_pretty(&tab.sql);
                         }
-                    }
 
                     if ui
                         .button("Save Query")
@@ -2567,13 +2558,14 @@ impl MysqlRustyApp {
                     .find(|d| **d != self.active_database)
                     .cloned()
                     .unwrap_or_default();
-                if !self.diff_source_db.is_empty() && !self.diff_target_db.is_empty() {
-                    if let (Some(src), Some(tgt)) = (
+                if !self.diff_source_db.is_empty()
+                    && !self.diff_target_db.is_empty()
+                    && let (Some(src), Some(tgt)) = (
                         self.schemas.get(&self.diff_source_db),
                         self.schemas.get(&self.diff_target_db),
-                    ) {
-                        self.current_diff_report = Some(diff_schemas(src, tgt));
-                    }
+                    )
+                {
+                    self.current_diff_report = Some(diff_schemas(src, tgt));
                 }
             }
         });
@@ -2610,15 +2602,14 @@ impl MysqlRustyApp {
                     .id_salt(("sidebar_db_tree", db_name))
                     .default_open(is_active_db)
                     .show(ui, |ui| {
-                        if !is_active_db {
-                            if ui
+                        if !is_active_db
+                            && ui
                                 .small_button("Set Active DB")
                                 .on_hover_text(format!("Switch active database to `{db_name}`"))
                                 .clicked()
                             {
                                 activate_db = Some(db_name.clone());
                             }
-                        }
 
                         let Some(schema) = schemas_snapshot.get(db_name) else {
                             ui.horizontal(|ui| {
@@ -2715,12 +2706,10 @@ impl MysqlRustyApp {
                                 .small_button("Import CSV")
                                 .on_hover_text("Import CSV file as batch INSERT statements into this table")
                                 .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new()
+                                && let Some(path) = rfd::FileDialog::new()
                                     .add_filter("CSV", &["csv", "txt"])
                                     .pick_file()
-                                {
-                                    if let Ok(content) = std::fs::read_to_string(&path) {
+                                    && let Ok(content) = std::fs::read_to_string(&path) {
                                         match parse_csv_to_batch_insert(&table.name, &content) {
                                             Ok(batch_sql) => {
                                                 self.tabs.push(QueryTab::new(
@@ -2738,8 +2727,6 @@ impl MysqlRustyApp {
                                             }
                                         }
                                     }
-                                }
-                            }
                             if ui
                                 .small_button("Mock Data")
                                 .on_hover_text("Generate realistic random seed data for this table")
@@ -2800,35 +2787,34 @@ impl MysqlRustyApp {
         if let Some(db) = activate_db {
             self.active_database = db;
             self.reload_active_schema();
-        } else if let Some(db) = load_db_schema {
-            if let Some(session) = self.active_session.clone() {
-                let tx = self.tx.clone();
-                self.rt.spawn(async move {
-                    if let Ok(schema) = session.introspect_database(&db).await {
-                        let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
-                    }
-                });
-            }
+        } else if let Some(db) = load_db_schema
+            && let Some(session) = self.active_session.clone()
+        {
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                if let Ok(schema) = session.introspect_database(&db).await {
+                    let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
+                }
+            });
         }
 
-        if let Some(tbl_name) = toggle_favorite_table {
-            if let Some(prof) = self
+        if let Some(tbl_name) = toggle_favorite_table
+            && let Some(prof) = self
                 .config
                 .connections
                 .iter_mut()
                 .find(|c| Some(&c.id) == self.active_profile_id.as_ref())
+        {
+            if let Some(pos) = prof
+                .favorite_tables
+                .iter()
+                .position(|t| t.eq_ignore_ascii_case(&tbl_name))
             {
-                if let Some(pos) = prof
-                    .favorite_tables
-                    .iter()
-                    .position(|t| t.eq_ignore_ascii_case(&tbl_name))
-                {
-                    prof.favorite_tables.remove(pos);
-                } else {
-                    prof.favorite_tables.push(tbl_name);
-                }
-                let _ = self.config.save();
+                prof.favorite_tables.remove(pos);
+            } else {
+                prof.favorite_tables.push(tbl_name);
             }
+            let _ = self.config.save();
         }
 
         if let Some((sql_snippet, run_immediately)) = pending_sql_action {
@@ -3181,11 +3167,11 @@ impl MysqlRustyApp {
             self.active_tab_idx = self.tabs.len() - 1;
         }
 
-        if let Some(sql) = load_sql {
-            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                tab.sql = sql;
-                tab.is_dirty = true;
-            }
+        if let Some(sql) = load_sql
+            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+        {
+            tab.sql = sql;
+            tab.is_dirty = true;
         }
 
         if let Some(sql) = run_sql_now {
@@ -3196,7 +3182,7 @@ impl MysqlRustyApp {
         }
 
         if let Some((title, sql)) = export_snippet_sql {
-            let filename = format!("{}.sql", title.replace(' ', "_").replace('/', "_"));
+            let filename = format!("{}.sql", title.replace([' ', '/'], "_"));
             if let Some(path) = rfd::FileDialog::new()
                 .set_file_name(&filename)
                 .add_filter("SQL Files", &["sql"])
@@ -3217,10 +3203,8 @@ impl MysqlRustyApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Execution History").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.config.history.is_empty() {
-                    if ui.small_button("Clear History").clicked() {
-                        clear_all_history = true;
-                    }
+                if !self.config.history.is_empty() && ui.small_button("Clear History").clicked() {
+                    clear_all_history = true;
                 }
             });
         });
@@ -3334,11 +3318,11 @@ impl MysqlRustyApp {
             self.status_banner = "Query history cleared.".to_string();
         }
 
-        if let Some(sql) = load_sql {
-            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                tab.sql = sql;
-                tab.is_dirty = true;
-            }
+        if let Some(sql) = load_sql
+            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+        {
+            tab.sql = sql;
+            tab.is_dirty = true;
         }
 
         if let Some(sql) = new_tab_sql {
@@ -3471,14 +3455,14 @@ impl MysqlRustyApp {
 
     fn parse_hex_color(&self, hex: &str) -> Color32 {
         let clean = hex.trim_start_matches('#');
-        if clean.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
+        if clean.len() == 6
+            && let (Ok(r), Ok(g), Ok(b)) = (
                 u8::from_str_radix(&clean[0..2], 16),
                 u8::from_str_radix(&clean[2..4], 16),
                 u8::from_str_radix(&clean[4..6], 16),
-            ) {
-                return Color32::from_rgb(r, g, b);
-            }
+            )
+        {
+            return Color32::from_rgb(r, g, b);
         }
         Color32::from_rgb(56, 189, 248)
     }
@@ -3845,11 +3829,10 @@ impl MysqlRustyApp {
                                         }
                                     });
                                 }
-                                if self.tabs.len() > 1 {
-                                    if ui.button(RichText::new("×").size(11.0).weak()).clicked() {
+                                if self.tabs.len() > 1
+                                    && ui.button(RichText::new("×").size(11.0).weak()).clicked() {
                                         close_idx = Some(idx);
                                     }
-                                }
                             });
                         });
                     ui.add_space(2.0);
@@ -4504,11 +4487,9 @@ impl MysqlRustyApp {
                         RichText::new("Server Monitor").size(12.5),
                     )
                     .clicked()
-                {
-                    if self.server_processes.is_none() && !self.is_server_admin_loading {
+                    && self.server_processes.is_none() && !self.is_server_admin_loading {
                         self.refresh_server_admin();
                     }
-                }
             });
             ui.separator();
 
@@ -4794,8 +4775,8 @@ impl MysqlRustyApp {
                     let md = to_markdown_table(&result);
                     ui.ctx().copy_text(md);
                 }
-                if ui.small_button("Export CSV").clicked() {
-                    if let Ok(csv_data) = to_csv_string(&result) {
+                if ui.small_button("Export CSV").clicked()
+                    && let Ok(csv_data) = to_csv_string(&result) {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_file_name("query_results.csv")
                             .save_file()
@@ -4805,9 +4786,8 @@ impl MysqlRustyApp {
                             ui.ctx().copy_text(csv_data);
                         }
                     }
-                }
-                if ui.small_button("Export JSON").clicked() {
-                    if let Ok(json_data) = to_json_string(&result) {
+                if ui.small_button("Export JSON").clicked()
+                    && let Ok(json_data) = to_json_string(&result) {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_file_name("query_results.json")
                             .save_file()
@@ -4817,7 +4797,6 @@ impl MysqlRustyApp {
                             ui.ctx().copy_text(json_data);
                         }
                     }
-                }
                 if ui.small_button("Copy SQL INSERTs").clicked() {
                     let tbl = result
                         .editable_table
@@ -4922,21 +4901,22 @@ impl MysqlRustyApp {
             }
 
             // #10 Result Snapshot Compare vs Baseline
-            if tab.show_baseline_compare {
-                if let Some(baseline) = &tab.baseline_result {
-                    let key_idx = result
-                        .primary_key_column
-                        .as_ref()
-                        .and_then(|pk| {
-                            result
-                                .columns
-                                .iter()
-                                .position(|c| c.eq_ignore_ascii_case(pk))
-                        })
-                        .unwrap_or(0);
-                    let report = compute_data_diff(baseline, &result, key_idx);
-                    ui.horizontal(|ui| {
-                        ui.label(
+            if tab.show_baseline_compare
+                && let Some(baseline) = &tab.baseline_result
+            {
+                let key_idx = result
+                    .primary_key_column
+                    .as_ref()
+                    .and_then(|pk| {
+                        result
+                            .columns
+                            .iter()
+                            .position(|c| c.eq_ignore_ascii_case(pk))
+                    })
+                    .unwrap_or(0);
+                let report = compute_data_diff(baseline, &result, key_idx);
+                ui.horizontal(|ui| {
+                    ui.label(
                         RichText::new(format!(
                             "Baseline Compare: {} modified | {} added | {} removed | {} unchanged",
                             report.modified_count,
@@ -4947,49 +4927,44 @@ impl MysqlRustyApp {
                         .strong()
                         .color(Color32::from_rgb(56, 189, 248)),
                     );
-                    });
-                    ui.separator();
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        for entry in &report.entries {
-                            if entry.status == RowDiffStatus::Same {
-                                continue;
-                            }
-                            let (badge, color) = match entry.status {
-                                RowDiffStatus::OnlyInRight => {
-                                    ("+ ADDED", Color32::from_rgb(52, 211, 153))
-                                }
-                                RowDiffStatus::OnlyInLeft => {
-                                    ("- REMOVED", Color32::from_rgb(248, 113, 113))
-                                }
-                                RowDiffStatus::Modified => {
-                                    ("~ MODIFIED", Color32::from_rgb(250, 204, 21))
-                                }
-                                RowDiffStatus::Same => ("SAME", Color32::GRAY),
-                            };
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(badge).small().strong().color(color));
-                                ui.label(
-                                    RichText::new(format!("Key: {}", entry.key_display)).strong(),
-                                );
-                                if let Some(r) = &entry.right_row {
-                                    ui.label(
-                                        RichText::new(format!("New: {}", r.join(" | "))).small(),
-                                    );
-                                }
-                                if entry.status == RowDiffStatus::Modified {
-                                    if let Some(l) = &entry.left_row {
-                                        ui.label(
-                                            RichText::new(format!("(Was: {})", l.join(" | ")))
-                                                .small()
-                                                .weak(),
-                                        );
-                                    }
-                                }
-                            });
+                });
+                ui.separator();
+                egui::ScrollArea::both().show(ui, |ui| {
+                    for entry in &report.entries {
+                        if entry.status == RowDiffStatus::Same {
+                            continue;
                         }
-                    });
-                    return;
-                }
+                        let (badge, color) = match entry.status {
+                            RowDiffStatus::OnlyInRight => {
+                                ("+ ADDED", Color32::from_rgb(52, 211, 153))
+                            }
+                            RowDiffStatus::OnlyInLeft => {
+                                ("- REMOVED", Color32::from_rgb(248, 113, 113))
+                            }
+                            RowDiffStatus::Modified => {
+                                ("~ MODIFIED", Color32::from_rgb(250, 204, 21))
+                            }
+                            RowDiffStatus::Same => ("SAME", Color32::GRAY),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(badge).small().strong().color(color));
+                            ui.label(RichText::new(format!("Key: {}", entry.key_display)).strong());
+                            if let Some(r) = &entry.right_row {
+                                ui.label(RichText::new(format!("New: {}", r.join(" | "))).small());
+                            }
+                            if entry.status == RowDiffStatus::Modified
+                                && let Some(l) = &entry.left_row
+                            {
+                                ui.label(
+                                    RichText::new(format!("(Was: {})", l.join(" | ")))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
+                    }
+                });
+                return;
             }
 
             // #4 & #5 Multi-Row Selection & Pending Deletes Action Bar
@@ -5023,20 +4998,20 @@ impl MysqlRustyApp {
                                 sel_indices.len()
                             ));
                         }
-                        if let Some(pk_col) = &result.primary_key_column {
-                            if ui.small_button("Copy UPDATE").clicked() {
-                                let tbl = result.editable_table.as_deref().unwrap_or("table_name");
-                                ui.ctx().copy_text(format_rows_as_sql_update(
-                                    tbl,
-                                    pk_col,
-                                    &result,
-                                    &sel_indices,
-                                ));
-                                copy_banner_msg = Some(format!(
-                                    "Copied {} row(s) as SQL UPDATE.",
-                                    sel_indices.len()
-                                ));
-                            }
+                        if let Some(pk_col) = &result.primary_key_column
+                            && ui.small_button("Copy UPDATE").clicked()
+                        {
+                            let tbl = result.editable_table.as_deref().unwrap_or("table_name");
+                            ui.ctx().copy_text(format_rows_as_sql_update(
+                                tbl,
+                                pk_col,
+                                &result,
+                                &sel_indices,
+                            ));
+                            copy_banner_msg = Some(format!(
+                                "Copied {} row(s) as SQL UPDATE.",
+                                sel_indices.len()
+                            ));
                         }
                         if ui.small_button("Duplicate Row(s)").clicked() {
                             let tbl = result.editable_table.as_deref().unwrap_or("table_name");
@@ -5045,30 +5020,25 @@ impl MysqlRustyApp {
                         }
                         if let (Some(_tbl), Some(pk_col)) =
                             (&result.editable_table, &result.primary_key_column)
-                        {
-                            if let Some(pk_idx) = result
+                            && let Some(pk_idx) = result
                                 .columns
                                 .iter()
                                 .position(|c| c.eq_ignore_ascii_case(pk_col))
-                            {
-                                if ui.small_button("Mark for Delete").clicked() {
-                                    for &r_idx in &sel_indices {
-                                        if !tab
-                                            .pending_row_deletes
-                                            .iter()
-                                            .any(|(idx, _, _)| *idx == r_idx)
-                                        {
-                                            if let Some(pk_val) =
-                                                result.rows.get(r_idx).and_then(|r| r.get(pk_idx))
-                                            {
-                                                tab.pending_row_deletes.push((
-                                                    r_idx,
-                                                    pk_col.clone(),
-                                                    pk_val.display_text(),
-                                                ));
-                                            }
-                                        }
-                                    }
+                            && ui.small_button("Mark for Delete").clicked()
+                        {
+                            for &r_idx in &sel_indices {
+                                if !tab
+                                    .pending_row_deletes
+                                    .iter()
+                                    .any(|(idx, _, _)| *idx == r_idx)
+                                    && let Some(pk_val) =
+                                        result.rows.get(r_idx).and_then(|r| r.get(pk_idx))
+                                {
+                                    tab.pending_row_deletes.push((
+                                        r_idx,
+                                        pk_col.clone(),
+                                        pk_val.display_text(),
+                                    ));
                                 }
                             }
                         }
@@ -5196,7 +5166,7 @@ impl MysqlRustyApp {
             let total_pages = if tab.page_size == 0 {
                 1
             } else {
-                (total_matching + tab.page_size - 1) / tab.page_size
+                total_matching.div_ceil(tab.page_size)
             }
             .max(1);
 
@@ -5257,12 +5227,11 @@ impl MysqlRustyApp {
             if tab.show_row_inspector {
                 let max_row = result.rows.len().saturating_sub(1);
                 let cur_row_idx = tab.row_inspector_row.unwrap_or(0).min(max_row);
-                if tab.row_inspector_buffers.len() != result.columns.len() {
-                    if let Some(row_data) = result.rows.get(cur_row_idx) {
-                        tab.row_inspector_buffers =
-                            row_data.iter().map(|c| c.display_text()).collect();
-                        tab.row_inspector_row = Some(cur_row_idx);
-                    }
+                if tab.row_inspector_buffers.len() != result.columns.len()
+                    && let Some(row_data) = result.rows.get(cur_row_idx)
+                {
+                    tab.row_inspector_buffers = row_data.iter().map(|c| c.display_text()).collect();
+                    tab.row_inspector_row = Some(cur_row_idx);
                 }
 
                 egui::Panel::right("row_inspector_drawer")
@@ -5354,13 +5323,11 @@ impl MysqlRustyApp {
                                                 .show_ui(ui, |ui| {
                                                     for (val, lbl) in opts {
                                                         if ui.selectable_label(false, lbl).clicked()
-                                                        {
-                                                            if let Some(buf) = tab
+                                                            && let Some(buf) = tab
                                                                 .row_inspector_buffers
                                                                 .get_mut(c_idx)
-                                                            {
-                                                                *buf = val.clone();
-                                                            }
+                                                        {
+                                                            *buf = val.clone();
                                                         }
                                                     }
                                                 });
@@ -5401,33 +5368,32 @@ impl MysqlRustyApp {
 
                         if can_edit {
                             ui.separator();
-                            if ui.button("Stage Edits").clicked() {
-                                if let (Some(pk_idx), Some(pk_name), Some(row_cells)) = (
+                            if ui.button("Stage Edits").clicked()
+                                && let (Some(pk_idx), Some(pk_name), Some(row_cells)) = (
                                     pk_col_idx,
                                     &result.primary_key_column,
                                     result.rows.get(cur_row_idx),
-                                ) {
-                                    let pk_val = row_cells[pk_idx].display_text();
-                                    for (c_idx, col_name) in result.columns.iter().enumerate() {
-                                        if c_idx == pk_idx {
-                                            continue;
-                                        }
-                                        if let Some(new_val) = tab.row_inspector_buffers.get(c_idx)
-                                        {
-                                            let old_val = row_cells
-                                                .get(c_idx)
-                                                .map(|c| c.display_text())
-                                                .unwrap_or_default();
-                                            if new_val != &old_val {
-                                                tab.pending_edits.push(PendingCellEdit {
-                                                    row_idx: cur_row_idx,
-                                                    col_idx: c_idx,
-                                                    column_name: col_name.clone(),
-                                                    pk_column: pk_name.clone(),
-                                                    pk_value: pk_val.clone(),
-                                                    new_value: new_val.clone(),
-                                                });
-                                            }
+                                )
+                            {
+                                let pk_val = row_cells[pk_idx].display_text();
+                                for (c_idx, col_name) in result.columns.iter().enumerate() {
+                                    if c_idx == pk_idx {
+                                        continue;
+                                    }
+                                    if let Some(new_val) = tab.row_inspector_buffers.get(c_idx) {
+                                        let old_val = row_cells
+                                            .get(c_idx)
+                                            .map(|c| c.display_text())
+                                            .unwrap_or_default();
+                                        if new_val != &old_val {
+                                            tab.pending_edits.push(PendingCellEdit {
+                                                row_idx: cur_row_idx,
+                                                col_idx: c_idx,
+                                                column_name: col_name.clone(),
+                                                pk_column: pk_name.clone(),
+                                                pk_value: pk_val.clone(),
+                                                new_value: new_val.clone(),
+                                            });
                                         }
                                     }
                                 }
@@ -5641,14 +5607,13 @@ impl MysqlRustyApp {
                                         copy_banner_msg = Some("Copied row as SQL INSERT.".to_string());
                                         ui.close();
                                     }
-                                    if let Some(pk_col) = &result.primary_key_column {
-                                        if ui.button("Copy Row as SQL UPDATE").clicked() {
+                                    if let Some(pk_col) = &result.primary_key_column
+                                        && ui.button("Copy Row as SQL UPDATE").clicked() {
                                             let tbl = result.editable_table.as_deref().unwrap_or("table_name");
                                             ui.ctx().copy_text(format_rows_as_sql_update(tbl, pk_col, &result, &[actual_row_idx]));
                                             copy_banner_msg = Some("Copied row as SQL UPDATE.".to_string());
                                             ui.close();
                                         }
-                                    }
                                     if ui.button("Duplicate Row (SQL INSERT)").clicked() {
                                         let tbl = result.editable_table.as_deref().unwrap_or("table_name");
                                         let sql = format_rows_as_sql_insert(tbl, &result, &[actual_row_idx]);
@@ -5682,8 +5647,8 @@ impl MysqlRustyApp {
                                     }
 
                                     // Browse Related FK Rows
-                                    if !cell.is_null() {
-                                        if let (Some(tbl_name), Some(schema)) = (&result.editable_table, &active_schema_opt) {
+                                    if !cell.is_null()
+                                        && let (Some(tbl_name), Some(schema)) = (&result.editable_table, &active_schema_opt) {
                                             let col_name = &result.columns[col_idx];
                                             let raw_val = cell.display_text();
                                             let formatted_val = if raw_val.parse::<i64>().is_ok() || raw_val.parse::<f64>().is_ok() {
@@ -5719,7 +5684,6 @@ impl MysqlRustyApp {
                                                 }
                                             }
                                         }
-                                    }
                                 });
                             }
                         });
@@ -5738,59 +5702,57 @@ impl MysqlRustyApp {
             self.tabs.push(QueryTab::new(title, sql));
             self.active_tab_idx = self.tabs.len() - 1;
         }
-        if let Some((fk_key, ref_table, ref_col)) = trigger_fk_lookup {
-            if let Some(session) = self.active_session.clone() {
-                let db = self.active_database.clone();
-                let tx = self.tx.clone();
-                let sql = format!("SELECT * FROM `{ref_table}` ORDER BY `{ref_col}` LIMIT 100;");
-                self.rt.spawn(async move {
-                    let res = session
-                        .execute_query(&db, &sql, None)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    let _ = tx.send(AsyncEvent::FkLookupLoaded {
-                        key: fk_key,
-                        result: res,
-                    });
+        if let Some((fk_key, ref_table, ref_col)) = trigger_fk_lookup
+            && let Some(session) = self.active_session.clone()
+        {
+            let db = self.active_database.clone();
+            let tx = self.tx.clone();
+            let sql = format!("SELECT * FROM `{ref_table}` ORDER BY `{ref_col}` LIMIT 100;");
+            self.rt.spawn(async move {
+                let res = session
+                    .execute_query(&db, &sql, None)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::FkLookupLoaded {
+                    key: fk_key,
+                    result: res,
                 });
-            }
+            });
         }
-        if trigger_commit_deletes {
-            if let (Some(session), Some(table_name)) =
+        if trigger_commit_deletes
+            && let (Some(session), Some(table_name)) =
                 (self.active_session.clone(), result.editable_table.clone())
-            {
-                let tab_id = self.tabs[self.active_tab_idx].id.clone();
-                let db = self.active_database.clone();
-                let tx = self.tx.clone();
-                self.rt.spawn(async move {
-                    let mut total_deleted = 0u64;
-                    let mut err_out: Option<String> = None;
-                    for (_r_idx, pk_col, pk_val) in &pending_deletes {
-                        let lit = if pk_val.parse::<i64>().is_ok() || pk_val.parse::<f64>().is_ok()
-                        {
-                            pk_val.clone()
-                        } else {
-                            format!("'{}'", pk_val.replace('\'', "''"))
-                        };
-                        let sql =
-                            format!("DELETE FROM `{table_name}` WHERE `{pk_col}` = {lit} LIMIT 1;");
-                        match session.execute_query(&db, &sql, None).await {
-                            Ok(r) => total_deleted += r.affected_rows.max(1),
-                            Err(e) => {
-                                err_out = Some(format!("{e:#}"));
-                                break;
-                            }
+        {
+            let tab_id = self.tabs[self.active_tab_idx].id.clone();
+            let db = self.active_database.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let mut total_deleted = 0u64;
+                let mut err_out: Option<String> = None;
+                for (_r_idx, pk_col, pk_val) in &pending_deletes {
+                    let lit = if pk_val.parse::<i64>().is_ok() || pk_val.parse::<f64>().is_ok() {
+                        pk_val.clone()
+                    } else {
+                        format!("'{}'", pk_val.replace('\'', "''"))
+                    };
+                    let sql =
+                        format!("DELETE FROM `{table_name}` WHERE `{pk_col}` = {lit} LIMIT 1;");
+                    match session.execute_query(&db, &sql, None).await {
+                        Ok(r) => total_deleted += r.affected_rows.max(1),
+                        Err(e) => {
+                            err_out = Some(format!("{e:#}"));
+                            break;
                         }
                     }
-                    let _ = tx.send(AsyncEvent::RowDeletesApplied {
-                        tab_id,
-                        deleted_count: match err_out {
-                            Some(e) => Err(e),
-                            None => Ok(total_deleted),
-                        },
-                    });
+                }
+                let _ = tx.send(AsyncEvent::RowDeletesApplied {
+                    tab_id,
+                    deleted_count: match err_out {
+                        Some(e) => Err(e),
+                        None => Ok(total_deleted),
+                    },
                 });
-            }
+            });
         }
         if let Some((title, sql)) = open_related_query {
             self.tabs.push(QueryTab::new(title, sql));
@@ -5806,24 +5768,23 @@ impl MysqlRustyApp {
             self.send_chat_prompt(Some(prompt));
         }
 
-        if trigger_commit_edits {
-            if let (Some(session), Some(table_name)) =
+        if trigger_commit_edits
+            && let (Some(session), Some(table_name)) =
                 (self.active_session.clone(), result.editable_table.clone())
-            {
-                let tab_id = self.tabs[self.active_tab_idx].id.clone();
-                let db = self.active_database.clone();
-                let tx = self.tx.clone();
-                self.rt.spawn(async move {
-                    let res = session
-                        .apply_cell_edits(&db, &table_name, &pending_edits)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    let _ = tx.send(AsyncEvent::CellEditsApplied {
-                        tab_id,
-                        updated_count: res,
-                    });
+        {
+            let tab_id = self.tabs[self.active_tab_idx].id.clone();
+            let db = self.active_database.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let res = session
+                    .apply_cell_edits(&db, &table_name, &pending_edits)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::CellEditsApplied {
+                    tab_id,
+                    updated_count: res,
                 });
-            }
+            });
         }
     }
 
@@ -5871,7 +5832,7 @@ impl MysqlRustyApp {
                         let chunk_end = (chunk_start + cols_per_row).min(results_snapshot.len());
                         let count = chunk_end - chunk_start;
                         ui.columns(count, |columns| {
-                            for offset in 0..count {
+                            for (offset, col_ui) in columns.iter_mut().enumerate().take(count) {
                                 let idx = chunk_start + offset;
                                 let res = &results_snapshot[idx];
                                 let height = tab
@@ -5881,11 +5842,7 @@ impl MysqlRustyApp {
                                 let collapsed =
                                     tab.multi_result_collapsed.entry(idx).or_insert(false);
                                 if let Some(f) = Self::render_compact_result_card(
-                                    &mut columns[offset],
-                                    idx,
-                                    res,
-                                    height,
-                                    collapsed,
+                                    col_ui, idx, res, height, collapsed,
                                 ) {
                                     focus_idx = Some(f);
                                 }
@@ -5897,14 +5854,14 @@ impl MysqlRustyApp {
                 MultiResultLayout::Tabs => {}
             });
 
-        if let Some(idx) = focus_idx {
-            if let Some(res) = tab.multi_results.get(idx).cloned() {
-                tab.active_result_idx = idx;
-                tab.last_result = Some(res);
-                tab.current_page = 0;
-                tab.sort_column = None;
-                tab.multi_result_layout = MultiResultLayout::Tabs;
-            }
+        if let Some(idx) = focus_idx
+            && let Some(res) = tab.multi_results.get(idx).cloned()
+        {
+            tab.active_result_idx = idx;
+            tab.last_result = Some(res);
+            tab.current_page = 0;
+            tab.sort_column = None;
+            tab.multi_result_layout = MultiResultLayout::Tabs;
         }
     }
 
@@ -5988,10 +5945,9 @@ impl MysqlRustyApp {
                         .small_button("📋 CSV")
                         .on_hover_text("Copy this result as CSV")
                         .clicked()
+                        && let Ok(csv_text) = to_csv_string(res)
                     {
-                        if let Ok(csv_text) = to_csv_string(res) {
-                            ui.ctx().copy_text(csv_text);
-                        }
+                        ui.ctx().copy_text(csv_text);
                     }
                 });
             });
@@ -6742,7 +6698,7 @@ impl MysqlRustyApp {
                     body.rows(text_height, num_rows, |mut row| {
                         let row_idx = row.index();
                         if let Some(r) = procs.rows.get(row_idx) {
-                            let id_val = r.get(0).map(|c| c.display_text()).unwrap_or_default();
+                            let id_val = r.first().map(|c| c.display_text()).unwrap_or_default();
                             let user_val = r.get(1).map(|c| c.display_text()).unwrap_or_default();
                             let host_val = r.get(2).map(|c| c.display_text()).unwrap_or_default();
                             let db_val = r.get(3).map(|c| c.display_text()).unwrap_or_default();
@@ -6779,16 +6735,15 @@ impl MysqlRustyApp {
                                 );
                             });
                             row.col(|ui| {
-                                if let Ok(conn_id) = id_val.parse::<u64>() {
-                                    if ui
+                                if let Ok(conn_id) = id_val.parse::<u64>()
+                                    && ui
                                         .small_button(
                                             RichText::new("Kill")
                                                 .color(Color32::from_rgb(239, 68, 68)),
                                         )
                                         .clicked()
-                                    {
-                                        kill_query_id = Some(conn_id);
-                                    }
+                                {
+                                    kill_query_id = Some(conn_id);
                                 }
                             });
                         }
@@ -7844,7 +7799,7 @@ impl MysqlRustyApp {
                         RichText::new(format!(
                             "Length: {} chars ({} bytes){}",
                             display_text.len(),
-                            display_text.as_bytes().len(),
+                            display_text.len(),
                             if is_json { " (Prettified JSON)" } else { "" }
                         ))
                         .small()
@@ -8526,13 +8481,12 @@ impl MysqlRustyApp {
                 let _ = self.config.save();
                 self.status_banner = format!("Restored connection '{name}'.");
             }
-        } else if let Some(idx) = purge_idx {
-            if idx < self.config.trashed_connections.len() {
-                let item = self.config.trashed_connections.remove(idx);
-                let _ = self.config.save();
-                self.status_banner =
-                    format!("Permanently deleted connection '{}'.", item.profile.name);
-            }
+        } else if let Some(idx) = purge_idx
+            && idx < self.config.trashed_connections.len()
+        {
+            let item = self.config.trashed_connections.remove(idx);
+            let _ = self.config.save();
+            self.status_banner = format!("Permanently deleted connection '{}'.", item.profile.name);
         }
     }
 
@@ -8695,33 +8649,32 @@ impl MysqlRustyApp {
         if run_diff
             && !self.data_diff_source_table.trim().is_empty()
             && !self.data_diff_target_table.trim().is_empty()
+            && let Some(session) = self.active_session.clone()
         {
-            if let Some(session) = self.active_session.clone() {
-                self.data_diff_loading = true;
-                let src_db = self.data_diff_source_db.clone();
-                let src_tbl = self.data_diff_source_table.clone();
-                let tgt_db = self.data_diff_target_db.clone();
-                let tgt_tbl = self.data_diff_target_table.clone();
-                let key_col = self.data_diff_key_col;
-                let tx = self.tx.clone();
-                self.rt.spawn(async move {
-                    let sql_l = format!("SELECT * FROM `{src_db}`.`{src_tbl}` LIMIT 500;");
-                    let sql_r = format!("SELECT * FROM `{tgt_db}`.`{tgt_tbl}` LIMIT 500;");
-                    let left = session
-                        .execute_query(&src_db, &sql_l, None)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    let right = session
-                        .execute_query(&tgt_db, &sql_r, None)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    let _ = tx.send(AsyncEvent::DataDiffLoaded {
-                        left,
-                        right,
-                        key_col_idx: key_col,
-                    });
+            self.data_diff_loading = true;
+            let src_db = self.data_diff_source_db.clone();
+            let src_tbl = self.data_diff_source_table.clone();
+            let tgt_db = self.data_diff_target_db.clone();
+            let tgt_tbl = self.data_diff_target_table.clone();
+            let key_col = self.data_diff_key_col;
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let sql_l = format!("SELECT * FROM `{src_db}`.`{src_tbl}` LIMIT 500;");
+                let sql_r = format!("SELECT * FROM `{tgt_db}`.`{tgt_tbl}` LIMIT 500;");
+                let left = session
+                    .execute_query(&src_db, &sql_l, None)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let right = session
+                    .execute_query(&tgt_db, &sql_r, None)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::DataDiffLoaded {
+                    left,
+                    right,
+                    key_col_idx: key_col,
                 });
-            }
+            });
         }
     }
 
@@ -8839,86 +8792,82 @@ impl MysqlRustyApp {
             }
         }
 
-        if trigger_export {
-            if let (Some(session), Some(schema)) = (
+        if trigger_export
+            && let (Some(session), Some(schema)) = (
                 self.active_session.clone(),
                 self.schemas.get(&self.active_database).cloned(),
-            ) {
-                self.dump_is_busy = true;
-                let db = self.active_database.clone();
-                let selected = self.dump_selected_tables.clone();
-                let inc_drop = self.dump_include_drop;
-                let inc_data = self.dump_include_data;
-                let tx = self.tx.clone();
-                self.rt.spawn(async move {
-                    let mut full_dump =
-                        format!("-- MySQL-Rusty SQL Dump for `{db}`\nUSE `{db}`;\n\n");
-                    let mut err_msg = None;
-                    for tbl in &schema.tables {
-                        if !selected.contains(&tbl.name) {
-                            continue;
-                        }
-                        let data_res = if inc_data {
-                            let sql = format!("SELECT * FROM `{db}`.`{}` LIMIT 1000;", tbl.name);
-                            match session.execute_query(&db, &sql, None).await {
-                                Ok(r) => Some(r),
-                                Err(e) => {
-                                    err_msg = Some(format!("{e:#}"));
-                                    break;
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                        full_dump.push_str(&generate_table_dump_sql(
-                            tbl,
-                            data_res.as_ref(),
-                            inc_drop,
-                            inc_data,
-                            100,
-                        ));
-                        full_dump.push('\n');
+            )
+        {
+            self.dump_is_busy = true;
+            let db = self.active_database.clone();
+            let selected = self.dump_selected_tables.clone();
+            let inc_drop = self.dump_include_drop;
+            let inc_data = self.dump_include_data;
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let mut full_dump = format!("-- MySQL-Rusty SQL Dump for `{db}`\nUSE `{db}`;\n\n");
+                let mut err_msg = None;
+                for tbl in &schema.tables {
+                    if !selected.contains(&tbl.name) {
+                        continue;
                     }
-                    let _ = tx.send(AsyncEvent::SqlDumpLoaded {
-                        sql: match err_msg {
-                            Some(e) => Err(e),
-                            None => Ok(full_dump),
-                        },
-                        suggested_name: db,
-                    });
+                    let data_res = if inc_data {
+                        let sql = format!("SELECT * FROM `{db}`.`{}` LIMIT 1000;", tbl.name);
+                        match session.execute_query(&db, &sql, None).await {
+                            Ok(r) => Some(r),
+                            Err(e) => {
+                                err_msg = Some(format!("{e:#}"));
+                                break;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    full_dump.push_str(&generate_table_dump_sql(
+                        tbl,
+                        data_res.as_ref(),
+                        inc_drop,
+                        inc_data,
+                        100,
+                    ));
+                    full_dump.push('\n');
+                }
+                let _ = tx.send(AsyncEvent::SqlDumpLoaded {
+                    sql: match err_msg {
+                        Some(e) => Err(e),
+                        None => Ok(full_dump),
+                    },
+                    suggested_name: db,
                 });
-            }
+            });
         }
 
-        if trigger_import_file {
-            if let Some(path) = rfd::FileDialog::new()
+        if trigger_import_file
+            && let Some(path) = rfd::FileDialog::new()
                 .add_filter("SQL", &["sql", "txt"])
                 .pick_file()
-            {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Some(session) = self.active_session.clone() {
-                        self.dump_is_busy = true;
-                        let db = self.active_database.clone();
-                        let tx = self.tx.clone();
-                        self.rt.spawn(async move {
-                            let stmts = split_sql_statements(&content);
-                            let mut executed = 0usize;
-                            let mut err_out = None;
-                            for stmt in stmts {
-                                if let Err(e) = session.execute_query(&db, &stmt, None).await {
-                                    err_out = Some(format!("{e:#}"));
-                                    break;
-                                }
-                                executed += 1;
-                            }
-                            let _ = tx.send(AsyncEvent::SqlDumpImportFinished(match err_out {
-                                Some(e) => Err(e),
-                                None => Ok(executed),
-                            }));
-                        });
+            && let Ok(content) = std::fs::read_to_string(&path)
+            && let Some(session) = self.active_session.clone()
+        {
+            self.dump_is_busy = true;
+            let db = self.active_database.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let stmts = split_sql_statements(&content);
+                let mut executed = 0usize;
+                let mut err_out = None;
+                for stmt in stmts {
+                    if let Err(e) = session.execute_query(&db, &stmt, None).await {
+                        err_out = Some(format!("{e:#}"));
+                        break;
                     }
+                    executed += 1;
                 }
-            }
+                let _ = tx.send(AsyncEvent::SqlDumpImportFinished(match err_out {
+                    Some(e) => Err(e),
+                    None => Ok(executed),
+                }));
+            });
         }
     }
 
@@ -9197,7 +9146,7 @@ pub fn sanitize_filename(name: &str) -> String {
     for c in without_ext.chars() {
         if c.is_alphanumeric() || c == '_' || c == '-' {
             safe.push(c);
-        } else if c.is_whitespace()
+        } else if (c.is_whitespace()
             || c == '/'
             || c == '\\'
             || c == ':'
@@ -9206,11 +9155,10 @@ pub fn sanitize_filename(name: &str) -> String {
             || c == '"'
             || c == '<'
             || c == '>'
-            || c == '|'
+            || c == '|')
+            && !safe.ends_with('_')
         {
-            if !safe.ends_with('_') {
-                safe.push('_');
-            }
+            safe.push('_');
         }
     }
     let res = safe.trim_matches(|c| c == '_' || c == '.').to_string();

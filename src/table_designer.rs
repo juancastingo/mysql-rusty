@@ -469,10 +469,10 @@ impl TableDraft {
                         }
                     });
 
-                if let Some(idx) = remove_idx {
-                    if self.columns.len() > 1 {
-                        self.columns.remove(idx);
-                    }
+                if let Some(idx) = remove_idx
+                    && self.columns.len() > 1
+                {
+                    self.columns.remove(idx);
                 }
 
                 if ui.button("+ Add Column").clicked() {

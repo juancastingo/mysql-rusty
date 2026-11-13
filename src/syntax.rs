@@ -327,18 +327,17 @@ pub fn highlight_sql(
     let cursor_at_end = cursor_char_idx
         .map(|idx| idx >= text.chars().count())
         .unwrap_or(true);
-    if cursor_at_end {
-        if let Some(ghost) = ghost_suffix {
-            if !ghost.is_empty() {
-                let ghost_fmt = TextFormat {
-                    font_id: mono,
-                    color: Color32::from_rgba_unmultiplied(125, 211, 252, 130),
-                    italics: true,
-                    ..Default::default()
-                };
-                job.append(ghost, 0.0, ghost_fmt);
-            }
-        }
+    if cursor_at_end
+        && let Some(ghost) = ghost_suffix
+        && !ghost.is_empty()
+    {
+        let ghost_fmt = TextFormat {
+            font_id: mono,
+            color: Color32::from_rgba_unmultiplied(125, 211, 252, 130),
+            italics: true,
+            ..Default::default()
+        };
+        job.append(ghost, 0.0, ghost_fmt);
     }
 
     job
@@ -346,10 +345,12 @@ pub fn highlight_sql(
 
 /// Formats a SQL query with proper indentation, uppercase keywords, and clause line breaks.
 pub fn format_sql_pretty(sql: &str) -> String {
-    let mut options = sqlformat::FormatOptions::default();
-    options.indent = sqlformat::Indent::Spaces(2);
-    options.uppercase = Some(true);
-    options.lines_between_queries = 2;
+    let options = sqlformat::FormatOptions {
+        indent: sqlformat::Indent::Spaces(2),
+        uppercase: Some(true),
+        lines_between_queries: 2,
+        ..Default::default()
+    };
     let formatted = sqlformat::format(sql, &sqlformat::QueryParams::None, &options);
     if formatted.trim().is_empty() {
         sql.to_string()
@@ -491,10 +492,10 @@ pub fn extract_statement_at_cursor(sql: &str, cursor_char_idx: usize) -> (String
         }
     }
 
-    if let Some(last) = stmts.last() {
-        if clamped_cursor >= last.raw_end {
-            return (last.text.clone(), (last.trimmed_start, last.trimmed_end));
-        }
+    if let Some(last) = stmts.last()
+        && clamped_cursor >= last.raw_end
+    {
+        return (last.text.clone(), (last.trimmed_start, last.trimmed_end));
     }
 
     let first = &stmts[0];
@@ -980,18 +981,18 @@ pub fn extract_sql_parameters(sql: &str) -> Vec<String> {
                 in_backtick = true;
             } else if ch == ':'
                 && (i == 0 || !chars[i - 1].is_ascii_alphanumeric() && chars[i - 1] != ':')
+                && i + 1 < n
+                && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
             {
-                if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_') {
-                    let mut j = i + 1;
-                    while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
-                        j += 1;
-                    }
-                    let name: String = chars[i + 1..j].iter().collect();
-                    if !params.contains(&name) {
-                        params.push(name);
-                    }
-                    i = j - 1;
+                let mut j = i + 1;
+                while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                    j += 1;
                 }
+                let name: String = chars[i + 1..j].iter().collect();
+                if !params.contains(&name) {
+                    params.push(name);
+                }
+                i = j - 1;
             }
         }
         i += 1;

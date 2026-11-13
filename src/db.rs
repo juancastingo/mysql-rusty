@@ -203,7 +203,7 @@ fn hex_preview(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     if bytes.len() > limit {
-        s.push_str("…");
+        s.push('…');
     }
     s
 }
@@ -538,7 +538,7 @@ impl ActiveSession {
                     )
                     .await?;
 
-                let columns_rows: Vec<(
+                type ColumnInfoRow = (
                     String,
                     String,
                     String,
@@ -546,7 +546,8 @@ impl ActiveSession {
                     String,
                     Option<String>,
                     String,
-                )> = conn
+                );
+                let columns_rows: Vec<ColumnInfoRow> = conn
                     .exec(
                         "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
                          FROM information_schema.COLUMNS \
@@ -721,19 +722,19 @@ impl ActiveSession {
                 if let Some(tbl) = guard.get_mut(table) {
                     let mut count = 0;
                     for edit in edits {
-                        if let Some(row) = tbl.rows.get_mut(edit.row_idx) {
-                            if let Some(cell) = row.get_mut(edit.col_idx) {
-                                if edit.new_value.eq_ignore_ascii_case("NULL") {
-                                    *cell = CellValue::Null;
-                                } else if let Ok(i) = edit.new_value.parse::<i64>() {
-                                    *cell = CellValue::Integer(i);
-                                } else if let Ok(f) = edit.new_value.parse::<f64>() {
-                                    *cell = CellValue::Float(f);
-                                } else {
-                                    *cell = CellValue::Text(edit.new_value.clone());
-                                }
-                                count += 1;
+                        if let Some(row) = tbl.rows.get_mut(edit.row_idx)
+                            && let Some(cell) = row.get_mut(edit.col_idx)
+                        {
+                            if edit.new_value.eq_ignore_ascii_case("NULL") {
+                                *cell = CellValue::Null;
+                            } else if let Ok(i) = edit.new_value.parse::<i64>() {
+                                *cell = CellValue::Integer(i);
+                            } else if let Ok(f) = edit.new_value.parse::<f64>() {
+                                *cell = CellValue::Float(f);
+                            } else {
+                                *cell = CellValue::Text(edit.new_value.clone());
                             }
+                            count += 1;
                         }
                     }
                     return Ok(count);
@@ -953,10 +954,10 @@ impl ActiveSession {
 }
 
 fn expand_tilde(path: &str) -> String {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped).to_string_lossy().into_owned();
-        }
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped).to_string_lossy().into_owned();
     }
     path.to_string()
 }
@@ -983,7 +984,7 @@ pub fn detect_editable_table_and_pk(
             let raw = window[1]
                 .trim_matches(|c: char| c == '`' || c == ';' || c == ',')
                 .split('.')
-                .last()
+                .next_back()
                 .unwrap_or("");
             if !raw.is_empty() {
                 from_table = Some(raw.to_string());
@@ -996,21 +997,17 @@ pub fn detect_editable_table_and_pk(
         return (None, None);
     };
 
-    if let Some(db_schema) = schema {
-        if let Some(t_schema) = db_schema
+    if let Some(db_schema) = schema
+        && let Some(t_schema) = db_schema
             .tables
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(&table_name))
-        {
-            if let Some(pk_col) = t_schema.columns.iter().find(|c| c.is_primary_key) {
-                if result_columns
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(&pk_col.name))
-                {
-                    return (Some(t_schema.name.clone()), Some(pk_col.name.clone()));
-                }
-            }
-        }
+        && let Some(pk_col) = t_schema.columns.iter().find(|c| c.is_primary_key)
+        && result_columns
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(&pk_col.name))
+    {
+        return (Some(t_schema.name.clone()), Some(pk_col.name.clone()));
     }
 
     // Fallback if schema wasn't loaded yet and `id` column is present
@@ -2255,80 +2252,76 @@ fn execute_demo_query(
     // Check for COUNT(*) queries
     if lower.contains("count(") && !lower.contains("group by") {
         for &tname in &known_tables {
-            if lower.contains(tname) {
-                if let Some(res) = guard.get(tname) {
-                    let total = res.rows.len();
-                    return Ok(QueryResult {
-                        sql: sql.to_string(),
-                        database: database.to_string(),
-                        columns: vec!["COUNT(*)".to_string()],
-                        rows: vec![vec![CellValue::Integer(total as i64)]],
-                        affected_rows: 0,
-                        last_insert_id: None,
-                        duration_ms: 1,
-                        editable_table: None,
-                        primary_key_column: None,
-                        status_message: format!(
-                            "1 row in set at {} (Sandbox)",
-                            chrono::Local::now().format("%H:%M:%S")
-                        ),
-                    });
-                }
+            if lower.contains(tname)
+                && let Some(res) = guard.get(tname)
+            {
+                let total = res.rows.len();
+                return Ok(QueryResult {
+                    sql: sql.to_string(),
+                    database: database.to_string(),
+                    columns: vec!["COUNT(*)".to_string()],
+                    rows: vec![vec![CellValue::Integer(total as i64)]],
+                    affected_rows: 0,
+                    last_insert_id: None,
+                    duration_ms: 1,
+                    editable_table: None,
+                    primary_key_column: None,
+                    status_message: format!(
+                        "1 row in set at {} (Sandbox)",
+                        chrono::Local::now().format("%H:%M:%S")
+                    ),
+                });
             }
         }
     }
 
     // Match known table
     for &tname in &known_tables {
-        if lower.contains(tname) {
-            if let Some(res) = guard.get(tname) {
-                let mut cloned = res.clone();
-                cloned.sql = sql.to_string();
+        if lower.contains(tname)
+            && let Some(res) = guard.get(tname)
+        {
+            let mut cloned = res.clone();
+            cloned.sql = sql.to_string();
 
-                // Simple WHERE filter in sandbox demo for basic interactivity
-                if lower.contains("where") {
-                    if let Some(where_part) = lower.split("where").nth(1) {
-                        let where_clean = where_part.split("order by").next().unwrap_or(where_part);
-                        let where_clean = where_clean.split("limit").next().unwrap_or(where_clean);
+            // Simple WHERE filter in sandbox demo for basic interactivity
+            if lower.contains("where")
+                && let Some(where_part) = lower.split("where").nth(1)
+            {
+                let where_clean = where_part.split("order by").next().unwrap_or(where_part);
+                let where_clean = where_clean.split("limit").next().unwrap_or(where_clean);
 
-                        if where_clean.contains("id =") || where_clean.contains("id=") {
-                            if let Some(id_str) = where_clean.split('=').nth(1) {
-                                if let Ok(id_val) = id_str
-                                    .trim()
-                                    .trim_matches(|c| c == ';' || c == ' ')
-                                    .parse::<i64>()
-                                {
-                                    cloned.rows.retain(|r| {
-                                        if let Some(CellValue::Integer(i)) = r.first() {
-                                            *i == id_val
-                                        } else {
-                                            true
-                                        }
-                                    });
-                                }
-                            }
+                if (where_clean.contains("id =") || where_clean.contains("id="))
+                    && let Some(id_str) = where_clean.split('=').nth(1)
+                    && let Ok(id_val) = id_str
+                        .trim()
+                        .trim_matches(|c| c == ';' || c == ' ')
+                        .parse::<i64>()
+                {
+                    cloned.rows.retain(|r| {
+                        if let Some(CellValue::Integer(i)) = r.first() {
+                            *i == id_val
+                        } else {
+                            true
                         }
-                    }
+                    });
                 }
-
-                // Simple LIMIT in sandbox demo
-                if lower.contains("limit") {
-                    if let Some(limit_part) = lower.split("limit").nth(1) {
-                        if let Some(num_str) = limit_part.split_whitespace().next() {
-                            if let Ok(limit_n) = num_str.trim_matches(';').parse::<usize>() {
-                                cloned.rows.truncate(limit_n);
-                            }
-                        }
-                    }
-                }
-
-                cloned.status_message = format!(
-                    "{} row(s) returned in 1 ms at {} (Sandbox)",
-                    cloned.rows.len(),
-                    chrono::Local::now().format("%H:%M:%S")
-                );
-                return Ok(cloned);
             }
+
+            // Simple LIMIT in sandbox demo
+            if lower.contains("limit")
+                && let Some(limit_part) = lower.split("limit").nth(1)
+                && let Some(num_str) = limit_part.split_whitespace().next()
+                && let Ok(limit_n) = num_str.trim_matches(';').parse::<usize>()
+            {
+                cloned.rows.truncate(limit_n);
+            }
+
+            cloned.status_message = format!(
+                "{} row(s) returned in 1 ms at {} (Sandbox)",
+                cloned.rows.len(),
+                chrono::Local::now().format("%H:%M:%S")
+            );
+            return Ok(cloned);
         }
     }
 

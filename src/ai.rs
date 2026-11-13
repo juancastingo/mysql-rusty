@@ -288,14 +288,13 @@ pub fn compute_local_completions(
                     .as_deref()
                     .map(|a| a.eq_ignore_ascii_case(tbl_prefix))
                     .unwrap_or(false);
-                if alias_match || tr.table.eq_ignore_ascii_case(tbl_prefix) {
-                    if let Some(t) = db
+                if (alias_match || tr.table.eq_ignore_ascii_case(tbl_prefix))
+                    && let Some(t) = db
                         .tables
                         .iter()
                         .find(|t| t.name.eq_ignore_ascii_case(&tr.table))
-                    {
-                        matched_tables.push((t, 50));
-                    }
+                {
+                    matched_tables.push((t, 50));
                 }
             }
             if matched_tables.is_empty() {
@@ -501,22 +500,22 @@ pub fn compute_local_completions(
             _ => -10,
         };
         for (kw, desc) in keywords {
-            if let Some(m_score) = match_score(kw, &prefix_lower) {
-                if kw.len() > last_token.len() || !kw.eq_ignore_ascii_case(last_token) {
-                    scored.push((
-                        m_score + kw_bonus,
-                        CompletionItem {
-                            label: kw.to_string(),
-                            insert_text: kw.to_string(),
-                            detail: desc.to_string(),
-                            kind: if kw.contains('(') {
-                                CompletionKind::Function
-                            } else {
-                                CompletionKind::Keyword
-                            },
+            if let Some(m_score) = match_score(kw, &prefix_lower)
+                && (kw.len() > last_token.len() || !kw.eq_ignore_ascii_case(last_token))
+            {
+                scored.push((
+                    m_score + kw_bonus,
+                    CompletionItem {
+                        label: kw.to_string(),
+                        insert_text: kw.to_string(),
+                        detail: desc.to_string(),
+                        kind: if kw.contains('(') {
+                            CompletionKind::Function
+                        } else {
+                            CompletionKind::Keyword
                         },
-                    ));
-                }
+                    },
+                ));
             }
         }
     }
@@ -712,17 +711,17 @@ pub fn compute_heuristic_ghost_completion(
 
         // JOIN continuations (prefer active table in scope)
         if upper.ends_with("JOIN") {
-            if let Some(t) = active_table {
-                if let Some(fk) = t.foreign_keys.first() {
-                    return Some(format!(
-                        "{sp}{} ON {}.{} = {}.{}",
-                        fk.referenced_table,
-                        t.name,
-                        fk.column_name,
-                        fk.referenced_table,
-                        fk.referenced_column
-                    ));
-                }
+            if let Some(t) = active_table
+                && let Some(fk) = t.foreign_keys.first()
+            {
+                return Some(format!(
+                    "{sp}{} ON {}.{} = {}.{}",
+                    fk.referenced_table,
+                    t.name,
+                    fk.column_name,
+                    fk.referenced_table,
+                    fk.referenced_column
+                ));
             }
             for t in &db.tables {
                 if let Some(fk) = t.foreign_keys.first() {
@@ -1258,10 +1257,10 @@ fn tokenize_for_overlap(s: &str) -> Vec<SqlOverlapToken> {
             None
         };
         if let Some(next) = next_ch {
-            let op2 = match (ch, next) {
-                ('!', '=') | ('<', '=') | ('>', '=') | ('<', '>') => true,
-                _ => false,
-            };
+            let op2 = matches!(
+                (ch, next),
+                ('!', '=') | ('<', '=') | ('>', '=') | ('<', '>')
+            );
             if op2 {
                 let end = if i + 2 < chars.len() {
                     chars[i + 2].0
@@ -1298,6 +1297,7 @@ fn tokenize_for_overlap(s: &str) -> Vec<SqlOverlapToken> {
     tokens
 }
 
+#[allow(dead_code)]
 pub fn clean_inline_completion(raw: &str, prefix: &str) -> String {
     clean_inline_completion_with_suffix(raw, prefix, "")
 }
@@ -1412,7 +1412,7 @@ pub fn clean_inline_completion_with_suffix(raw: &str, prefix: &str, suffix: &str
         && !prefix.ends_with(char::is_whitespace)
         && !cleaned.starts_with(' ')
         && !cleaned.is_empty()
-        && !cleaned.starts_with(|c| c == ';' || c == ',' || c == ')')
+        && !cleaned.starts_with([';', ',', ')'])
     {
         format!(" {cleaned}")
     } else {

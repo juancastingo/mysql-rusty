@@ -187,23 +187,23 @@ impl ErCanvasState {
         }
 
         // Handle dragging node boxes
-        if response.drag_started() {
-            if let Some(mouse_pos) = response.hover_pos() {
-                for (tbl_name, rect) in &table_rects {
-                    if rect.contains(mouse_pos) {
-                        self.dragged_node = Some(tbl_name.clone());
-                        break;
-                    }
+        if response.drag_started()
+            && let Some(mouse_pos) = response.hover_pos()
+        {
+            for (tbl_name, rect) in &table_rects {
+                if rect.contains(mouse_pos) {
+                    self.dragged_node = Some(tbl_name.clone());
+                    break;
                 }
             }
         }
 
-        if response.dragged() {
-            if let Some(dragged) = &self.dragged_node {
-                let delta = response.drag_delta() / self.zoom;
-                if let Some(pos) = self.node_positions.get_mut(dragged) {
-                    *pos += delta;
-                }
+        if response.dragged()
+            && let Some(dragged) = &self.dragged_node
+        {
+            let delta = response.drag_delta() / self.zoom;
+            if let Some(pos) = self.node_positions.get_mut(dragged) {
+                *pos += delta;
             }
         }
 

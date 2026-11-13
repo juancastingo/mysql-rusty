@@ -1,5 +1,7 @@
 # 🦀 MySQL-Rusty Workbench
 
+![CI](https://github.com/juancastingo/mysql-rusty/actions/workflows/ci.yml/badge.svg)
+
 A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for Linux (Ubuntu X11/Wayland), featuring **schema-aware AI inline autocomplete** and **multi-provider AI / CLI Copilot integration** (`Ollama`, `OpenAI/Compatible`, `Anthropic`, `Gemini`, and local CLI tools like `agy` or `llm`).
 
 ---

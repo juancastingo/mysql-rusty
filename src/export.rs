@@ -108,9 +108,8 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
             let field_trimmed = field.trim();
             if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
                 row_vals.push("NULL".to_string());
-            } else if field_trimmed.parse::<i64>().is_ok() {
-                row_vals.push(field_trimmed.to_string());
-            } else if field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0')
+            } else if field_trimmed.parse::<i64>().is_ok()
+                || (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
                 || field_trimmed == "0"
                 || field_trimmed.starts_with("0.")
             {
@@ -226,9 +225,8 @@ pub fn generate_csv_import_sql(
             let field_trimmed = rec.get(idx).map(|s| s.trim()).unwrap_or("");
             if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
                 row_vals.push("NULL".to_string());
-            } else if field_trimmed.parse::<i64>().is_ok() {
-                row_vals.push(field_trimmed.to_string());
-            } else if (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
+            } else if field_trimmed.parse::<i64>().is_ok()
+                || (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
                 || field_trimmed == "0"
                 || field_trimmed.starts_with("0.")
             {
@@ -655,17 +653,17 @@ pub fn generate_table_dump_sql(
     out.push_str(&format_table_create_ddl(schema));
     out.push('\n');
 
-    if include_data {
-        if let Some(res) = result {
-            if !res.rows.is_empty() && !res.columns.is_empty() {
-                let step = batch_size.max(1);
-                let indices: Vec<usize> = (0..res.rows.len()).collect();
-                for chunk in indices.chunks(step) {
-                    out.push('\n');
-                    out.push_str(&format_rows_as_sql_insert(&schema.name, res, chunk));
-                    out.push('\n');
-                }
-            }
+    if include_data
+        && let Some(res) = result
+        && !res.rows.is_empty()
+        && !res.columns.is_empty()
+    {
+        let step = batch_size.max(1);
+        let indices: Vec<usize> = (0..res.rows.len()).collect();
+        for chunk in indices.chunks(step) {
+            out.push('\n');
+            out.push_str(&format_rows_as_sql_insert(&schema.name, res, chunk));
+            out.push('\n');
         }
     }
     out
