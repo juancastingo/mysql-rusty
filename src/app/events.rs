@@ -682,6 +682,33 @@ impl MysqlRustyApp {
                         self.status_banner = msg;
                     }
                 },
+                AsyncEvent::SlowQueriesLoaded(res) => {
+                    self.slow_queries_loading = false;
+                    match res {
+                        Ok((enabled, qr)) => {
+                            self.slow_queries_enabled = Some(enabled);
+                            self.slow_queries_error = None;
+                            if enabled {
+                                self.slow_queries_result = Some(qr);
+                            } else {
+                                self.slow_queries_result = None;
+                            }
+                        }
+                        Err(e) => {
+                            self.slow_queries_error = Some(e.clone());
+                            self.status_banner = format!("Slow queries load failed: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::SlowQueriesReset(res) => match res {
+                    Ok(()) => {
+                        self.status_banner = "Statement digest statistics reset.".to_string();
+                        self.fetch_slow_queries();
+                    }
+                    Err(e) => {
+                        self.status_banner = format!("Reset failed: {e}");
+                    }
+                },
             }
         }
     }

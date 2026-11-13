@@ -4,6 +4,7 @@ use super::*;
 pub enum ServerAdminSubtab {
     OverviewAndMetrics,
     ServerVariables,
+    SlowQueries,
 }
 
 impl MysqlRustyApp {
@@ -92,15 +93,25 @@ impl MysqlRustyApp {
             ui.selectable_value(
                 &mut self.server_admin_subtab,
                 ServerAdminSubtab::OverviewAndMetrics,
-                "📊 Metrics & Processes",
+                "Metrics & Processes",
             );
             ui.selectable_value(
                 &mut self.server_admin_subtab,
                 ServerAdminSubtab::ServerVariables,
-                "⚙ Server Variables (SHOW VARIABLES)",
+                "Server Variables",
+            );
+            ui.selectable_value(
+                &mut self.server_admin_subtab,
+                ServerAdminSubtab::SlowQueries,
+                "Slow Queries",
             );
         });
         ui.separator();
+
+        if self.server_admin_subtab == ServerAdminSubtab::SlowQueries {
+            self.render_slow_queries_subtab(ui);
+            return;
+        }
 
         if self.server_admin_subtab == ServerAdminSubtab::ServerVariables {
             if self.server_variables.is_empty() && !self.is_loading_variables {
@@ -410,6 +421,268 @@ impl MysqlRustyApp {
 
         if let Some(id) = kill_query_id {
             self.kill_server_query(id);
+        }
+    }
+
+    pub fn fetch_slow_queries(&mut self) {
+        let Some(session) = self.active_session.clone() else {
+            return;
+        };
+        self.slow_queries_loading = true;
+        let limit = self.slow_queries_limit;
+        let schema_filter = if self.slow_queries_only_current_db && !self.active_database.is_empty()
+        {
+            Some(self.active_database.clone())
+        } else {
+            None
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let res = async {
+                let enabled = session.performance_schema_enabled().await?;
+                let qr = if enabled {
+                    session
+                        .top_statement_digests(limit, schema_filter.as_deref())
+                        .await?
+                } else {
+                    QueryResult {
+                        sql: String::new(),
+                        database: String::new(),
+                        columns: Vec::new(),
+                        rows: Vec::new(),
+                        affected_rows: 0,
+                        last_insert_id: None,
+                        duration_ms: 0,
+                        status_message: String::new(),
+                        editable_table: None,
+                        primary_key_column: None,
+                        truncated: false,
+                    }
+                };
+                Ok::<_, anyhow::Error>((enabled, qr))
+            }
+            .await
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::SlowQueriesLoaded(res));
+        });
+    }
+
+    pub fn reset_slow_queries(&mut self) {
+        let Some(session) = self.active_session.clone() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let res = session
+                .reset_statement_digests()
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::SlowQueriesReset(res));
+        });
+    }
+
+    fn render_slow_queries_subtab(&mut self, ui: &mut Ui) {
+        if self.slow_queries_enabled.is_none() && !self.slow_queries_loading {
+            self.fetch_slow_queries();
+        }
+
+        let is_read_only = self
+            .active_profile_id
+            .as_ref()
+            .and_then(|id| self.config.connections.iter().find(|p| &p.id == id))
+            .is_some_and(|p| p.read_only);
+
+        let mut trigger_refresh = false;
+        let mut trigger_reset = false;
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(
+                    &mut self.slow_queries_only_current_db,
+                    "Only current database",
+                )
+                .changed()
+            {
+                trigger_refresh = true;
+            }
+            egui::ComboBox::from_id_salt("slow_queries_limit")
+                .selected_text(format!("Top {}", self.slow_queries_limit))
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for lim in [25usize, 50, 100] {
+                        if ui
+                            .selectable_value(
+                                &mut self.slow_queries_limit,
+                                lim,
+                                format!("Top {lim}"),
+                            )
+                            .changed()
+                        {
+                            trigger_refresh = true;
+                        }
+                    }
+                });
+            if ui.button("Refresh").clicked() {
+                trigger_refresh = true;
+            }
+            if self.slow_queries_confirm_reset {
+                if ui
+                    .button(RichText::new("Confirm Reset").color(Color32::from_rgb(248, 113, 113)))
+                    .clicked()
+                {
+                    self.slow_queries_confirm_reset = false;
+                    trigger_reset = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.slow_queries_confirm_reset = false;
+                }
+            } else if ui
+                .add_enabled(!is_read_only, egui::Button::new("Reset stats"))
+                .clicked()
+            {
+                self.slow_queries_confirm_reset = true;
+            }
+            if self.slow_queries_loading {
+                ui.spinner();
+            }
+        });
+        ui.separator();
+
+        if trigger_refresh {
+            self.fetch_slow_queries();
+        }
+        if trigger_reset {
+            self.reset_slow_queries();
+        }
+
+        if let Some(err) = &self.slow_queries_error {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+            return;
+        }
+
+        if self.slow_queries_enabled == Some(false) {
+            let snippet = "[mysqld]\nperformance_schema=ON";
+            egui::Frame::new()
+                .fill(Color32::from_rgb(30, 41, 59))
+                .inner_margin(12.0)
+                .corner_radius(egui::CornerRadius::same(6))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("performance_schema is disabled on this server.")
+                            .color(Color32::from_rgb(251, 191, 36))
+                            .strong(),
+                    );
+                    ui.label("Add the following to my.cnf and restart MySQL to enable statement digests:");
+                    ui.code(snippet);
+                    if ui.small_button("Copy snippet").clicked() {
+                        ui.ctx().copy_text(snippet.to_string());
+                        self.status_banner = "Copied my.cnf snippet.".to_string();
+                    }
+                });
+            return;
+        }
+
+        let Some(res) = self.slow_queries_result.clone() else {
+            ui.label(RichText::new("No statement digests loaded yet.").weak());
+            return;
+        };
+
+        let mut open_sql: Option<String> = None;
+        let mut explain_sql: Option<String> = None;
+
+        egui::ScrollArea::both().show(ui, |ui| {
+            egui::Grid::new("slow_queries_grid")
+                .striped(true)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    for h in [
+                        "DB",
+                        "Query",
+                        "Calls",
+                        "Total (s)",
+                        "Avg (ms)",
+                        "Max (ms)",
+                        "Examined/Sent",
+                        "No Index",
+                        "Actions",
+                    ] {
+                        ui.label(RichText::new(h).strong());
+                    }
+                    ui.end_row();
+
+                    for row in &res.rows {
+                        let cell_str = |idx: usize| -> String {
+                            row.get(idx).map(|c| c.display_text()).unwrap_or_default()
+                        };
+                        let cell_num =
+                            |idx: usize| -> f64 { cell_str(idx).parse::<f64>().unwrap_or(0.0) };
+                        let db = cell_str(0);
+                        let digest = cell_str(1);
+                        let calls = cell_str(2);
+                        let total_s = cell_str(3);
+                        let avg_ms = cell_str(4);
+                        let max_ms = cell_str(5);
+                        let examined = cell_num(6);
+                        let sent = cell_num(7);
+                        let no_idx = cell_num(8) as u64 + cell_num(9) as u64;
+                        let sample = row
+                            .get(12)
+                            .map(|c| c.display_text())
+                            .filter(|s| !s.is_empty() && s != "NULL");
+
+                        let ratio = if sent > 0.0 {
+                            examined / sent
+                        } else {
+                            examined
+                        };
+                        let preview: String = digest.chars().take(72).collect();
+                        let target_sql = sample.unwrap_or_else(|| {
+                            crate::syntax::digest_placeholders_to_params(&digest)
+                        });
+
+                        ui.label(if db.is_empty() || db == "NULL" {
+                            "-"
+                        } else {
+                            &db
+                        });
+                        ui.label(RichText::new(&preview).monospace().small())
+                            .on_hover_text(&digest);
+                        ui.label(calls);
+                        ui.label(total_s);
+                        ui.label(avg_ms);
+                        ui.label(max_ms);
+                        let ratio_text = format!("{ratio:.1}x");
+                        if ratio > 100.0 {
+                            ui.colored_label(Color32::from_rgb(248, 113, 113), ratio_text);
+                        } else {
+                            ui.label(ratio_text);
+                        }
+                        if no_idx > 0 {
+                            ui.colored_label(Color32::from_rgb(248, 113, 113), no_idx.to_string());
+                        } else {
+                            ui.label("0");
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Open in tab").clicked() {
+                                open_sql = Some(target_sql.clone());
+                            }
+                            if ui.small_button("Explain").clicked() {
+                                explain_sql = Some(target_sql);
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        });
+
+        if let Some(sql) = open_sql {
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Slow {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        } else if let Some(sql) = explain_sql {
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Explain {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+            self.execute_current_tab_query(Some("EXPLAIN"));
         }
     }
 }

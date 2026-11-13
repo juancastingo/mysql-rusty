@@ -1276,6 +1276,165 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn performance_schema_enabled(&self) -> Result<bool> {
+        match self {
+            Self::DemoSandbox { .. } => Ok(true),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let val: Option<u64> = conn.query_first("SELECT @@performance_schema").await?;
+                Ok(val.unwrap_or(0) == 1)
+            }
+        }
+    }
+
+    pub async fn top_statement_digests(
+        &self,
+        limit: usize,
+        schema_filter: Option<&str>,
+    ) -> Result<QueryResult> {
+        match self {
+            Self::DemoSandbox { .. } => Ok(QueryResult {
+                sql: "/* performance_schema digests (demo) */".to_string(),
+                database: schema_filter.unwrap_or("shop").to_string(),
+                columns: vec![
+                    "SCHEMA_NAME".into(),
+                    "DIGEST_TEXT".into(),
+                    "COUNT_STAR".into(),
+                    "total_s".into(),
+                    "avg_ms".into(),
+                    "max_ms".into(),
+                    "SUM_ROWS_EXAMINED".into(),
+                    "SUM_ROWS_SENT".into(),
+                    "SUM_NO_INDEX_USED".into(),
+                    "SUM_NO_GOOD_INDEX_USED".into(),
+                    "FIRST_SEEN".into(),
+                    "LAST_SEEN".into(),
+                    "QUERY_SAMPLE_TEXT".into(),
+                ],
+                rows: vec![
+                    vec![
+                        CellValue::Text("shop".into()),
+                        CellValue::Text("SELECT * FROM `orders` WHERE `status` = ? ORDER BY `created_at` DESC".into()),
+                        CellValue::Integer(142),
+                        CellValue::Float(4.82),
+                        CellValue::Float(33.94),
+                        CellValue::Float(190.5),
+                        CellValue::Integer(48000),
+                        CellValue::Integer(280),
+                        CellValue::Integer(142),
+                        CellValue::Integer(0),
+                        CellValue::Text("2026-11-01 08:00:00".into()),
+                        CellValue::Text("2026-11-13 09:00:00".into()),
+                        CellValue::Text("SELECT * FROM `orders` WHERE `status` = 'pending' ORDER BY `created_at` DESC".into()),
+                    ],
+                ],
+                affected_rows: 0,
+                last_insert_id: None,
+                duration_ms: 2,
+                status_message: "1 slow query digest (demo)".into(),
+                editable_table: None,
+                primary_key_column: None,
+                truncated: false,
+            }),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let ver: String = conn
+                    .query_first("SELECT VERSION()")
+                    .await?
+                    .unwrap_or_default();
+                let has_sample = !ver.contains("MariaDB") && supports_query_sample_text(&ver);
+                let sample_col = if has_sample {
+                    ", QUERY_SAMPLE_TEXT"
+                } else {
+                    ""
+                };
+                let limit_val = limit.clamp(1, 500) as u64;
+                let sql = if schema_filter.is_some_and(|s| !s.trim().is_empty()) {
+                    format!(
+                        "SELECT SCHEMA_NAME, DIGEST_TEXT, COUNT_STAR,
+                                ROUND(SUM_TIMER_WAIT/1e12, 3) AS total_s,
+                                ROUND(AVG_TIMER_WAIT/1e9, 2) AS avg_ms,
+                                ROUND(MAX_TIMER_WAIT/1e9, 2) AS max_ms,
+                                SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_NO_INDEX_USED, SUM_NO_GOOD_INDEX_USED,
+                                CAST(FIRST_SEEN AS CHAR), CAST(LAST_SEEN AS CHAR){sample_col}
+                         FROM performance_schema.events_statements_summary_by_digest
+                         WHERE DIGEST_TEXT IS NOT NULL AND SCHEMA_NAME = ?
+                         ORDER BY SUM_TIMER_WAIT DESC LIMIT ?"
+                    )
+                } else {
+                    format!(
+                        "SELECT SCHEMA_NAME, DIGEST_TEXT, COUNT_STAR,
+                                ROUND(SUM_TIMER_WAIT/1e12, 3) AS total_s,
+                                ROUND(AVG_TIMER_WAIT/1e9, 2) AS avg_ms,
+                                ROUND(MAX_TIMER_WAIT/1e9, 2) AS max_ms,
+                                SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_NO_INDEX_USED, SUM_NO_GOOD_INDEX_USED,
+                                CAST(FIRST_SEEN AS CHAR), CAST(LAST_SEEN AS CHAR){sample_col}
+                         FROM performance_schema.events_statements_summary_by_digest
+                         WHERE DIGEST_TEXT IS NOT NULL
+                         ORDER BY SUM_TIMER_WAIT DESC LIMIT ?"
+                    )
+                };
+                let start = Instant::now();
+                let mut result = if let Some(sf) = schema_filter.filter(|s| !s.trim().is_empty()) {
+                    conn.exec_iter(sql.as_str(), (sf, limit_val)).await?
+                } else {
+                    conn.exec_iter(sql.as_str(), (limit_val,)).await?
+                };
+                let columns: Vec<String> = result
+                    .columns()
+                    .as_ref()
+                    .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
+                    .unwrap_or_default();
+                let mut rows = Vec::new();
+                while let Some(mut row) = result.next().await? {
+                    let mut cells = Vec::with_capacity(columns.len());
+                    for idx in 0..columns.len() {
+                        let val = row.take::<Value, _>(idx).unwrap_or(Value::NULL);
+                        cells.push(CellValue::from_mysql_value(val));
+                    }
+                    rows.push(cells);
+                }
+                let duration_ms = start.elapsed().as_millis() as u64;
+                Ok(QueryResult {
+                    sql,
+                    database: schema_filter.unwrap_or_default().to_string(),
+                    columns,
+                    status_message: format!("Loaded {} statement digest(s)", rows.len()),
+                    rows,
+                    affected_rows: 0,
+                    last_insert_id: None,
+                    duration_ms,
+                    editable_table: None,
+                    primary_key_column: None,
+                    truncated: false,
+                })
+            }
+        }
+    }
+
+    pub async fn reset_statement_digests(&self) -> Result<()> {
+        match self {
+            Self::DemoSandbox { .. } => Ok(()),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                conn.query_drop(
+                    "TRUNCATE TABLE performance_schema.events_statements_summary_by_digest",
+                )
+                .await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn supports_query_sample_text(version: &str) -> bool {
+    let core = version.split('-').next().unwrap_or(version);
+    let mut parts = core.split('.').filter_map(|p| p.parse::<u32>().ok());
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    (major, minor, patch) >= (8, 0, 3)
 }
 
 #[derive(Debug, Clone, Default)]

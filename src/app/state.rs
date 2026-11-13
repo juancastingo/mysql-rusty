@@ -62,6 +62,8 @@ pub enum AsyncEvent {
     HistoryCleared,
     BackupProgress(crate::backup::BackupProgress),
     RestoreProgress(crate::backup::RestoreProgress),
+    SlowQueriesLoaded(Result<(bool, QueryResult), String>),
+    SlowQueriesReset(Result<(), String>),
 }
 
 pub struct RestoreModalState {

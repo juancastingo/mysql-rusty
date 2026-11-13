@@ -149,6 +149,98 @@ pub fn byte_idx_to_char_idx(text: &str, byte_idx: usize) -> usize {
         .count()
 }
 
+/// Converts `?` placeholders outside quotes/comments into `:p1`, `:p2`, ...
+pub fn digest_placeholders_to_params(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len() + 16);
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut idx = 1usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_line_comment {
+            let ch = sql[i..].chars().next().unwrap();
+            out.push(ch);
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += ch.len_utf8();
+            continue;
+        }
+        if in_block_comment {
+            if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                out.push_str("*/");
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            let ch = sql[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if let Some(q) = quote {
+            if b == b'\\' && q != b'`' && i + 1 < bytes.len() {
+                let ch = sql[i + 1..].chars().next().unwrap();
+                out.push('\\');
+                out.push(ch);
+                i += 1 + ch.len_utf8();
+                continue;
+            }
+            if b == q {
+                if i + 1 < bytes.len() && bytes[i + 1] == q {
+                    out.push(q as char);
+                    out.push(q as char);
+                    i += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            let ch = sql[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if b == b'#'
+            || (b == b'-'
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'-'
+                && (i + 2 >= bytes.len() || bytes[i + 2].is_ascii_whitespace()))
+        {
+            in_line_comment = true;
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            in_block_comment = true;
+            out.push_str("/*");
+            i += 2;
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            quote = Some(b);
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        if b == b'?' {
+            out.push_str(&format!(":p{idx}"));
+            idx += 1;
+            i += 1;
+            continue;
+        }
+        let ch = sql[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Splits `LayoutJob` sections at match boundaries and highlights matching ranges.
 pub fn apply_background_ranges(
     job: &mut egui::text::LayoutJob,
@@ -1753,5 +1845,14 @@ mod tests {
             highlighted[1].format.background
         );
         assert_eq!(byte_idx_to_char_idx("aé b", 3), 2);
+    }
+
+    #[test]
+    fn test_digest_placeholders_to_params() {
+        let sql = "SELECT * FROM users WHERE status = '?' AND id = ? AND age > ?";
+        assert_eq!(
+            digest_placeholders_to_params(sql),
+            "SELECT * FROM users WHERE status = '?' AND id = :p1 AND age > :p2"
+        );
     }
 }

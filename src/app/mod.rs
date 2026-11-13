@@ -213,6 +213,15 @@ pub struct MysqlRustyApp {
     // Full Database Backup (#16) & Streaming Restore (#17)
     backup_modal: Option<BackupModalState>,
     restore_modal: Option<RestoreModalState>,
+
+    // Slow Queries (#20)
+    slow_queries_enabled: Option<bool>,
+    slow_queries_result: Option<QueryResult>,
+    slow_queries_loading: bool,
+    slow_queries_only_current_db: bool,
+    slow_queries_limit: usize,
+    slow_queries_confirm_reset: bool,
+    slow_queries_error: Option<String>,
 }
 
 impl MysqlRustyApp {
@@ -383,6 +392,13 @@ impl MysqlRustyApp {
             history_confirm_clear: false,
             backup_modal: None,
             restore_modal: None,
+            slow_queries_enabled: None,
+            slow_queries_result: None,
+            slow_queries_loading: false,
+            slow_queries_only_current_db: false,
+            slow_queries_limit: 50,
+            slow_queries_confirm_reset: false,
+            slow_queries_error: None,
         }
     }
 }
