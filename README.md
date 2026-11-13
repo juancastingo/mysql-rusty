@@ -116,6 +116,31 @@ Categories=Development;Database;
 EOF
 ```
 
+### Use with AI agents (MCP)
+`mysql-rusty` can run as a headless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server over `stdio` so Claude Desktop, Cursor, or other MCP clients can inspect schemas and run read-only queries against any saved connection profile (or the built-in `demo` sandbox):
+
+```bash
+mysql-rusty mcp --profile "Local Dev" --max-rows 200
+```
+
+Options:
+- `--profile <name|id>`: Saved connection profile name/ID (or `demo`).
+- `--database <db>`: Override the default database.
+- `--max-rows <n>`: Row cap for `run_query` (default `200`, max `10000`).
+- `--allow-writes`: Permit write/DDL statements (disabled by default; profiles marked `read_only` always remain read-only).
+
+Example Claude Desktop / Cursor MCP config:
+```json
+{
+  "mcpServers": {
+    "mysql-rusty": {
+      "command": "mysql-rusty",
+      "args": ["mcp", "--profile", "Local Dev"]
+    }
+  }
+}
+```
+
 ### Run Unit Tests
 ```bash
 cargo test

@@ -11,6 +11,7 @@ mod er_diagram;
 mod export;
 mod find;
 mod history;
+mod mcp;
 mod schema_diff;
 mod sql_reader;
 mod syntax;
@@ -81,6 +82,15 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 
 fn main() -> eframe::Result<()> {
     let _log_guard = init_logging();
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("mcp") {
+        if let Err(err) = mcp::run_mcp_cli(&args[2..]) {
+            eprintln!("MCP server error: {err:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     let rt = Arc::new(
         Runtime::new().expect("Failed to initialize asynchronous Tokio runtime for MySQL-Rusty"),
