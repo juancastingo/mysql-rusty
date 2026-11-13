@@ -1076,23 +1076,17 @@ impl MysqlRustyApp {
     }
 
     pub fn start_transaction(&mut self) {
-        self.in_transaction = true;
-        self.uncommitted_mutations = 0;
-        self.status_banner = "Transaction started (Manual Commit Mode).".to_string();
+        self.status_banner = "Starting transaction...".to_string();
         self.execute_sql_forced("START TRANSACTION;".to_string());
     }
 
     pub fn commit_transaction(&mut self) {
-        self.in_transaction = false;
-        self.uncommitted_mutations = 0;
-        self.status_banner = "Transaction committed successfully.".to_string();
+        self.status_banner = "Committing transaction...".to_string();
         self.execute_sql_forced("COMMIT;".to_string());
     }
 
     pub fn rollback_transaction(&mut self) {
-        self.in_transaction = false;
-        self.uncommitted_mutations = 0;
-        self.status_banner = "Transaction rolled back.".to_string();
+        self.status_banner = "Rolling back transaction...".to_string();
         self.execute_sql_forced("ROLLBACK;".to_string());
     }
 
@@ -1463,7 +1457,34 @@ impl MysqlRustyApp {
                         tab.task_abort_handle = None;
                         match result {
                             Ok(res) => {
-                                self.status_banner = res.status_message.clone();
+                                let upper_sql = res
+                                    .sql
+                                    .trim()
+                                    .trim_end_matches(';')
+                                    .trim()
+                                    .to_ascii_uppercase();
+                                match upper_sql.as_str() {
+                                    "START TRANSACTION" | "BEGIN" | "BEGIN WORK" => {
+                                        self.in_transaction = true;
+                                        self.uncommitted_mutations = 0;
+                                        self.status_banner =
+                                            "Transaction started (Manual Commit Mode).".to_string();
+                                    }
+                                    "COMMIT" | "COMMIT WORK" => {
+                                        self.in_transaction = false;
+                                        self.uncommitted_mutations = 0;
+                                        self.status_banner =
+                                            "Transaction committed successfully.".to_string();
+                                    }
+                                    "ROLLBACK" | "ROLLBACK WORK" => {
+                                        self.in_transaction = false;
+                                        self.uncommitted_mutations = 0;
+                                        self.status_banner = "Transaction rolled back.".to_string();
+                                    }
+                                    _ => {
+                                        self.status_banner = res.status_message.clone();
+                                    }
+                                }
                                 self.config.history.insert(
                                     0,
                                     QueryHistoryEntry {

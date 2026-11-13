@@ -271,6 +271,9 @@ impl Default for DemoStore {
 pub enum ActiveSession {
     RealMysql {
         pool: Pool,
+        editor_conn: Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>,
+        editor_current_db: Arc<tokio::sync::Mutex<Option<String>>>,
+        editor_conn_id: Arc<std::sync::atomic::AtomicU64>,
         _ssh_guard: Option<Arc<Mutex<SshTunnelGuard>>>,
     },
     DemoSandbox {
@@ -501,10 +504,56 @@ impl ActiveSession {
             }
         };
 
+        let editor = pool.get_conn().await?;
+        let editor_id = u64::from(editor.id());
+
         Ok(Self::RealMysql {
             pool,
+            editor_conn: Arc::new(tokio::sync::Mutex::new(Some(editor))),
+            editor_current_db: Arc::new(tokio::sync::Mutex::new(None)),
+            editor_conn_id: Arc::new(std::sync::atomic::AtomicU64::new(editor_id)),
             _ssh_guard: ssh_guard,
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn editor_connection_id(&self) -> Option<u64> {
+        match self {
+            Self::RealMysql { editor_conn_id, .. } => {
+                let id = editor_conn_id.load(std::sync::atomic::Ordering::Relaxed);
+                if id == 0 { None } else { Some(id) }
+            }
+            Self::DemoSandbox { .. } => None,
+        }
+    }
+
+    async fn lock_editor_conn<'a>(
+        pool: &Pool,
+        slot: &'a Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>,
+        current_db: &Arc<tokio::sync::Mutex<Option<String>>>,
+        conn_id_atomic: &Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<tokio::sync::MutexGuard<'a, Option<mysql_async::Conn>>> {
+        let mut guard = slot.lock().await;
+        let needs_reconnect = match guard.as_mut() {
+            None => true,
+            Some(conn) => conn.ping().await.is_err(),
+        };
+        if needs_reconnect {
+            *guard = None;
+            *current_db.lock().await = None;
+            conn_id_atomic.store(0, std::sync::atomic::Ordering::Relaxed);
+            let conn = pool.get_conn().await?;
+            conn_id_atomic.store(u64::from(conn.id()), std::sync::atomic::Ordering::Relaxed);
+            *guard = Some(conn);
+        }
+        Ok(guard)
+    }
+
+    fn is_connection_error(err: &mysql_async::Error) -> bool {
+        matches!(
+            err,
+            mysql_async::Error::Io(_) | mysql_async::Error::Driver(_)
+        )
     }
 
     pub async fn list_databases(&self) -> Result<Vec<String>> {
@@ -646,22 +695,74 @@ impl ActiveSession {
 
         match self {
             Self::DemoSandbox { store, .. } => execute_demo_query(store, database, trimmed, schema),
-            Self::RealMysql { pool, .. } => {
+            Self::RealMysql {
+                pool,
+                editor_conn,
+                editor_current_db,
+                editor_conn_id,
+                ..
+            } => {
                 let start = Instant::now();
-                let mut conn = pool.get_conn().await?;
-                if !database.trim().is_empty() {
-                    let use_stmt = format!("USE `{}`", database.replace('`', "``"));
-                    conn.query_drop(use_stmt).await?;
+                let mut guard =
+                    Self::lock_editor_conn(pool, editor_conn, editor_current_db, editor_conn_id)
+                        .await?;
+                let conn = guard.as_mut().expect("editor_conn initialized");
+
+                let db_trimmed = database.trim();
+                if !db_trimmed.is_empty() {
+                    let needs_use = {
+                        let cur = editor_current_db.lock().await;
+                        cur.as_deref() != Some(db_trimmed)
+                    };
+                    if needs_use {
+                        let use_stmt = format!("USE `{}`", db_trimmed.replace('`', "``"));
+                        if let Err(err) = conn.query_drop(use_stmt).await {
+                            if Self::is_connection_error(&err) {
+                                *guard = None;
+                                *editor_current_db.lock().await = None;
+                                editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            return Err(err.into());
+                        }
+                        *editor_current_db.lock().await = Some(db_trimmed.to_string());
+                    }
                 }
 
-                let mut result = conn.query_iter(trimmed).await?;
+                let mut result = match conn.query_iter(trimmed).await {
+                    Ok(res) => res,
+                    Err(err) => {
+                        if Self::is_connection_error(&err) {
+                            *guard = None;
+                            *editor_current_db.lock().await = None;
+                            editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        return Err(err.into());
+                    }
+                };
+                if trimmed
+                    .get(..4)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("USE "))
+                {
+                    *editor_current_db.lock().await = None;
+                }
                 let columns: Vec<String> = result
                     .columns()
                     .as_ref()
                     .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
                     .unwrap_or_default();
 
-                let raw_rows: Vec<Row> = result.collect().await?;
+                let raw_rows: Vec<Row> = match result.collect().await {
+                    Ok(rows) => rows,
+                    Err(err) => {
+                        drop(result);
+                        if Self::is_connection_error(&err) {
+                            *guard = None;
+                            *editor_current_db.lock().await = None;
+                            editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        return Err(err.into());
+                    }
+                };
                 let affected = result.affected_rows();
                 let last_id = result.last_insert_id();
                 drop(result);
@@ -741,8 +842,17 @@ impl ActiveSession {
                 }
                 Err(anyhow!("Table `{table}` not found in Sandbox environment"))
             }
-            Self::RealMysql { pool, .. } => {
-                let mut conn = pool.get_conn().await?;
+            Self::RealMysql {
+                pool,
+                editor_conn,
+                editor_current_db,
+                editor_conn_id,
+                ..
+            } => {
+                let mut guard =
+                    Self::lock_editor_conn(pool, editor_conn, editor_current_db, editor_conn_id)
+                        .await?;
+                let conn = guard.as_mut().expect("editor_conn initialized");
                 let mut total_affected = 0;
                 for edit in edits {
                     let stmt = format!(
@@ -757,8 +867,14 @@ impl ActiveSession {
                     } else {
                         Value::Bytes(edit.new_value.as_bytes().to_vec())
                     };
-                    conn.exec_drop(stmt, (new_val, edit.pk_value.clone()))
-                        .await?;
+                    if let Err(err) = conn.exec_drop(stmt, (new_val, edit.pk_value.clone())).await {
+                        if Self::is_connection_error(&err) {
+                            *guard = None;
+                            *editor_current_db.lock().await = None;
+                            editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        return Err(err.into());
+                    }
                     total_affected += conn.affected_rows();
                 }
                 Ok(total_affected)
