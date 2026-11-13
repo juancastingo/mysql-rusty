@@ -268,7 +268,10 @@ impl MysqlRustyApp {
                     .fill(Color32::from_rgb(16, 185, 129))
                     .corner_radius(egui::CornerRadius::same(6));
 
-                    if ui.add(run_btn).clicked() {
+                    let run_resp = ui.add(run_btn);
+                    self.tour
+                        .set_anchor(crate::tour::TourAnchor::RunButton, run_resp.rect);
+                    if run_resp.clicked() {
                         self.auto_retry_attempted = false;
                         self.execute_current_tab_query(None);
                     }

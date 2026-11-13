@@ -6,6 +6,8 @@ impl MysqlRustyApp {
             .default_size(280.0)
             .size_range(220.0..=420.0)
             .show(ui, |ui| {
+                self.tour
+                    .set_anchor(crate::tour::TourAnchor::SchemaTree, ui.max_rect());
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(

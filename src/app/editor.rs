@@ -178,6 +178,7 @@ impl MysqlRustyApp {
                 }
             });
             let mut trigger_tx_action: Option<u8> = None;
+            let mut editor_anchor_rect: Option<egui::Rect> = None;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 // Quick LIMIT Presets Bar
@@ -1059,6 +1060,7 @@ impl MysqlRustyApp {
                 }
 
                 let editor_resp = output.response;
+                editor_anchor_rect = Some(editor_resp.rect);
 
                 if editor_resp.has_focus() {
                     ui.input_mut(|i| {
@@ -1228,6 +1230,11 @@ impl MysqlRustyApp {
                 _ => {}
             }
 
+            if let Some(rect) = editor_anchor_rect {
+                self.tour
+                    .set_anchor(crate::tour::TourAnchor::SqlEditor, rect);
+            }
+
             if (editor_font_size - initial_font_size).abs() > 0.01 {
                 self.config.ui.editor_font_size = editor_font_size;
                 let _ = self.config.save();
@@ -1284,6 +1291,10 @@ impl MysqlRustyApp {
                 }
             });
             ui.separator();
+            self.tour.set_anchor(
+                crate::tour::TourAnchor::ResultsGrid,
+                ui.available_rect_before_wrap(),
+            );
 
             match self.bottom_tab {
                 BottomTab::ResultsGrid => self.render_results_grid(ui),

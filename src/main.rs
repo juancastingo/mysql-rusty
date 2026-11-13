@@ -24,6 +24,7 @@ mod table_designer;
 #[cfg(test)]
 pub mod test_fixtures;
 mod theme;
+mod tour;
 mod vim;
 
 rust_i18n::i18n!("locales", fallback = "en");

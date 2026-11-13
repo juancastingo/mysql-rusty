@@ -304,6 +304,7 @@ impl MysqlRustyApp {
             OpenRunSqlFile,
             ToggleVimMode,
             OpenShortcuts,
+            RestartTour,
         }
 
         struct PaletteEntry {
@@ -403,6 +404,12 @@ impl MysqlRustyApp {
                     self.keymap.label(crate::shortcuts::Action::ShortcutsHelp)
                 ),
                 action: PaletteAction::OpenShortcuts,
+            },
+            PaletteEntry {
+                category: "Help",
+                label: "Restart onboarding tour".to_string(),
+                detail: "Launch the 5-step guided tour on the Demo Sandbox".to_string(),
+                action: PaletteAction::RestartTour,
             },
         ];
 
@@ -649,6 +656,9 @@ impl MysqlRustyApp {
                     self.rebinding_action = None;
                     self.rebind_conflict_msg = None;
                 }
+                PaletteAction::RestartTour => {
+                    self.start_demo_onboarding_tour();
+                }
             }
         }
     }
@@ -784,6 +794,141 @@ impl MysqlRustyApp {
         if !self.show_shortcuts_modal {
             self.rebinding_action = None;
             self.rebind_conflict_msg = None;
+        }
+    }
+
+    pub(crate) fn start_demo_onboarding_tour(&mut self) {
+        let demo = self
+            .config
+            .connections
+            .iter()
+            .find(|c| c.is_demo)
+            .cloned()
+            .unwrap_or_else(ConnectionProfile::demo_profile);
+        if self.active_profile_id.as_deref() != Some(demo.id.as_str()) {
+            self.connect_to_profile(demo);
+        }
+        let sample_sql =
+            "SELECT id, full_name, email, country, created_at\nFROM users\nORDER BY id\nLIMIT 25;";
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+            if tab.sql.trim().is_empty() {
+                tab.sql = sample_sql.to_string();
+            }
+        } else {
+            self.tabs
+                .push(QueryTab::new("Demo Tour", sample_sql.to_string()));
+            self.active_tab_idx = self.tabs.len() - 1;
+        }
+        self.tour.start_tour();
+    }
+
+    pub(crate) fn render_onboarding_overlay(&mut self, ctx: &egui::Context) {
+        if self.tour.show_welcome {
+            let mut start = false;
+            let mut skip = false;
+            egui::Window::new("Welcome to MySQL-Rusty Workbench")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("Welcome!");
+                    ui.add_space(6.0);
+                    ui.label("MySQL-Rusty is a native Rust SQL client with built-in AI assistance, ER diagrams, schema/data diff, and multi-database support (MySQL, PostgreSQL, SQLite).");
+                    ui.add_space(8.0);
+                    ui.label("Take a quick 5-step guided tour using the offline Demo Sandbox, or jump straight into your workspace.");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("Start 5-Step Tour (Demo Sandbox)").strong())
+                            .clicked()
+                        {
+                            start = true;
+                        }
+                        if ui.button("Skip for now").clicked() {
+                            skip = true;
+                        }
+                    });
+                });
+            if start {
+                self.start_demo_onboarding_tour();
+            } else if skip {
+                self.tour.skip();
+                self.config.onboarding_completed = true;
+                let _ = self.config.save();
+            }
+            return;
+        }
+
+        let Some(step) = self.tour.current_step() else {
+            return;
+        };
+
+        if step.anchor == crate::tour::TourAnchor::AiPanel && !self.show_ai_panel {
+            self.show_ai_panel = true;
+        }
+
+        if let Some(rect) = self.tour.current_anchor_rect() {
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("onboarding_tour_highlight"),
+            ));
+            painter.rect_stroke(
+                rect.expand(2.0),
+                egui::CornerRadius::same(6),
+                Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                egui::StrokeKind::Outside,
+            );
+        }
+
+        let mut go_back = false;
+        let mut go_next = false;
+        let mut skip_tour = false;
+        let is_last = step.index + 1 >= crate::tour::TOUR_STEPS.len();
+
+        egui::Window::new(format!(
+            "Guided Tour ({}/{})",
+            step.index + 1,
+            crate::tour::TOUR_STEPS.len()
+        ))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(360.0)
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-20.0, -36.0])
+        .show(ctx, |ui| {
+            ui.label(RichText::new(step.title).strong().size(15.0));
+            ui.add_space(4.0);
+            ui.label(step.body);
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if step.index > 0 && ui.button("Back").clicked() {
+                    go_back = true;
+                }
+                if ui
+                    .button(RichText::new(if is_last { "Finish" } else { "Next" }).strong())
+                    .clicked()
+                {
+                    go_next = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Skip Tour").clicked() {
+                        skip_tour = true;
+                    }
+                });
+            });
+        });
+
+        if go_back {
+            self.tour.prev_step();
+        } else if go_next {
+            if self.tour.next_step() {
+                self.config.onboarding_completed = true;
+                let _ = self.config.save();
+            }
+        } else if skip_tour {
+            self.tour.skip();
+            self.config.onboarding_completed = true;
+            let _ = self.config.save();
         }
     }
 }

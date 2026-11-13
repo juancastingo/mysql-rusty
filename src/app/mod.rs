@@ -252,6 +252,9 @@ pub struct MysqlRustyApp {
     shortcuts_filter: String,
     rebinding_action: Option<crate::shortcuts::Action>,
     rebind_conflict_msg: Option<String>,
+
+    // Onboarding Tour (#29)
+    tour: crate::tour::TourState,
 }
 
 impl MysqlRustyApp {
@@ -306,6 +309,17 @@ impl MysqlRustyApp {
         };
 
         let keymap = crate::shortcuts::Keymap::from_overrides(&config.keybindings);
+        let has_existing_activity = !config.history.is_empty()
+            || !config.scratchpads.is_empty()
+            || config.connections.len() > 2;
+        if !config.onboarding_completed && has_existing_activity {
+            config.onboarding_completed = true;
+            let _ = config.save();
+        }
+        let tour = crate::tour::TourState {
+            show_welcome: !config.onboarding_completed,
+            ..Default::default()
+        };
 
         Self {
             rt,
@@ -377,6 +391,7 @@ impl MysqlRustyApp {
             shortcuts_filter: String::new(),
             rebinding_action: None,
             rebind_conflict_msg: None,
+            tour,
             last_poll_instant: None,
             last_questions_count: None,
 
@@ -653,6 +668,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_data_diff_modal(&ctx);
         self.render_sql_dump_modal(&ctx);
         self.render_shortcuts_modal(&ctx);
+        self.render_onboarding_overlay(&ctx);
         self.render_table_action_modal(&ctx);
         self.render_table_info_modal(&ctx);
         self.render_backup_modal(&ctx);

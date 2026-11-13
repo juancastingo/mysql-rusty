@@ -85,6 +85,8 @@ impl MysqlRustyApp {
             .default_size(340.0)
             .size_range(260.0..=520.0)
             .show(ui, |ui| {
+                self.tour
+                    .set_anchor(crate::tour::TourAnchor::AiPanel, ui.max_rect());
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.heading(
