@@ -480,8 +480,287 @@ impl MysqlRustyApp {
                     tab.cursor_index = target_char_idx;
                 }
 
+                // #18 Find / Replace shortcuts (Ctrl+F / Ctrl+H / F3 / Esc)
+                let mut jump_to_match: Option<usize> = None;
+                ui.input_mut(|i| {
+                    let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
+                    let is_shift = i.modifiers.shift;
+                    if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::F) {
+                        tab.find_open = true;
+                        tab.find_autofocus = true;
+                        if let Some(sel) = &tab.selected_sql {
+                            tab.find_opts.query = sel.lines().next().unwrap_or(sel).to_string();
+                        }
+                    } else if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::H) {
+                        tab.find_open = true;
+                        tab.replace_open = true;
+                        tab.find_autofocus = true;
+                        if let Some(sel) = &tab.selected_sql {
+                            tab.find_opts.query = sel.lines().next().unwrap_or(sel).to_string();
+                        }
+                    } else if tab.find_open && i.consume_key(egui::Modifiers::NONE, Key::Escape) {
+                        tab.find_open = false;
+                        tab.replace_open = false;
+                        keep_editor_focus = true;
+                    } else if tab.find_open
+                        && !tab.find_matches.is_empty()
+                        && is_shift
+                        && i.consume_key(egui::Modifiers::NONE, Key::F3)
+                    {
+                        let len = tab.find_matches.len();
+                        tab.find_current = if tab.find_current == 0 {
+                            len - 1
+                        } else {
+                            tab.find_current - 1
+                        };
+                        jump_to_match = Some(tab.find_current);
+                    } else if tab.find_open
+                        && !tab.find_matches.is_empty()
+                        && i.consume_key(egui::Modifiers::NONE, Key::F3)
+                    {
+                        tab.find_current = (tab.find_current + 1) % tab.find_matches.len();
+                        jump_to_match = Some(tab.find_current);
+                    }
+                });
+
+                if tab.find_open {
+                    let mut recompute = false;
+                    let mut do_replace_one = false;
+                    let mut do_replace_all = false;
+                    let mut close_find = false;
+
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(15, 23, 42))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let border_color = if tab.find_error.is_some() {
+                                    Color32::from_rgb(239, 68, 68)
+                                } else {
+                                    Color32::from_rgb(71, 85, 105)
+                                };
+                                let edit_frame = egui::Frame::NONE
+                                    .stroke(Stroke::new(1.0, border_color))
+                                    .corner_radius(egui::CornerRadius::same(4));
+                                let resp = edit_frame
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut tab.find_opts.query)
+                                                .hint_text("Find...")
+                                                .desired_width(220.0),
+                                        )
+                                    })
+                                    .inner;
+                                if tab.find_autofocus {
+                                    resp.request_focus();
+                                    tab.find_autofocus = false;
+                                }
+                                if resp.changed() {
+                                    recompute = true;
+                                    tab.find_current = 0;
+                                }
+                                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                    if !tab.find_matches.is_empty() {
+                                        if ui.input(|i| i.modifiers.shift) {
+                                            let len = tab.find_matches.len();
+                                            tab.find_current = if tab.find_current == 0 {
+                                                len - 1
+                                            } else {
+                                                tab.find_current - 1
+                                            };
+                                        } else {
+                                            tab.find_current =
+                                                (tab.find_current + 1) % tab.find_matches.len();
+                                        }
+                                        jump_to_match = Some(tab.find_current);
+                                    }
+                                    resp.request_focus();
+                                }
+
+                                if ui
+                                    .selectable_label(tab.find_opts.regex, ".*")
+                                    .on_hover_text("Regex")
+                                    .clicked()
+                                {
+                                    tab.find_opts.regex = !tab.find_opts.regex;
+                                    recompute = true;
+                                }
+                                if ui
+                                    .selectable_label(tab.find_opts.case_sensitive, "Aa")
+                                    .on_hover_text("Match case")
+                                    .clicked()
+                                {
+                                    tab.find_opts.case_sensitive = !tab.find_opts.case_sensitive;
+                                    recompute = true;
+                                }
+                                if ui
+                                    .selectable_label(tab.find_opts.whole_word, "ab")
+                                    .on_hover_text("Whole word")
+                                    .clicked()
+                                {
+                                    tab.find_opts.whole_word = !tab.find_opts.whole_word;
+                                    recompute = true;
+                                }
+
+                                let count_label = if tab.find_matches.is_empty() {
+                                    "0 of 0".to_string()
+                                } else {
+                                    format!(
+                                        "{} of {}",
+                                        tab.find_current + 1,
+                                        tab.find_matches.len()
+                                    )
+                                };
+                                ui.label(RichText::new(count_label).small().weak());
+
+                                if ui
+                                    .add_enabled(
+                                        !tab.find_matches.is_empty(),
+                                        egui::Button::new("↑").small(),
+                                    )
+                                    .clicked()
+                                {
+                                    let len = tab.find_matches.len();
+                                    tab.find_current = if tab.find_current == 0 {
+                                        len - 1
+                                    } else {
+                                        tab.find_current - 1
+                                    };
+                                    jump_to_match = Some(tab.find_current);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !tab.find_matches.is_empty(),
+                                        egui::Button::new("↓").small(),
+                                    )
+                                    .clicked()
+                                {
+                                    tab.find_current =
+                                        (tab.find_current + 1) % tab.find_matches.len();
+                                    jump_to_match = Some(tab.find_current);
+                                }
+                                if ui
+                                    .selectable_label(tab.replace_open, "Replace")
+                                    .clicked()
+                                {
+                                    tab.replace_open = !tab.replace_open;
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    close_find = true;
+                                }
+                            });
+
+                            if tab.replace_open {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut tab.replace_text)
+                                            .hint_text("Replace with...")
+                                            .desired_width(220.0),
+                                    );
+                                    if ui
+                                        .add_enabled(
+                                            !tab.find_matches.is_empty(),
+                                            egui::Button::new("Replace").small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        do_replace_one = true;
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !tab.find_matches.is_empty(),
+                                            egui::Button::new("Replace all").small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        do_replace_all = true;
+                                    }
+                                });
+                            }
+                            if let Some(err) = &tab.find_error {
+                                ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+                            }
+                        });
+
+                    if close_find {
+                        tab.find_open = false;
+                        tab.replace_open = false;
+                        keep_editor_focus = true;
+                    } else {
+                        if do_replace_one
+                            && let Some(m) = tab.find_matches.get(tab.find_current).cloned()
+                        {
+                            tab.sql = crate::find::replace_one(
+                                &tab.sql,
+                                m,
+                                &tab.replace_text,
+                                &tab.find_opts,
+                            );
+                            tab.is_dirty = true;
+                            tab.last_edit_instant = Some(std::time::Instant::now());
+                            recompute = true;
+                        } else if do_replace_all {
+                            let (new_sql, count) = crate::find::replace_all(
+                                &tab.sql,
+                                &tab.find_opts,
+                                &tab.replace_text,
+                            );
+                            if count > 0 {
+                                tab.sql = new_sql;
+                                tab.is_dirty = true;
+                                tab.last_edit_instant = Some(std::time::Instant::now());
+                            }
+                            recompute = true;
+                        }
+
+                        if recompute || tab.last_edit_instant.is_some() {
+                            match crate::find::find_matches(&tab.sql, &tab.find_opts) {
+                                Ok(m) => {
+                                    tab.find_matches = m;
+                                    tab.find_error = None;
+                                    if tab.find_current >= tab.find_matches.len() {
+                                        tab.find_current = 0;
+                                    }
+                                }
+                                Err(e) => {
+                                    tab.find_matches.clear();
+                                    tab.find_current = 0;
+                                    tab.find_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(idx) = jump_to_match
+                    && let Some(range) = tab.find_matches.get(idx)
+                {
+                    let start_c = crate::syntax::byte_idx_to_char_idx(&tab.sql, range.start);
+                    let end_c = crate::syntax::byte_idx_to_char_idx(&tab.sql, range.end);
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(start_c),
+                            egui::text::CCursor::new(end_c),
+                        )));
+                        state.store(ui.ctx(), editor_id);
+                    }
+                    tab.cursor_index = end_c;
+                }
+
                 let ghost_clone = tab.ghost_completion.clone();
                 let cursor_idx_snapshot = tab.cursor_index;
+                let find_ranges_clone = if tab.find_open {
+                    tab.find_matches.clone()
+                } else {
+                    Vec::new()
+                };
+                let find_current_clone = if tab.find_open && !tab.find_matches.is_empty() {
+                    Some(tab.find_current)
+                } else {
+                    None
+                };
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                     let mut job = highlight_sql(
                         buf.as_str(),
@@ -489,6 +768,13 @@ impl MysqlRustyApp {
                         Some(cursor_idx_snapshot),
                         14.0,
                     );
+                    if !find_ranges_clone.is_empty() {
+                        crate::syntax::apply_background_ranges(
+                            &mut job,
+                            &find_ranges_clone,
+                            find_current_clone,
+                        );
+                    }
                     job.wrap.max_width = wrap_width;
                     ui.fonts_mut(|f| f.layout_job(job))
                 };

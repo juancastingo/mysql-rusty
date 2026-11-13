@@ -161,6 +161,14 @@ pub struct QueryTab {
     pub chart_y_col: usize,
     pub file_path: Option<std::path::PathBuf>,
     pub is_dirty: bool,
+    pub find_open: bool,
+    pub replace_open: bool,
+    pub find_opts: crate::find::FindOptions,
+    pub replace_text: String,
+    pub find_matches: Vec<std::ops::Range<usize>>,
+    pub find_current: usize,
+    pub find_error: Option<String>,
+    pub find_autofocus: bool,
 }
 
 impl QueryTab {
@@ -212,6 +220,14 @@ impl QueryTab {
             chart_y_col: 1,
             file_path: None,
             is_dirty: false,
+            find_open: false,
+            replace_open: false,
+            find_opts: crate::find::FindOptions::default(),
+            replace_text: String::new(),
+            find_matches: Vec::new(),
+            find_current: 0,
+            find_error: None,
+            find_autofocus: false,
         }
     }
 

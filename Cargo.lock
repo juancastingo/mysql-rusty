@@ -2549,6 +2549,7 @@ dependencies = [
  "insta",
  "keyring",
  "mysql_async",
+ "regex",
  "reqwest",
  "rfd",
  "rusqlite",

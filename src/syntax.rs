@@ -141,6 +141,80 @@ pub fn char_idx_to_byte_idx(text: &str, char_idx: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// Converts a byte offset in `text` into the nearest character index.
+pub fn byte_idx_to_char_idx(text: &str, byte_idx: usize) -> usize {
+    let clamped = byte_idx.min(text.len());
+    text.char_indices()
+        .take_while(|(b, _)| *b < clamped)
+        .count()
+}
+
+/// Splits `LayoutJob` sections at match boundaries and highlights matching ranges.
+pub fn apply_background_ranges(
+    job: &mut egui::text::LayoutJob,
+    ranges: &[std::ops::Range<usize>],
+    current: Option<usize>,
+) {
+    if ranges.is_empty() || job.sections.is_empty() {
+        return;
+    }
+    let normal_bg = Color32::from_rgba_unmultiplied(245, 158, 11, 90);
+    let current_bg = Color32::from_rgba_unmultiplied(249, 115, 22, 180);
+
+    let mut new_sections = Vec::with_capacity(job.sections.len());
+    for section in job.sections.drain(..) {
+        let s_start: usize = section.byte_range.start.into();
+        let s_end: usize = section.byte_range.end.into();
+
+        let mut split_points: Vec<usize> = Vec::new();
+        split_points.push(s_start);
+        for r in ranges {
+            if r.start > s_start && r.start < s_end {
+                split_points.push(r.start);
+            }
+            if r.end > s_start && r.end < s_end {
+                split_points.push(r.end);
+            }
+        }
+        split_points.push(s_end);
+        split_points.sort_unstable();
+        split_points.dedup();
+
+        for win in split_points.windows(2) {
+            let sub_start = win[0];
+            let sub_end = win[1];
+            if sub_start >= sub_end {
+                continue;
+            }
+            let mut fmt = section.format.clone();
+            let mut matched_idx = None;
+            for (idx, r) in ranges.iter().enumerate() {
+                if sub_start >= r.start && sub_end <= r.end {
+                    matched_idx = Some(idx);
+                    break;
+                }
+            }
+            if let Some(idx) = matched_idx {
+                fmt.background = if current == Some(idx) {
+                    current_bg
+                } else {
+                    normal_bg
+                };
+            }
+            new_sections.push(egui::text::LayoutSection {
+                leading_space: if sub_start == s_start {
+                    section.leading_space
+                } else {
+                    0.0
+                },
+                byte_range: egui::text::ByteIndex(sub_start)..egui::text::ByteIndex(sub_end),
+                format: fmt,
+            });
+        }
+    }
+    job.sections = new_sections;
+}
+
 /// Splits `sql` at `cursor_char_idx` into `(prefix, suffix)` slices.
 pub fn split_sql_at_cursor(sql: &str, cursor_char_idx: usize) -> (&str, &str) {
     let byte_idx = char_idx_to_byte_idx(sql, cursor_char_idx);
@@ -1652,5 +1726,32 @@ mod tests {
         assert!(once.contains("FROM"));
         assert_eq!(once, twice);
         assert_eq!(format_sql_pretty("   "), "   ");
+    }
+
+    #[test]
+    fn test_apply_background_ranges_splits_and_highlights() {
+        let mut job = highlight_sql("SELECT user_id, order_id FROM orders", None, None, 14.0);
+        let matches = vec![7..14, 16..24];
+        apply_background_ranges(&mut job, &matches, Some(1));
+
+        let highlighted: Vec<_> = job
+            .sections
+            .iter()
+            .filter(|s| s.format.background != Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(highlighted.len(), 2);
+        assert_eq!(
+            highlighted[0].byte_range,
+            egui::text::ByteIndex(7)..egui::text::ByteIndex(14)
+        );
+        assert_eq!(
+            highlighted[1].byte_range,
+            egui::text::ByteIndex(16)..egui::text::ByteIndex(24)
+        );
+        assert_ne!(
+            highlighted[0].format.background,
+            highlighted[1].format.background
+        );
+        assert_eq!(byte_idx_to_char_idx("aé b", 3), 2);
     }
 }

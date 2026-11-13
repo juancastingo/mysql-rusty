@@ -9,6 +9,7 @@ mod db_integration_tests;
 mod demo;
 mod er_diagram;
 mod export;
+mod find;
 mod history;
 mod schema_diff;
 mod sql_reader;
