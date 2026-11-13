@@ -263,7 +263,28 @@ impl MysqlRustyApp {
                     .corner_radius(egui::CornerRadius::same(6));
 
                     if ui.add(run_btn).clicked() {
+                        self.auto_retry_attempted = false;
                         self.execute_current_tab_query(None);
+                    }
+
+                    if self.connection_lost.is_some() {
+                        let reconnect_btn = egui::Button::new(
+                            RichText::new(" Reconnect ").color(Color32::WHITE).strong(),
+                        )
+                        .fill(Color32::from_rgb(220, 38, 38))
+                        .corner_radius(egui::CornerRadius::same(6));
+                        if ui
+                            .add(reconnect_btn)
+                            .on_hover_text(
+                                self.connection_lost
+                                    .as_deref()
+                                    .unwrap_or("Connection lost — click to reconnect"),
+                            )
+                            .clicked()
+                        {
+                            self.auto_retry_attempted = false;
+                            self.reconnect_active_session();
+                        }
                     }
 
                     if is_running {
@@ -421,13 +442,27 @@ impl MysqlRustyApp {
             .exact_size(26.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    let dot_color = if self.active_session.is_some() {
+                    let dot_color = if self.active_session.is_some() && self.connection_lost.is_none()
+                    {
                         Color32::from_rgb(16, 185, 129)
                     } else {
                         Color32::from_rgb(239, 68, 68)
                     };
                     ui.colored_label(dot_color, "●");
                     ui.label(&self.status_banner);
+
+                    if let Some(err) = self.connection_lost.clone() {
+                        ui.separator();
+                        ui.colored_label(
+                            Color32::from_rgb(248, 113, 113),
+                            "Connection lost",
+                        )
+                        .on_hover_text(err);
+                        if ui.small_button("Reconnect").clicked() {
+                            self.auto_retry_attempted = false;
+                            self.reconnect_active_session();
+                        }
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(

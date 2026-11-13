@@ -191,6 +191,12 @@ pub struct MysqlRustyApp {
     // Schema Explorer Table Duplicate/Truncate & Table Info Inspector
     table_action_modal: Option<(String, String, String)>, // (db, table_name, new_name_buf)
     table_info_modal: Option<(String, crate::db::TableSchema, usize)>, // (db, schema, subtab)
+
+    // Connection Keepalive & Auto-Reconnect (#13)
+    connection_lost: Option<String>,
+    last_keepalive_ping: std::time::Instant,
+    pending_retry_query: Option<(String, String, Option<usize>)>,
+    auto_retry_attempted: bool,
 }
 
 impl MysqlRustyApp {
@@ -317,6 +323,10 @@ impl MysqlRustyApp {
             dump_is_busy: false,
             table_action_modal: None,
             table_info_modal: None,
+            connection_lost: None,
+            last_keepalive_ping: std::time::Instant::now(),
+            pending_retry_query: None,
+            auto_retry_attempted: false,
         }
     }
 }
@@ -324,6 +334,21 @@ impl MysqlRustyApp {
 impl eframe::App for MysqlRustyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_async_events();
+
+        // Periodic Connection Keepalive Ping (every 60 seconds)
+        if self.active_session.is_some()
+            && self.connection_lost.is_none()
+            && self.last_keepalive_ping.elapsed().as_secs() >= 60
+        {
+            self.last_keepalive_ping = std::time::Instant::now();
+            if let Some(session) = self.active_session.clone() {
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    let res = session.ping().await.map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(AsyncEvent::KeepaliveResult(res));
+                });
+            }
+        }
 
         // Periodic Scratchpad Auto-Save (every 5 seconds)
         if self.last_scratchpad_save.elapsed().as_secs() >= 5 {

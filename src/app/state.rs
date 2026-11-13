@@ -12,10 +12,12 @@ pub enum AsyncEvent {
     QueryFinished {
         tab_id: String,
         result: Result<QueryResult, String>,
+        is_connection_error: bool,
     },
     MultiQueryFinished {
         tab_id: String,
         results: Vec<Result<QueryResult, String>>,
+        is_connection_error: bool,
     },
     CellEditsApplied {
         tab_id: String,
@@ -54,6 +56,8 @@ pub enum AsyncEvent {
         tab_id: String,
         deleted_count: Result<u64, String>,
     },
+    KeepaliveResult(Result<(), String>),
+    Reconnected(Result<(String, Arc<ActiveSession>), String>),
 }
 
 pub struct CsvImportWizard {

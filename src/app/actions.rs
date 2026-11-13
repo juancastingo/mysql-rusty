@@ -163,9 +163,44 @@ impl MysqlRustyApp {
         }
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            if let Ok(schema) = session.introspect_database(&db).await {
-                let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
+            match session.introspect_database(&db).await {
+                Ok(schema) => {
+                    let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
+                }
+                Err(e) => {
+                    if crate::db::is_connection_error(&e) {
+                        let _ = tx.send(AsyncEvent::KeepaliveResult(Err(format!("{e:#}"))));
+                    }
+                }
             }
+        });
+    }
+
+    pub(crate) fn reconnect_active_session(&mut self) {
+        let Some(profile_id) = self.active_profile_id.clone() else {
+            return;
+        };
+        let Some(profile) = self
+            .config
+            .connections
+            .iter()
+            .find(|p| p.id == profile_id)
+            .cloned()
+        else {
+            return;
+        };
+        let session = self.active_session.clone();
+        let tx = self.tx.clone();
+        self.status_banner = format!("Reconnecting to `{}`...", profile.name);
+        self.rt.spawn(async move {
+            let res = match session {
+                Some(s) => s.reconnect(&profile).await,
+                None => ActiveSession::connect(profile).await,
+            };
+            let _ = tx.send(AsyncEvent::Reconnected(
+                res.map(|s| (profile_id, Arc::new(s)))
+                    .map_err(|e| format!("{e:#}")),
+            ));
         });
     }
 
@@ -498,7 +533,7 @@ impl MysqlRustyApp {
                 schema: Option<&DatabaseSchema>,
                 timeout_secs: u64,
                 max_rows: Option<usize>,
-            ) -> Result<QueryResult, String> {
+            ) -> Result<QueryResult, (String, bool)> {
                 if timeout_secs > 0 {
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(timeout_secs),
@@ -506,13 +541,18 @@ impl MysqlRustyApp {
                     )
                     .await
                     {
-                        Ok(res) => res.map_err(|e| format!("{e:#}")),
+                        Ok(res) => {
+                            res.map_err(|e| (format!("{e:#}"), crate::db::is_connection_error(&e)))
+                        }
                         Err(_) => {
                             if let Some(conn_id) = session.editor_connection_id() {
                                 let _ = session.kill_query(conn_id).await;
                             }
-                            Err(format!(
-                                "Query timed out after {timeout_secs}s and was cancelled on the server"
+                            Err((
+                                format!(
+                                    "Query timed out after {timeout_secs}s and was cancelled on the server"
+                                ),
+                                false,
                             ))
                         }
                     }
@@ -520,12 +560,13 @@ impl MysqlRustyApp {
                     session
                         .execute_query(db, stmt, schema, max_rows)
                         .await
-                        .map_err(|e| format!("{e:#}"))
+                        .map_err(|e| (format!("{e:#}"), crate::db::is_connection_error(&e)))
                 }
             }
 
             if statements.len() > 1 {
                 let mut results = Vec::with_capacity(statements.len());
+                let mut any_conn_err = false;
                 for stmt in statements {
                     let res = run_with_timeout(
                         &session,
@@ -536,16 +577,31 @@ impl MysqlRustyApp {
                         max_rows,
                     )
                     .await;
-                    results.push(res);
+                    match res {
+                        Ok(r) => results.push(Ok(r)),
+                        Err((msg, is_conn)) => {
+                            any_conn_err |= is_conn;
+                            results.push(Err(msg));
+                        }
+                    }
                 }
-                let _ = tx.send(AsyncEvent::MultiQueryFinished { tab_id, results });
+                let _ = tx.send(AsyncEvent::MultiQueryFinished {
+                    tab_id,
+                    results,
+                    is_connection_error: any_conn_err,
+                });
             } else {
                 let res =
                     run_with_timeout(&session, &db, &sql, schema.as_ref(), timeout_secs, max_rows)
                         .await;
+                let (result, is_connection_error) = match res {
+                    Ok(r) => (Ok(r), false),
+                    Err((msg, is_conn)) => (Err(msg), is_conn),
+                };
                 let _ = tx.send(AsyncEvent::QueryFinished {
                     tab_id,
-                    result: res,
+                    result,
+                    is_connection_error,
                 });
             }
         });

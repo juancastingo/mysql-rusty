@@ -238,9 +238,40 @@ pub struct SshTunnelGuard {
     child: Child,
 }
 
+impl SshTunnelGuard {
+    pub fn check_alive(&mut self) -> Result<()> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => Err(anyhow!("SSH tunnel process exited (status: {status})")),
+            Ok(None) => Ok(()),
+            Err(err) => Err(anyhow!("SSH tunnel status check failed: {err}")),
+        }
+    }
+}
+
 impl Drop for SshTunnelGuard {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+    }
+}
+
+/// Returns `true` if `err` represents a dropped or broken MySQL/SSH connection.
+pub fn is_connection_error(err: &anyhow::Error) -> bool {
+    if let Some(mysql_err) = err.downcast_ref::<mysql_async::Error>() {
+        return is_mysql_conn_err(mysql_err);
+    }
+    let msg = err.to_string();
+    msg.contains("SSH tunnel process exited")
+}
+
+fn is_mysql_conn_err(err: &mysql_async::Error) -> bool {
+    match err {
+        mysql_async::Error::Io(_) => true,
+        mysql_async::Error::Driver(d) => matches!(
+            d,
+            mysql_async::DriverError::ConnectionClosed | mysql_async::DriverError::PoolDisconnected
+        ),
+        mysql_async::Error::Server(s) => s.code == 2006 || s.code == 2013,
+        _ => false,
     }
 }
 
@@ -508,6 +539,27 @@ impl ActiveSession {
         })
     }
 
+    pub async fn reconnect(&self, profile: &ConnectionProfile) -> Result<Self> {
+        Self::connect(profile.clone()).await
+    }
+
+    pub async fn ping(&self) -> Result<()> {
+        match self {
+            Self::DemoSandbox { .. } => Ok(()),
+            Self::RealMysql {
+                pool, _ssh_guard, ..
+            } => {
+                if let Some(guard) = _ssh_guard {
+                    let mut locked = guard.lock().unwrap();
+                    locked.check_alive()?;
+                }
+                let mut conn = pool.get_conn().await?;
+                conn.ping().await?;
+                Ok(())
+            }
+        }
+    }
+
     pub fn editor_connection_id(&self) -> Option<u64> {
         match self {
             Self::RealMysql { editor_conn_id, .. } => {
@@ -541,10 +593,7 @@ impl ActiveSession {
     }
 
     fn is_connection_error(err: &mysql_async::Error) -> bool {
-        matches!(
-            err,
-            mysql_async::Error::Io(_) | mysql_async::Error::Driver(_)
-        )
+        is_mysql_conn_err(err)
     }
 
     pub async fn list_databases(&self) -> Result<Vec<String>> {
@@ -1210,5 +1259,28 @@ mod tests {
         assert!(vars.iter().any(|(k, _)| k == "version"));
 
         session.kill_query(101).await.expect("Failed to kill query");
+    }
+
+    #[test]
+    fn test_is_connection_error_classifier() {
+        let io_err: anyhow::Error = mysql_async::Error::Io(mysql_async::IoError::Io(
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe"),
+        ))
+        .into();
+        assert!(is_connection_error(&io_err));
+
+        let closed_err: anyhow::Error =
+            mysql_async::Error::Driver(mysql_async::DriverError::ConnectionClosed).into();
+        assert!(is_connection_error(&closed_err));
+
+        let pool_err: anyhow::Error =
+            mysql_async::Error::Driver(mysql_async::DriverError::PoolDisconnected).into();
+        assert!(is_connection_error(&pool_err));
+
+        let ssh_err = anyhow!("SSH tunnel process exited (status: 255)");
+        assert!(is_connection_error(&ssh_err));
+
+        let other_err = anyhow!("Syntax error near SELECT");
+        assert!(!is_connection_error(&other_err));
     }
 }

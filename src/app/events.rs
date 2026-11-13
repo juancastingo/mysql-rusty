@@ -120,13 +120,21 @@ impl MysqlRustyApp {
                     );
                     self.schemas.insert(schema.name.clone(), schema);
                 }
-                AsyncEvent::QueryFinished { tab_id, result } => {
+                AsyncEvent::QueryFinished {
+                    tab_id,
+                    result,
+                    is_connection_error,
+                } => {
                     self.bottom_tab = BottomTab::ResultsGrid;
+                    let mut should_auto_retry = false;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.is_running = false;
                         tab.task_abort_handle = None;
                         match result {
                             Ok(res) => {
+                                self.connection_lost = None;
+                                self.pending_retry_query = None;
+                                self.auto_retry_attempted = false;
                                 let upper_sql = res
                                     .sql
                                     .trim()
@@ -175,15 +183,49 @@ impl MysqlRustyApp {
                                 tab.current_page = 0;
                             }
                             Err(err) => {
-                                self.status_banner = format!("Query failed: {err}");
+                                if is_connection_error {
+                                    if !self.auto_retry_attempted
+                                        && !crate::syntax::is_write_query(&tab.sql)
+                                    {
+                                        self.auto_retry_attempted = true;
+                                        let max_rows = if self.config.query.max_rows > 0 {
+                                            Some(self.config.query.max_rows)
+                                        } else {
+                                            None
+                                        };
+                                        self.pending_retry_query =
+                                            Some((tab.id.clone(), tab.sql.clone(), max_rows));
+                                        self.connection_lost = Some(err.clone());
+                                        self.status_banner =
+                                            "Connection lost — attempting auto-reconnect..."
+                                                .to_string();
+                                        should_auto_retry = true;
+                                    } else {
+                                        self.connection_lost = Some(err.clone());
+                                        self.status_banner = format!("Connection lost: {err}");
+                                    }
+                                } else {
+                                    self.status_banner = format!("Query failed: {err}");
+                                }
                                 tab.last_error = Some(err);
                                 tab.last_result = None;
                                 tab.multi_results.clear();
                             }
                         }
                     }
+                    if should_auto_retry {
+                        self.reconnect_active_session();
+                    }
                 }
-                AsyncEvent::MultiQueryFinished { tab_id, results } => {
+                AsyncEvent::MultiQueryFinished {
+                    tab_id,
+                    results,
+                    is_connection_error,
+                } => {
+                    if is_connection_error {
+                        self.connection_lost =
+                            Some("Connection lost during multi-query execution".to_string());
+                    }
                     self.bottom_tab = BottomTab::ResultsGrid;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.is_running = false;
@@ -486,6 +528,43 @@ impl MysqlRustyApp {
                     }
                     Err(e) => {
                         self.status_banner = format!("Failed to delete rows: {e}");
+                    }
+                },
+                AsyncEvent::KeepaliveResult(res) => match res {
+                    Ok(()) => {
+                        self.connection_lost = None;
+                    }
+                    Err(err) => {
+                        self.connection_lost = Some(err.clone());
+                        self.status_banner = format!("Connection lost: {err}");
+                    }
+                },
+                AsyncEvent::Reconnected(res) => match res {
+                    Ok((profile_id, session)) => {
+                        if self.active_profile_id.as_deref() == Some(profile_id.as_str()) {
+                            self.active_session = Some(session.clone());
+                        }
+                        if let Some(ws) = self
+                            .open_workspaces
+                            .iter_mut()
+                            .find(|w| w.profile_id == profile_id)
+                        {
+                            ws.session = session;
+                        }
+                        self.connection_lost = None;
+                        self.last_keepalive_ping = std::time::Instant::now();
+                        self.status_banner = "Reconnected.".to_string();
+                        if let Some((tab_id, sql, max_rows)) = self.pending_retry_query.take()
+                            && let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id)
+                        {
+                            self.active_tab_idx = idx;
+                            self.execute_sql_with_limit(sql, max_rows);
+                        }
+                    }
+                    Err(err) => {
+                        self.connection_lost = Some(err.clone());
+                        self.pending_retry_query = None;
+                        self.status_banner = format!("Reconnect failed: {err}");
                     }
                 },
             }
