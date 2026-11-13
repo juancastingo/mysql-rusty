@@ -461,6 +461,11 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn execute_sql_forced(&mut self, sql: String) {
+        let max_rows = Some(self.config.query.max_rows);
+        self.execute_sql_with_limit(sql, max_rows);
+    }
+
+    pub(crate) fn execute_sql_with_limit(&mut self, sql: String, max_rows: Option<usize>) {
         let Some(session) = self.active_session.clone() else {
             return;
         };
@@ -492,11 +497,12 @@ impl MysqlRustyApp {
                 stmt: &str,
                 schema: Option<&DatabaseSchema>,
                 timeout_secs: u64,
+                max_rows: Option<usize>,
             ) -> Result<QueryResult, String> {
                 if timeout_secs > 0 {
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(timeout_secs),
-                        session.execute_query(db, stmt, schema),
+                        session.execute_query(db, stmt, schema, max_rows),
                     )
                     .await
                     {
@@ -512,7 +518,7 @@ impl MysqlRustyApp {
                     }
                 } else {
                     session
-                        .execute_query(db, stmt, schema)
+                        .execute_query(db, stmt, schema, max_rows)
                         .await
                         .map_err(|e| format!("{e:#}"))
                 }
@@ -521,14 +527,22 @@ impl MysqlRustyApp {
             if statements.len() > 1 {
                 let mut results = Vec::with_capacity(statements.len());
                 for stmt in statements {
-                    let res =
-                        run_with_timeout(&session, &db, &stmt, schema.as_ref(), timeout_secs).await;
+                    let res = run_with_timeout(
+                        &session,
+                        &db,
+                        &stmt,
+                        schema.as_ref(),
+                        timeout_secs,
+                        max_rows,
+                    )
+                    .await;
                     results.push(res);
                 }
                 let _ = tx.send(AsyncEvent::MultiQueryFinished { tab_id, results });
             } else {
                 let res =
-                    run_with_timeout(&session, &db, &sql, schema.as_ref(), timeout_secs).await;
+                    run_with_timeout(&session, &db, &sql, schema.as_ref(), timeout_secs, max_rows)
+                        .await;
                 let _ = tx.send(AsyncEvent::QueryFinished {
                     tab_id,
                     result: res,

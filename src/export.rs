@@ -747,6 +747,7 @@ mod tests {
             editable_table: None,
             primary_key_column: None,
             status_message: "OK".to_string(),
+            truncated: false,
         };
 
         let md = to_markdown_table(&q_res);
@@ -779,6 +780,7 @@ mod tests {
             editable_table: None,
             primary_key_column: None,
             status_message: "OK".to_string(),
+            truncated: false,
         };
 
         assert_eq!(format_column_as_sql_in(&result, 0, &[0, 1, 2]), "IN (1, 2)");

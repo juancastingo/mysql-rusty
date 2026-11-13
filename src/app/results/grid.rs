@@ -30,6 +30,7 @@ impl MysqlRustyApp {
         let mut open_related_query: Option<(String, String)> = None;
         let mut duplicate_insert_tab: Option<(String, String)> = None;
         let mut copy_banner_msg: Option<String> = None;
+        let mut load_all_sql: Option<String> = None;
         let fk_cache_snapshot = self.fk_lookup_cache.clone();
         let pending_edits;
         let pending_deletes;
@@ -134,6 +135,44 @@ impl MysqlRustyApp {
                     Self::render_multi_results_split_view(ui, tab);
                     return;
                 }
+            }
+
+            if result.truncated {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(66, 46, 10))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(234, 179, 8)))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Showing first {} rows (result truncated at max_rows = {})",
+                                    result.rows.len(),
+                                    result.rows.len()
+                                ))
+                                .color(Color32::from_rgb(253, 224, 71))
+                                .strong(),
+                            );
+                            if tab.confirm_load_all {
+                                ui.label(
+                                    RichText::new("This may use a lot of memory.")
+                                        .color(Color32::from_rgb(254, 240, 138)),
+                                );
+                                if ui.small_button("Confirm Load All").clicked() {
+                                    tab.confirm_load_all = false;
+                                    load_all_sql = Some(result.sql.clone());
+                                }
+                                if ui.small_button("Cancel").clicked() {
+                                    tab.confirm_load_all = false;
+                                }
+                            } else if ui.small_button("Load all rows").clicked() {
+                                tab.confirm_load_all = true;
+                            }
+                            ui.label(RichText::new("Tip: add a LIMIT clause").weak().size(11.5));
+                        });
+                    });
+                ui.add_space(4.0);
             }
 
             // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
@@ -273,29 +312,49 @@ impl MysqlRustyApp {
                 if ui.small_button("Copy Markdown").clicked() {
                     let md = to_markdown_table(&result);
                     ui.ctx().copy_text(md);
+                    if result.truncated {
+                        copy_banner_msg = Some(format!(
+                            "Copied Markdown. Warning: Export contains only the first {} rows.",
+                            result.rows.len()
+                        ));
+                    }
                 }
                 if ui.small_button("Export CSV").clicked()
-                    && let Ok(csv_data) = to_csv_string(&result) {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name("query_results.csv")
-                            .save_file()
-                        {
-                            let _ = save_string_to_path(&path, &csv_data);
-                        } else {
-                            ui.ctx().copy_text(csv_data);
-                        }
+                    && let Ok(csv_data) = to_csv_string(&result)
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("query_results.csv")
+                        .save_file()
+                    {
+                        let _ = save_string_to_path(&path, &csv_data);
+                    } else {
+                        ui.ctx().copy_text(csv_data);
                     }
+                    if result.truncated {
+                        copy_banner_msg = Some(format!(
+                            "Exported CSV. Warning: Export contains only the first {} rows.",
+                            result.rows.len()
+                        ));
+                    }
+                }
                 if ui.small_button("Export JSON").clicked()
-                    && let Ok(json_data) = to_json_string(&result) {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name("query_results.json")
-                            .save_file()
-                        {
-                            let _ = save_string_to_path(&path, &json_data);
-                        } else {
-                            ui.ctx().copy_text(json_data);
-                        }
+                    && let Ok(json_data) = to_json_string(&result)
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("query_results.json")
+                        .save_file()
+                    {
+                        let _ = save_string_to_path(&path, &json_data);
+                    } else {
+                        ui.ctx().copy_text(json_data);
                     }
+                    if result.truncated {
+                        copy_banner_msg = Some(format!(
+                            "Exported JSON. Warning: Export contains only the first {} rows.",
+                            result.rows.len()
+                        ));
+                    }
+                }
                 if ui.small_button("Copy SQL INSERTs").clicked() {
                     let tbl = result
                         .editable_table
@@ -303,6 +362,12 @@ impl MysqlRustyApp {
                         .unwrap_or("exported_rows");
                     let inserts = to_sql_inserts(&result, tbl);
                     ui.ctx().copy_text(inserts);
+                    if result.truncated {
+                        copy_banner_msg = Some(format!(
+                            "Copied SQL INSERTs. Warning: Export contains only the first {} rows.",
+                            result.rows.len()
+                        ));
+                    }
                 }
             });
         });
@@ -1197,6 +1262,9 @@ impl MysqlRustyApp {
         if let Some(msg) = copy_banner_msg {
             self.status_banner = msg;
         }
+        if let Some(sql) = load_all_sql {
+            self.execute_sql_with_limit(sql, None);
+        }
         if let Some((title, sql)) = duplicate_insert_tab {
             self.tabs.push(QueryTab::new(title, sql));
             self.active_tab_idx = self.tabs.len() - 1;
@@ -1209,7 +1277,7 @@ impl MysqlRustyApp {
             let sql = format!("SELECT * FROM `{ref_table}` ORDER BY `{ref_col}` LIMIT 100;");
             self.rt.spawn(async move {
                 let res = session
-                    .execute_query(&db, &sql, None)
+                    .execute_query(&db, &sql, None, None)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(AsyncEvent::FkLookupLoaded {
@@ -1236,7 +1304,7 @@ impl MysqlRustyApp {
                     };
                     let sql =
                         format!("DELETE FROM `{table_name}` WHERE `{pk_col}` = {lit} LIMIT 1;");
-                    match session.execute_query(&db, &sql, None).await {
+                    match session.execute_query(&db, &sql, None, None).await {
                         Ok(r) => total_deleted += r.affected_rows.max(1),
                         Err(e) => {
                             err_out = Some(format!("{e:#}"));

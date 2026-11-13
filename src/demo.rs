@@ -613,6 +613,7 @@ fn demo_users_table() -> QueryResult {
         editable_table: Some("users".into()),
         primary_key_column: Some("id".into()),
         status_message: "6 rows returned in 2 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -677,6 +678,7 @@ fn demo_products_table() -> QueryResult {
         editable_table: Some("products".into()),
         primary_key_column: Some("id".into()),
         status_message: "5 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -742,6 +744,7 @@ fn demo_orders_table() -> QueryResult {
         editable_table: Some("orders".into()),
         primary_key_column: Some("id".into()),
         status_message: "6 rows returned in 2 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -793,6 +796,7 @@ fn demo_order_items_table() -> QueryResult {
         editable_table: Some("order_items".into()),
         primary_key_column: Some("id".into()),
         status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -837,6 +841,7 @@ fn demo_payments_table() -> QueryResult {
         editable_table: Some("payments".into()),
         primary_key_column: Some("id".into()),
         status_message: "3 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -883,6 +888,7 @@ fn demo_events_daily_table() -> QueryResult {
         editable_table: Some("events_daily".into()),
         primary_key_column: Some("event_date".into()),
         status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -915,6 +921,7 @@ fn demo_pageviews_summary_table() -> QueryResult {
         editable_table: Some("pageviews_summary".into()),
         primary_key_column: Some("path".into()),
         status_message: "3 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -961,6 +968,7 @@ fn demo_tables_table() -> QueryResult {
         editable_table: None,
         primary_key_column: None,
         status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
@@ -1007,10 +1015,30 @@ fn demo_columns_table() -> QueryResult {
         editable_table: None,
         primary_key_column: None,
         status_message: "4 rows returned in 1 ms (Sandbox)".into(),
+        truncated: false,
     }
 }
 
 pub(crate) fn execute_demo_query(
+    store: &DemoStore,
+    database: &str,
+    sql: &str,
+    schema: Option<&DatabaseSchema>,
+    max_rows: Option<usize>,
+) -> Result<QueryResult> {
+    let mut res = execute_demo_query_inner(store, database, sql, schema)?;
+    if let Some(cap) = max_rows
+        && res.rows.len() > cap
+    {
+        res.rows.truncate(cap);
+        res.truncated = true;
+        res.status_message =
+            format!("Showing first {cap} rows (result truncated at max_rows = {cap})");
+    }
+    Ok(res)
+}
+
+fn execute_demo_query_inner(
     store: &DemoStore,
     database: &str,
     sql: &str,
@@ -1035,6 +1063,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: "3 databases discovered in 1 ms (Sandbox)".into(),
+            truncated: false,
         });
     }
 
@@ -1060,6 +1089,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: "Tables listed in 1 ms (Sandbox)".into(),
+            truncated: false,
         });
     }
 
@@ -1078,6 +1108,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: format!("Database changed to `{target}` (Sandbox)"),
+            truncated: false,
         });
     }
 
@@ -1093,6 +1124,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: "1 row in set (Sandbox)".into(),
+            truncated: false,
         });
     }
 
@@ -1138,6 +1170,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: "EXPLAIN execution plan generated in 1 ms (Sandbox)".into(),
+            truncated: false,
         });
     }
 
@@ -1161,6 +1194,7 @@ pub(crate) fn execute_demo_query(
             editable_table: None,
             primary_key_column: None,
             status_message: "DDL fetched in 1 ms (Sandbox)".into(),
+            truncated: false,
         });
     }
 
@@ -1196,6 +1230,8 @@ pub(crate) fn execute_demo_query(
                 "1 row in set at {} (Sandbox)",
                 chrono::Local::now().format("%H:%M:%S")
             ),
+
+            truncated: false,
         });
     }
 
@@ -1246,6 +1282,8 @@ pub(crate) fn execute_demo_query(
                 "3 aggregated rows in 3 ms at {} (Sandbox)",
                 chrono::Local::now().format("%H:%M:%S")
             ),
+
+            truncated: false,
         });
     }
 
@@ -1283,6 +1321,8 @@ pub(crate) fn execute_demo_query(
                         "1 row in set at {} (Sandbox)",
                         chrono::Local::now().format("%H:%M:%S")
                     ),
+
+                    truncated: false,
                 });
             }
         }
@@ -1357,6 +1397,8 @@ pub(crate) fn execute_demo_query(
                 "1 row affected at {} (Sandbox)",
                 chrono::Local::now().format("%H:%M:%S")
             ),
+
+            truncated: false,
         });
     }
 
@@ -1378,6 +1420,7 @@ pub(crate) fn execute_demo_query(
                 "Query OK, 0 rows affected at {} (Sandbox)",
                 chrono::Local::now().format("%H:%M:%S")
             ),
+            truncated: false,
         });
     }
 
@@ -1393,4 +1436,30 @@ pub(crate) fn execute_demo_query(
             _ => "users, products, orders, order_items, payments",
         }
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_demo_query_respects_max_rows_and_sets_truncated() {
+        let store = DemoStore::default();
+        let full = execute_demo_query(&store, "ecommerce_prod", "SELECT * FROM users", None, None)
+            .expect("full demo query");
+        assert!(!full.truncated);
+        assert!(full.rows.len() > 2);
+
+        let capped = execute_demo_query(
+            &store,
+            "ecommerce_prod",
+            "SELECT * FROM users",
+            None,
+            Some(2),
+        )
+        .expect("capped demo query");
+        assert!(capped.truncated);
+        assert_eq!(capped.rows.len(), 2);
+        assert!(capped.status_message.contains("max_rows = 2"));
+    }
 }

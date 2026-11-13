@@ -236,7 +236,7 @@ impl MysqlRustyApp {
                         self.rt.spawn(async move {
                             let res = match ActiveSession::connect(test_prof).await {
                                 Ok(session) => {
-                                    match session.execute_query("", "SELECT VERSION(), CURRENT_USER();", None).await {
+                                    match session.execute_query("", "SELECT VERSION(), CURRENT_USER();", None, None).await {
                                         Ok(qr) => {
                                             let v = qr.rows.first().and_then(|r| r.first()).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
                                             let u = qr.rows.first().and_then(|r| r.get(1)).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());

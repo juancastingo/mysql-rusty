@@ -133,5 +133,6 @@ pub fn sample_result() -> QueryResult {
         editable_table: Some("users".to_string()),
         primary_key_column: Some("id".to_string()),
         status_message: "3 rows returned in 5 ms".to_string(),
+        truncated: false,
     }
 }

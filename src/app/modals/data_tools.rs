@@ -546,11 +546,11 @@ impl MysqlRustyApp {
                 let sql_l = format!("SELECT * FROM `{src_db}`.`{src_tbl}` LIMIT 500;");
                 let sql_r = format!("SELECT * FROM `{tgt_db}`.`{tgt_tbl}` LIMIT 500;");
                 let left = session
-                    .execute_query(&src_db, &sql_l, None)
+                    .execute_query(&src_db, &sql_l, None, None)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let right = session
-                    .execute_query(&tgt_db, &sql_r, None)
+                    .execute_query(&tgt_db, &sql_r, None, None)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(AsyncEvent::DataDiffLoaded {
@@ -697,7 +697,7 @@ impl MysqlRustyApp {
                     }
                     let data_res = if inc_data {
                         let sql = format!("SELECT * FROM `{db}`.`{}` LIMIT 1000;", tbl.name);
-                        match session.execute_query(&db, &sql, None).await {
+                        match session.execute_query(&db, &sql, None, None).await {
                             Ok(r) => Some(r),
                             Err(e) => {
                                 err_msg = Some(format!("{e:#}"));
@@ -741,7 +741,7 @@ impl MysqlRustyApp {
                 let mut executed = 0usize;
                 let mut err_out = None;
                 for stmt in stmts {
-                    if let Err(e) = session.execute_query(&db, &stmt, None).await {
+                    if let Err(e) = session.execute_query(&db, &stmt, None, None).await {
                         err_out = Some(format!("{e:#}"));
                         break;
                     }

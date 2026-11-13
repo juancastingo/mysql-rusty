@@ -231,6 +231,7 @@ pub struct QueryResult {
     pub editable_table: Option<String>,
     pub primary_key_column: Option<String>,
     pub status_message: String,
+    pub truncated: bool,
 }
 
 pub struct SshTunnelGuard {
@@ -677,6 +678,7 @@ impl ActiveSession {
         database: &str,
         sql: &str,
         schema: Option<&DatabaseSchema>,
+        max_rows: Option<usize>,
     ) -> Result<QueryResult> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {
@@ -687,7 +689,9 @@ impl ActiveSession {
         tracing::debug!(database, sql_preview = %sql_preview, "Executing SQL query");
 
         match self {
-            Self::DemoSandbox { store, .. } => execute_demo_query(store, database, trimmed, schema),
+            Self::DemoSandbox { store, .. } => {
+                execute_demo_query(store, database, trimmed, schema, max_rows)
+            }
             Self::RealMysql {
                 pool,
                 editor_conn,
@@ -745,18 +749,34 @@ impl ActiveSession {
                     .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
                     .unwrap_or_default();
 
-                let raw_rows: Vec<Row> = match result.collect().await {
-                    Ok(rows) => rows,
-                    Err(err) => {
-                        drop(result);
-                        if Self::is_connection_error(&err) {
-                            *guard = None;
-                            *editor_current_db.lock().await = None;
-                            editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                let mut rows: Vec<Vec<CellValue>> = Vec::new();
+                let mut truncated = false;
+                loop {
+                    match result.next().await {
+                        Ok(Some(mut row)) => {
+                            if max_rows.is_some_and(|cap| rows.len() >= cap) {
+                                truncated = true;
+                                continue;
+                            }
+                            let mut cells = Vec::with_capacity(columns.len());
+                            for idx in 0..columns.len() {
+                                let val = row.take::<Value, _>(idx).unwrap_or(Value::NULL);
+                                cells.push(CellValue::from_mysql_value(val));
+                            }
+                            rows.push(cells);
                         }
-                        return Err(err.into());
+                        Ok(None) => break,
+                        Err(err) => {
+                            drop(result);
+                            if Self::is_connection_error(&err) {
+                                *guard = None;
+                                *editor_current_db.lock().await = None;
+                                editor_conn_id.store(0, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            return Err(err.into());
+                        }
                     }
-                };
+                }
                 let affected = result.affected_rows();
                 let last_id = result.last_insert_id();
                 drop(result);
@@ -765,25 +785,22 @@ impl ActiveSession {
                 tracing::info!(
                     database,
                     duration_ms,
-                    row_count = raw_rows.len(),
+                    row_count = rows.len(),
                     affected_rows = affected,
+                    truncated,
                     "SQL query finished"
                 );
-
-                let mut rows = Vec::with_capacity(raw_rows.len());
-                for mut row in raw_rows {
-                    let mut cells = Vec::with_capacity(columns.len());
-                    for idx in 0..columns.len() {
-                        let val = row.take::<Value, _>(idx).unwrap_or(Value::NULL);
-                        cells.push(CellValue::from_mysql_value(val));
-                    }
-                    rows.push(cells);
-                }
 
                 let (editable_table, primary_key_column) =
                     detect_editable_table_and_pk(trimmed, &columns, schema);
 
-                let status_message = if !columns.is_empty() {
+                let status_message = if truncated {
+                    format!(
+                        "Showing first {} rows (result truncated at max_rows = {})",
+                        rows.len(),
+                        rows.len()
+                    )
+                } else if !columns.is_empty() {
                     format!("{} rows returned in {} ms", rows.len(), duration_ms)
                 } else {
                     format!(
@@ -803,6 +820,7 @@ impl ActiveSession {
                     editable_table,
                     primary_key_column,
                     status_message,
+                    truncated,
                 })
             }
         }
@@ -939,6 +957,7 @@ impl ActiveSession {
                     editable_table: None,
                     primary_key_column: None,
                     status_message: "3 processes active (Sandbox)".to_string(),
+                    truncated: false,
                 })
             }
             Self::RealMysql { pool, .. } => {
@@ -975,6 +994,7 @@ impl ActiveSession {
                     editable_table: None,
                     primary_key_column: None,
                     status_message: format!("Process list retrieved in {duration_ms} ms"),
+                    truncated: false,
                 })
             }
         }

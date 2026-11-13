@@ -68,7 +68,7 @@ async fn it_introspect_database_pk_fk_indexes() {
     let db_name = unique_db_name();
 
     session
-        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None)
+        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None, None)
         .await
         .expect("create db");
 
@@ -76,6 +76,7 @@ async fn it_introspect_database_pk_fk_indexes() {
         .execute_query(
             &db_name,
             "CREATE TABLE users (id INT AUTO_INCREMENT PRIMARY KEY, email VARCHAR(255) NOT NULL, INDEX idx_email (email)) ENGINE=InnoDB",
+            None,
             None,
         )
         .await
@@ -85,6 +86,7 @@ async fn it_introspect_database_pk_fk_indexes() {
         .execute_query(
             &db_name,
             "CREATE TABLE orders (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id)) ENGINE=InnoDB",
+            None,
             None,
         )
         .await
@@ -121,7 +123,12 @@ async fn it_introspect_database_pk_fk_indexes() {
     );
 
     let _ = session
-        .execute_query("", &format!("DROP DATABASE IF EXISTS `{db_name}`"), None)
+        .execute_query(
+            "",
+            &format!("DROP DATABASE IF EXISTS `{db_name}`"),
+            None,
+            None,
+        )
         .await;
 }
 
@@ -136,7 +143,7 @@ async fn it_execute_query_types_and_insert_metadata() {
     let db_name = unique_db_name();
 
     session
-        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None)
+        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None, None)
         .await
         .expect("create db");
 
@@ -157,6 +164,7 @@ async fn it_execute_query_types_and_insert_metadata() {
                 n_v VARCHAR(20) NULL
             )",
             None,
+            None,
         )
         .await
         .expect("create type_test");
@@ -167,6 +175,7 @@ async fn it_execute_query_types_and_insert_metadata() {
             "INSERT INTO type_test (big_u, dec_v, dbl_v, txt, d_v, dt_v, t_v, j_v, b_v, n_v)
              VALUES (18446744073709551615, 12.34, 3.5, 'hello 🦀', '2026-01-15', '2026-01-15 10:20:30.123456', '10:20:30', '{\"a\":1}', X'DEADBEEF', NULL)",
             None,
+            None,
         )
         .await
         .expect("insert row");
@@ -174,7 +183,7 @@ async fn it_execute_query_types_and_insert_metadata() {
     assert_eq!(ins.last_insert_id, Some(1));
 
     let res = session
-        .execute_query(&db_name, "SELECT * FROM type_test", None)
+        .execute_query(&db_name, "SELECT * FROM type_test", None, None)
         .await
         .expect("select type_test");
     assert_eq!(res.columns.len(), 11);
@@ -184,7 +193,12 @@ async fn it_execute_query_types_and_insert_metadata() {
     assert!(res.rows[0][4].display_text().contains('🦀'));
 
     let _ = session
-        .execute_query("", &format!("DROP DATABASE IF EXISTS `{db_name}`"), None)
+        .execute_query(
+            "",
+            &format!("DROP DATABASE IF EXISTS `{db_name}`"),
+            None,
+            None,
+        )
         .await;
 }
 
@@ -199,13 +213,14 @@ async fn it_apply_cell_edits_and_quote_roundtrip() {
     let db_name = unique_db_name();
 
     session
-        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None)
+        .execute_query("", &format!("CREATE DATABASE `{db_name}`"), None, None)
         .await
         .expect("create db");
     session
         .execute_query(
             &db_name,
             "CREATE TABLE items (id INT AUTO_INCREMENT PRIMARY KEY, label VARCHAR(100))",
+            None,
             None,
         )
         .await
@@ -214,6 +229,7 @@ async fn it_apply_cell_edits_and_quote_roundtrip() {
         .execute_query(
             &db_name,
             "INSERT INTO items (label) VALUES ('initial')",
+            None,
             None,
         )
         .await
@@ -237,13 +253,18 @@ async fn it_apply_cell_edits_and_quote_roundtrip() {
     assert_eq!(affected, 1);
 
     let res = session
-        .execute_query(&db_name, "SELECT label FROM items WHERE id = 1", None)
+        .execute_query(&db_name, "SELECT label FROM items WHERE id = 1", None, None)
         .await
         .expect("select updated");
     assert_eq!(res.rows[0][0].display_text(), "O'Brien");
 
     let _ = session
-        .execute_query("", &format!("DROP DATABASE IF EXISTS `{db_name}`"), None)
+        .execute_query(
+            "",
+            &format!("DROP DATABASE IF EXISTS `{db_name}`"),
+            None,
+            None,
+        )
         .await;
 }
 
@@ -278,7 +299,7 @@ async fn it_list_processes_kill_query_and_server_info() {
     let start = Instant::now();
     let handle = tokio::spawn(async move {
         let _ = session_clone
-            .execute_query("", "SELECT SLEEP(10)", None)
+            .execute_query("", "SELECT SLEEP(10)", None, None)
             .await;
     });
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

@@ -256,6 +256,7 @@ mod tests {
             editable_table: Some("users".to_string()),
             primary_key_column: Some("id".to_string()),
             status_message: "OK".to_string(),
+            truncated: false,
         };
 
         let right = QueryResult {
@@ -278,6 +279,7 @@ mod tests {
             editable_table: Some("users".to_string()),
             primary_key_column: Some("id".to_string()),
             status_message: "OK".to_string(),
+            truncated: false,
         };
 
         let json_one = format_rows_as_json(&left, &[0]);
@@ -373,6 +375,7 @@ mod tests {
             editable_table: left.editable_table.clone(),
             primary_key_column: left.primary_key_column.clone(),
             status_message: String::new(),
+            truncated: false,
         };
 
         let report = compute_data_diff(&left, &right, 0);
