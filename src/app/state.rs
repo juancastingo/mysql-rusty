@@ -88,6 +88,10 @@ pub enum AsyncEvent {
         tab_id: String,
         result: Result<crate::ai::QueryOptimizationReport, String>,
     },
+    MockFkSamplesLoaded {
+        table_name: String,
+        samples: Result<HashMap<String, Vec<String>>, String>,
+    },
 }
 
 pub struct RoutineCallModalState {

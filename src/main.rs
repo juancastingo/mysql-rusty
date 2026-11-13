@@ -12,6 +12,7 @@ mod export;
 mod find;
 mod history;
 mod mcp;
+mod mock_gen;
 mod schema_diff;
 mod sql_reader;
 mod syntax;

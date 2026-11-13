@@ -318,6 +318,7 @@ pub fn to_markdown_table(result: &QueryResult) -> String {
 
 /// Intelligently generates realistic random seed data (multi-row INSERT statements)
 /// based on column names and SQL types.
+#[cfg(test)]
 pub fn generate_mock_data_sql(table: &TableSchema, count: usize) -> String {
     let clean_table = table.name.trim().trim_matches('`');
     let insert_cols: Vec<_> = table

@@ -37,7 +37,7 @@ use crate::er_diagram::ErCanvasState;
 use crate::export::{
     format_column_as_js_array, format_column_as_sql_in, format_rows_as_json,
     format_rows_as_sql_insert, format_rows_as_sql_update, format_table_create_ddl,
-    generate_csv_import_sql, generate_mock_data_sql, generate_table_dump_sql, inspect_csv_content,
+    generate_csv_import_sql, generate_table_dump_sql, inspect_csv_content,
     parse_csv_to_batch_insert, save_string_to_path, to_csv_string, to_json_string,
     to_markdown_table, to_sql_inserts,
 };
@@ -112,6 +112,8 @@ pub struct MysqlRustyApp {
     show_mock_data_modal: bool,
     mock_data_target_table: Option<String>,
     mock_data_row_count: usize,
+    mock_gen_config: Option<crate::mock_gen::MockGenConfig>,
+    mock_gen_loading_fks: bool,
 
     // Saved Queries & History filter
     new_snippet_title: String,
@@ -340,6 +342,8 @@ impl MysqlRustyApp {
             show_mock_data_modal: false,
             mock_data_target_table: None,
             mock_data_row_count: 25,
+            mock_gen_config: None,
+            mock_gen_loading_fks: false,
 
             new_snippet_title: String::new(),
             new_snippet_desc: String::new(),

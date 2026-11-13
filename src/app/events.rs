@@ -807,6 +807,18 @@ impl MysqlRustyApp {
                         }
                     }
                 }
+                AsyncEvent::MockFkSamplesLoaded {
+                    table_name,
+                    samples,
+                } => {
+                    self.mock_gen_loading_fks = false;
+                    if let Ok(map) = samples
+                        && let Some(cfg) = self.mock_gen_config.as_mut()
+                        && cfg.table_name == table_name
+                    {
+                        cfg.fk_parent_samples = map;
+                    }
+                }
             }
         }
     }
