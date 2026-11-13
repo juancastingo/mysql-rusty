@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod data_diff;
 mod db;
+mod demo;
 mod er_diagram;
 mod export;
 mod schema_diff;
@@ -46,7 +47,8 @@ mod tests {
         clean_inline_completion, compute_heuristic_ghost_completion, compute_local_completions,
         extract_sql_code_block,
     };
-    use crate::db::{build_demo_schema, detect_editable_table_and_pk};
+    use crate::db::detect_editable_table_and_pk;
+    use crate::demo::build_demo_schema;
     use crate::syntax::{extract_statement_at_cursor, format_sql_pretty};
 
     #[test]
