@@ -26,11 +26,29 @@ mysql-rusty/
 └── src/
     ├── main.rs                 # Entrypoint, Tokio runtime setup, and unit tests
     ├── config.rs               # Persistent JSON config (~/.config/mysql-rusty/config.json)
-    ├── db.rs                   # Async MySQL/MariaDB driver, SSH tunnel, schema introspection, Sandbox mode
+    ├── db.rs                   # Async MySQL/MariaDB driver, SSH tunnel, schema introspection
+    ├── demo.rs                 # Built-in Sandbox / Demo data and query engine
     ├── syntax.rs               # SQL lexer, syntax highlighter, formatter, and ghost-text layouter
     ├── ai.rs                   # Schema-aware local autocomplete + LLM/CLI inline & chat engine
     ├── export.rs               # CSV, JSON, and SQL INSERT exporters
-    └── app.rs                  # Main eframe::App state machine, panels, modals, and async event loop
+    ├── schema_diff.rs          # Schema comparison and sync DDL generator
+    ├── data_diff.rs            # Row-level data diffing
+    ├── er_diagram.rs           # Entity-relationship canvas state and renderer
+    ├── table_designer.rs       # Visual table designer and migration DDL generator
+    └── app/
+        ├── mod.rs              # Module declarations, MysqlRustyApp struct, new(), eframe::App impl
+        ├── state.rs            # AsyncEvent, QueryTab, CsvImportWizard, SidebarTab, BottomTab, OpenConnectionWorkspace
+        ├── actions.rs          # Workspace, connection, transaction, and query execution actions
+        ├── events.rs           # AsyncEvent loop handler (process_async_events)
+        ├── chrome.rs           # Open connections bar, top toolbar, and bottom status bar
+        ├── sidebar.rs          # Left sidebar: schema tree, connections, saved queries, history
+        ├── dashboard.rs        # Connections dashboard view
+        ├── editor.rs           # Multi-tab SQL editor workspace and autocomplete popup
+        ├── ai_panel.rs         # Right AI Copilot panel and inline completion trigger
+        ├── admin.rs            # Server Admin tabs (metrics, process list, variables)
+        ├── theme.rs            # Dark theme, color helpers, and formatting utilities
+        ├── modals/             # Modal dialogs (connection, ai_settings, data_tools, table, misc)
+        └── results/            # Results grid, multi-result split view, charts, and execution stats
 ```
 
 ### Golden Rules for Any Model Modifying This Repository

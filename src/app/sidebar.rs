@@ -1,0 +1,916 @@
+use super::*;
+
+impl MysqlRustyApp {
+    pub(crate) fn render_left_sidebar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("left_sidebar")
+            .default_size(280.0)
+            .size_range(220.0..=420.0)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(
+                        &mut self.sidebar_tab,
+                        SidebarTab::Schema,
+                        RichText::new("Schema").size(12.0),
+                    );
+                    ui.selectable_value(
+                        &mut self.sidebar_tab,
+                        SidebarTab::Connections,
+                        RichText::new("Servers").size(12.0),
+                    );
+                    ui.selectable_value(
+                        &mut self.sidebar_tab,
+                        SidebarTab::SavedQueries,
+                        RichText::new("Saved Queries").size(12.0),
+                    );
+                    ui.selectable_value(
+                        &mut self.sidebar_tab,
+                        SidebarTab::History,
+                        RichText::new("History").size(12.0),
+                    );
+                });
+                ui.separator();
+
+                match self.sidebar_tab {
+                    SidebarTab::Schema => self.render_schema_tree(ui),
+                    SidebarTab::Connections => self.render_connections_list(ui),
+                    SidebarTab::SavedQueries => self.render_saved_queries_panel(ui),
+                    SidebarTab::History => self.render_query_history_panel(ui),
+                }
+            });
+    }
+
+    pub(crate) fn render_schema_tree(&mut self, ui: &mut Ui) {
+        if self.active_session.is_none() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(30.0);
+                ui.label(
+                    RichText::new("No database connected").color(Color32::from_rgb(148, 163, 184)),
+                );
+                ui.add_space(8.0);
+                if ui.button("Choose Connection...").clicked() {
+                    self.sidebar_tab = SidebarTab::Connections;
+                }
+            });
+            return;
+        }
+
+        // Database selector and quick switcher
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("DB:").strong());
+            let current_db = if self.active_database.is_empty() {
+                "None"
+            } else {
+                &self.active_database
+            };
+            egui::ComboBox::from_id_salt("sidebar_schema_db_selector")
+                .selected_text(current_db)
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    let dbs = self.databases.clone();
+                    for db in dbs {
+                        let is_sel = self.active_database == db;
+                        if ui.selectable_label(is_sel, &db).clicked() {
+                            self.active_database = db;
+                            self.reload_active_schema();
+                        }
+                    }
+                });
+            if ui
+                .small_button("Refresh")
+                .on_hover_text("Refresh active database schema")
+                .clicked()
+            {
+                self.reload_active_schema();
+            }
+        });
+
+        if self.databases.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                for db in self.databases.clone() {
+                    let is_sel = self.active_database == db;
+                    let text = if is_sel {
+                        RichText::new(format!("[{db}]"))
+                            .strong()
+                            .color(Color32::from_rgb(56, 189, 248))
+                    } else {
+                        RichText::new(db.clone()).weak()
+                    };
+                    if ui.selectable_label(is_sel, text).clicked() {
+                        self.active_database = db;
+                        self.reload_active_schema();
+                    }
+                }
+            });
+        }
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.schema_filter)
+                    .hint_text("Search tables or columns..."),
+            );
+            if ui
+                .small_button("+ New Table")
+                .on_hover_text("Visually design and create a new table")
+                .clicked()
+            {
+                self.table_designer_draft = Some(TableDraft::new_empty("new_table"));
+            }
+            if ui
+                .small_button("📥 Import CSV")
+                .on_hover_text(
+                    "Import a CSV file into a new or existing table with preview and mapping",
+                )
+                .clicked()
+            {
+                self.open_csv_import_dialog();
+            }
+            if ui
+                .small_button("Diff & Sync")
+                .on_hover_text("Compare two schemas and generate DDL synchronization script")
+                .clicked()
+            {
+                self.show_schema_diff_modal = true;
+                self.diff_source_db = self.active_database.clone();
+                self.diff_target_db = self
+                    .databases
+                    .iter()
+                    .find(|d| **d != self.active_database)
+                    .cloned()
+                    .unwrap_or_default();
+                if !self.diff_source_db.is_empty()
+                    && !self.diff_target_db.is_empty()
+                    && let (Some(src), Some(tgt)) = (
+                        self.schemas.get(&self.diff_source_db),
+                        self.schemas.get(&self.diff_target_db),
+                    )
+                {
+                    self.current_diff_report = Some(diff_schemas(src, tgt));
+                }
+            }
+        });
+        ui.add_space(4.0);
+
+        let dbs_list = self.databases.clone();
+        let schemas_snapshot = self.schemas.clone();
+        let filter_lower = self.schema_filter.to_lowercase();
+        let mut pending_sql_action: Option<(String, bool)> = None; // (sql, auto_run)
+        let mut toggle_favorite_table: Option<String> = None;
+        let mut activate_db: Option<String> = None;
+        let mut load_db_schema: Option<String> = None;
+
+        let fav_tables: Vec<String> = self
+            .config
+            .connections
+            .iter()
+            .find(|c| Some(&c.id) == self.active_profile_id.as_ref())
+            .map(|c| c.favorite_tables.clone())
+            .unwrap_or_default();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for db_name in &dbs_list {
+                let is_active_db = self.active_database == *db_name;
+                let db_header_text = if is_active_db {
+                    RichText::new(format!("{db_name} (active)"))
+                        .strong()
+                        .color(Color32::from_rgb(56, 189, 248))
+                } else {
+                    RichText::new(db_name.as_str()).strong()
+                };
+
+                let db_resp = egui::CollapsingHeader::new(db_header_text)
+                    .id_salt(("sidebar_db_tree", db_name))
+                    .default_open(is_active_db)
+                    .show(ui, |ui| {
+                        if !is_active_db
+                            && ui
+                                .small_button("Set Active DB")
+                                .on_hover_text(format!("Switch active database to `{db_name}`"))
+                                .clicked()
+                            {
+                                activate_db = Some(db_name.clone());
+                            }
+
+                        let Some(schema) = schemas_snapshot.get(db_name) else {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Schema not loaded").small().weak());
+                                if ui.small_button("Load").clicked() {
+                                    load_db_schema = Some(db_name.clone());
+                                }
+                            });
+                            return;
+                        };
+
+                        let mut sorted_tables: Vec<&crate::db::TableSchema> =
+                            schema.tables.iter().collect();
+                        sorted_tables.sort_by(|a, b| {
+                            let fa = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&a.name));
+                            let fb = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&b.name));
+                            fb.cmp(&fa).then_with(|| a.name.cmp(&b.name))
+                        });
+
+                        for table in sorted_tables {
+                            let matches_table = filter_lower.is_empty()
+                                || table.name.to_lowercase().contains(&filter_lower)
+                                || table
+                                    .columns
+                                    .iter()
+                                    .any(|c| c.name.to_lowercase().contains(&filter_lower));
+
+                            if !matches_table {
+                                continue;
+                            }
+
+                            let is_fav = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&table.name));
+                            let star_prefix = if is_fav { "★ " } else { "" };
+                            let header_label =
+                                format!("{star_prefix}{} (~{})", table.name, table.approx_rows);
+                            let header_text = if is_fav {
+                                RichText::new(header_label)
+                                    .strong()
+                                    .color(Color32::from_rgb(250, 204, 21))
+                            } else {
+                                RichText::new(header_label).strong()
+                            };
+                            egui::CollapsingHeader::new(header_text)
+                                .id_salt(("sidebar_tbl_tree", db_name, &table.name))
+                                .default_open(is_active_db)
+                                .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let pin_txt = if is_fav { "★ Unpin" } else { "☆ Pin" };
+                            if ui
+                                .small_button(pin_txt)
+                                .on_hover_text("Pin/Unpin favorite table to top of Schema Explorer")
+                                .clicked()
+                            {
+                                toggle_favorite_table = Some(table.name.clone());
+                            }
+                            if ui.small_button("SELECT *").clicked() {
+                                pending_sql_action = Some((
+                                    format!("SELECT * FROM `{}`.`{}` LIMIT 100;", db_name, table.name),
+                                    true,
+                                ));
+                            }
+                            if ui.small_button("DDL").clicked() {
+                                pending_sql_action = Some((
+                                    format!("SHOW CREATE TABLE `{}`.`{}`;", db_name, table.name),
+                                    true,
+                                ));
+                            }
+                            if ui
+                                .small_button("Design Table")
+                                .on_hover_text("Visual table designer to alter columns, indexes, and FKs")
+                                .clicked()
+                            {
+                                self.table_designer_draft = Some(TableDraft::from_table(table));
+                            }
+                            if ui
+                                .small_button("Info")
+                                .on_hover_text("Inspect Columns, Indexes, Foreign Keys, and DDL")
+                                .clicked()
+                            {
+                                self.table_info_modal = Some((db_name.clone(), (*table).clone(), 0));
+                            }
+                            if ui
+                                .small_button("Dup / Trunc")
+                                .on_hover_text("Duplicate structure/data or truncate this table")
+                                .clicked()
+                            {
+                                self.table_action_modal = Some((
+                                    db_name.clone(),
+                                    table.name.clone(),
+                                    format!("{}_copy", table.name),
+                                ));
+                            }
+                            if ui
+                                .small_button("Import CSV")
+                                .on_hover_text("Import CSV file as batch INSERT statements into this table")
+                                .clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("CSV", &["csv", "txt"])
+                                    .pick_file()
+                                    && let Ok(content) = std::fs::read_to_string(&path) {
+                                        match parse_csv_to_batch_insert(&table.name, &content) {
+                                            Ok(batch_sql) => {
+                                                self.tabs.push(QueryTab::new(
+                                                    format!("Import {}", table.name),
+                                                    batch_sql,
+                                                ));
+                                                self.active_tab_idx = self.tabs.len() - 1;
+                                                self.status_banner = format!(
+                                                    "Generated batch INSERT statements from `{}`",
+                                                    path.file_name().unwrap_or_default().to_string_lossy()
+                                                );
+                                            }
+                                            Err(err) => {
+                                                self.status_banner = format!("Failed to parse CSV: {err}");
+                                            }
+                                        }
+                                    }
+                            if ui
+                                .small_button("Mock Data")
+                                .on_hover_text("Generate realistic random seed data for this table")
+                                .clicked()
+                            {
+                                self.mock_data_target_table = Some(table.name.clone());
+                                self.show_mock_data_modal = true;
+                            }
+                            if ui.small_button("Insert Name").clicked() {
+                                pending_sql_action = Some((table.name.clone(), false));
+                            }
+                        });
+
+                        for col in &table.columns {
+                            let icon = if col.is_primary_key { "[PK] " } else { "     " };
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{icon}{}", col.name));
+                                ui.label(
+                                    RichText::new(&col.data_type)
+                                        .color(Color32::from_rgb(100, 116, 139))
+                                        .small(),
+                                );
+                            });
+                        }
+
+                        if !table.foreign_keys.is_empty() {
+                            ui.collapsing(
+                                RichText::new(format!(
+                                    "[FK] Foreign Keys ({})",
+                                    table.foreign_keys.len()
+                                ))
+                                .small(),
+                                |ui| {
+                                    for fk in &table.foreign_keys {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} -> {}.{}",
+                                                fk.column_name,
+                                                fk.referenced_table,
+                                                fk.referenced_column
+                                            ))
+                                            .small(),
+                                        );
+                                    }
+                                },
+                            );
+                        }
+                    });
+                        }
+                    });
+
+                if db_resp.header_response.clicked() && !is_active_db {
+                    activate_db = Some(db_name.clone());
+                }
+            }
+        });
+
+        if let Some(db) = activate_db {
+            self.active_database = db;
+            self.reload_active_schema();
+        } else if let Some(db) = load_db_schema
+            && let Some(session) = self.active_session.clone()
+        {
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                if let Ok(schema) = session.introspect_database(&db).await {
+                    let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
+                }
+            });
+        }
+
+        if let Some(tbl_name) = toggle_favorite_table
+            && let Some(prof) = self
+                .config
+                .connections
+                .iter_mut()
+                .find(|c| Some(&c.id) == self.active_profile_id.as_ref())
+        {
+            if let Some(pos) = prof
+                .favorite_tables
+                .iter()
+                .position(|t| t.eq_ignore_ascii_case(&tbl_name))
+            {
+                prof.favorite_tables.remove(pos);
+            } else {
+                prof.favorite_tables.push(tbl_name);
+            }
+            let _ = self.config.save();
+        }
+
+        if let Some((sql_snippet, run_immediately)) = pending_sql_action {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                if run_immediately {
+                    tab.sql = sql_snippet;
+                } else {
+                    if !tab.sql.ends_with(' ') && !tab.sql.is_empty() {
+                        tab.sql.push(' ');
+                    }
+                    tab.sql.push_str(&sql_snippet);
+                }
+            }
+            if run_immediately {
+                self.execute_current_tab_query(None);
+            }
+        }
+    }
+
+    pub(crate) fn render_connections_list(&mut self, ui: &mut Ui) {
+        if ui.button("+ Add MySQL / MariaDB Profile").clicked() {
+            self.editing_connection = ConnectionProfile::default();
+            self.show_connection_modal = true;
+        }
+        ui.add_space(6.0);
+
+        let profiles = self.config.connections.clone();
+        let mut to_connect = None;
+        let mut to_edit = None;
+        let mut to_delete = None;
+
+        if !self.config.trashed_connections.is_empty() {
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button(format!(
+                        "Recycle Bin ({})",
+                        self.config.trashed_connections.len()
+                    ))
+                    .on_hover_text("View and restore deleted connections")
+                    .clicked()
+                {
+                    self.show_connection_trash_modal = true;
+                }
+            });
+            ui.add_space(4.0);
+        }
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for prof in profiles {
+                let is_active = Some(&prof.id) == self.active_profile_id.as_ref();
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(17, 24, 39))
+                    .stroke(if is_active {
+                        Stroke::new(1.0, Color32::from_rgb(16, 185, 129))
+                    } else {
+                        Stroke::new(1.0, Color32::from_rgb(31, 41, 55))
+                    })
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&prof.name).strong().size(13.0));
+                            let (er, eg, eb) = prof.environment.color_rgb();
+                            ui.colored_label(
+                                Color32::from_rgb(er, eg, eb),
+                                format!("[{}]", prof.environment.label()),
+                            );
+                            if prof.read_only {
+                                ui.colored_label(Color32::from_rgb(251, 146, 60), "[Read-Only]");
+                            }
+                            if is_active {
+                                egui::Frame::new()
+                                    .fill(Color32::from_rgb(6, 78, 59))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(5, 1))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new("ONLINE")
+                                                .size(9.5)
+                                                .color(Color32::from_rgb(52, 211, 153))
+                                                .strong(),
+                                        );
+                                    });
+                            }
+                        });
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new(format!("{}@{}:{}", prof.user, prof.host, prof.port))
+                                .small()
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                        if prof.ssh.enabled {
+                            ui.label(
+                                RichText::new(format!("SSH: {}", prof.ssh.ssh_host))
+                                    .size(10.5)
+                                    .color(Color32::from_rgb(56, 189, 248)),
+                            );
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let conn_label = if is_active { "Reconnect" } else { "Connect" };
+                            let btn =
+                                egui::Button::new(RichText::new(conn_label).size(11.5).strong())
+                                    .fill(if is_active {
+                                        Color32::from_rgb(6, 78, 59)
+                                    } else {
+                                        Color32::from_rgb(2, 132, 199)
+                                    })
+                                    .corner_radius(egui::CornerRadius::same(4));
+                            if ui.add(btn).clicked() {
+                                to_connect = Some(prof.clone());
+                            }
+                            if ui.small_button("Edit").clicked() {
+                                to_edit = Some(prof.clone());
+                            }
+                            if ui.small_button("Delete").clicked() {
+                                to_delete = Some(prof.id.clone());
+                            }
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+        });
+
+        if let Some(p) = to_connect {
+            self.connect_to_profile(p);
+        }
+        if let Some(p) = to_edit {
+            self.editing_connection = p;
+            self.show_connection_modal = true;
+        }
+        if let Some(id) = to_delete {
+            let name = self
+                .config
+                .connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "this connection".to_string());
+            self.pending_delete_connection = Some((id, name));
+        }
+    }
+
+    pub(crate) fn render_saved_queries_panel(&mut self, ui: &mut Ui) {
+        let mut load_sql: Option<String> = None;
+        let mut run_sql_now: Option<String> = None;
+        let mut new_tab_entry: Option<(String, String)> = None;
+        let mut delete_snippet_id: Option<String> = None;
+        let mut export_snippet_sql: Option<(String, String)> = None;
+        let mut rename_snippet: Option<(String, String)> = None;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Saved Queries Library").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("+ Save Active")
+                    .on_hover_text("Directly save active query to library and disk (Ctrl+S)")
+                    .clicked()
+                {
+                    self.save_active_tab_direct();
+                }
+                if ui
+                    .button("Open File...")
+                    .on_hover_text("Open .sql file into a tab (Ctrl+O)")
+                    .clicked()
+                {
+                    self.open_sql_file_dialog();
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        ui.add(
+            egui::TextEdit::singleline(&mut self.snippet_search_filter)
+                .hint_text("Search queries by name, tag, database, or SQL...")
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(4.0);
+
+        let filter = self.snippet_search_filter.to_lowercase();
+        let total_count = self.config.snippets.len();
+
+        if self.config.snippets.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("No saved queries yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("Save Current Query Tab").clicked() {
+                    self.save_active_tab_direct();
+                }
+            });
+            return;
+        }
+
+        ui.label(
+            RichText::new(format!("Showing queries ({} total)", total_count))
+                .small()
+                .weak(),
+        );
+        ui.add_space(2.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for snip in &self.config.snippets {
+                if !filter.is_empty()
+                    && !snip.title.to_lowercase().contains(&filter)
+                    && !snip.sql.to_lowercase().contains(&filter)
+                    && !snip.description.to_lowercase().contains(&filter)
+                    && !snip
+                        .database
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter)
+                {
+                    continue;
+                }
+
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(17, 24, 39))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(31, 41, 55)))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        let is_renaming = self.renaming_snippet_id.as_deref() == Some(&snip.id);
+                        ui.horizontal(|ui| {
+                            if is_renaming {
+                                let edit_res = ui.add(
+                                    egui::TextEdit::singleline(&mut self.rename_snippet_buffer)
+                                        .desired_width(120.0),
+                                );
+                                if edit_res.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter))
+                                {
+                                    rename_snippet =
+                                        Some((snip.id.clone(), self.rename_snippet_buffer.clone()));
+                                }
+                                if ui.small_button("OK").clicked() {
+                                    rename_snippet =
+                                        Some((snip.id.clone(), self.rename_snippet_buffer.clone()));
+                                }
+                                if ui.small_button("Cancel").clicked()
+                                    || ui.input(|i| i.key_pressed(Key::Escape))
+                                {
+                                    self.renaming_snippet_id = None;
+                                }
+                            } else {
+                                let label_res =
+                                    ui.label(RichText::new(&snip.title).strong().size(13.0));
+                                if label_res.double_clicked() {
+                                    self.renaming_snippet_id = Some(snip.id.clone());
+                                    self.rename_snippet_buffer = snip.title.clone();
+                                }
+                                if let Some(db) = &snip.database {
+                                    ui.colored_label(
+                                        Color32::from_rgb(56, 189, 248),
+                                        format!("[{db}]"),
+                                    );
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .small_button("Delete")
+                                            .on_hover_text("Delete saved query")
+                                            .clicked()
+                                        {
+                                            delete_snippet_id = Some(snip.id.clone());
+                                        }
+                                        if ui
+                                            .small_button("Rename")
+                                            .on_hover_text("Rename query (or double-click title)")
+                                            .clicked()
+                                        {
+                                            self.renaming_snippet_id = Some(snip.id.clone());
+                                            self.rename_snippet_buffer = snip.title.clone();
+                                        }
+                                    },
+                                );
+                            }
+                        });
+
+                        if !snip.description.is_empty() {
+                            ui.label(
+                                RichText::new(&snip.description)
+                                    .small()
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                        }
+
+                        let preview_lines: Vec<&str> = snip.sql.lines().take(3).collect();
+                        let preview = preview_lines.join("\n");
+                        ui.label(RichText::new(preview).monospace().small().weak());
+
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .small_button("Open Tab")
+                                .on_hover_text("Open this query in a new editor tab")
+                                .clicked()
+                            {
+                                new_tab_entry = Some((snip.title.clone(), snip.sql.clone()));
+                            }
+                            if ui
+                                .small_button("Run Now")
+                                .on_hover_text("Load and execute immediately")
+                                .clicked()
+                            {
+                                run_sql_now = Some(snip.sql.clone());
+                            }
+                            if ui
+                                .small_button("Paste")
+                                .on_hover_text("Paste into active tab")
+                                .clicked()
+                            {
+                                load_sql = Some(snip.sql.clone());
+                            }
+                            if ui
+                                .small_button("Copy")
+                                .on_hover_text("Copy SQL to clipboard")
+                                .clicked()
+                            {
+                                ui.ctx().copy_text(snip.sql.clone());
+                                self.status_banner = "Copied SQL to clipboard.".to_string();
+                            }
+                            if ui
+                                .small_button("Export .sql")
+                                .on_hover_text("Save query as .sql file on disk")
+                                .clicked()
+                            {
+                                export_snippet_sql = Some((snip.title.clone(), snip.sql.clone()));
+                            }
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+        });
+
+        if let Some((id, new_title)) = rename_snippet {
+            self.rename_saved_query(&id, &new_title);
+            self.renaming_snippet_id = None;
+        }
+
+        if let Some(id) = delete_snippet_id {
+            self.config.snippets.retain(|s| s.id != id);
+            let _ = self.config.save();
+            self.status_banner = "Deleted saved query.".to_string();
+        }
+
+        if let Some((title, sql)) = new_tab_entry {
+            self.tabs.push(QueryTab::new(title, sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        }
+
+        if let Some(sql) = load_sql
+            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+        {
+            tab.sql = sql;
+            tab.is_dirty = true;
+        }
+
+        if let Some(sql) = run_sql_now {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                tab.sql = sql.clone();
+            }
+            self.execute_sql_in_current_tab(sql, None);
+        }
+
+        if let Some((title, sql)) = export_snippet_sql {
+            let filename = format!("{}.sql", title.replace([' ', '/'], "_"));
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(&filename)
+                .add_filter("SQL Files", &["sql"])
+                .save_file()
+            {
+                let _ = std::fs::write(&path, sql);
+                self.status_banner = format!("Exported query to {}", path.display());
+            }
+        }
+    }
+
+    pub(crate) fn render_query_history_panel(&mut self, ui: &mut Ui) {
+        let mut load_sql: Option<String> = None;
+        let mut new_tab_sql: Option<String> = None;
+        let mut clear_all_history = false;
+        let mut save_snippet_from_history: Option<SavedSnippet> = None;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Execution History").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.config.history.is_empty() && ui.small_button("Clear History").clicked() {
+                    clear_all_history = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        ui.add(
+            egui::TextEdit::singleline(&mut self.history_search_filter)
+                .hint_text("Search execution history by SQL or database...")
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(4.0);
+
+        let filter = self.history_search_filter.to_lowercase();
+
+        if self.config.history.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("No executed queries recorded yet.").weak());
+            });
+            return;
+        }
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for entry in self.config.history.iter().rev() {
+                if !filter.is_empty()
+                    && !entry.sql.to_lowercase().contains(&filter)
+                    && !entry.database.to_lowercase().contains(&filter)
+                {
+                    continue;
+                }
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(15, 23, 42))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(30, 41, 59)))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&entry.timestamp).small().weak());
+                            if !entry.database.is_empty() {
+                                ui.colored_label(
+                                    Color32::from_rgb(56, 189, 248),
+                                    format!("[{}]", entry.database),
+                                );
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} rows • {} ms",
+                                    entry.row_count, entry.duration_ms
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(52, 211, 153)),
+                            );
+                        });
+                        ui.label(RichText::new(&entry.sql).monospace().small());
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Reuse SQL").clicked() {
+                                load_sql = Some(entry.sql.clone());
+                            }
+                            if ui.small_button("Open in Tab").clicked() {
+                                new_tab_sql = Some(entry.sql.clone());
+                            }
+                            if ui
+                                .small_button("Save to Library")
+                                .on_hover_text("Save query into Library")
+                                .clicked()
+                            {
+                                let title = entry
+                                    .sql
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("Historic Query")
+                                    .trim()
+                                    .chars()
+                                    .take(40)
+                                    .collect::<String>();
+                                let clean_title = if title.is_empty() {
+                                    "Historic Query".to_string()
+                                } else {
+                                    title
+                                };
+                                let new_id = uuid::Uuid::new_v4().to_string();
+                                save_snippet_from_history = Some(SavedSnippet {
+                                    id: new_id,
+                                    title: clean_title,
+                                    sql: entry.sql.clone(),
+                                    database: if entry.database.is_empty() {
+                                        None
+                                    } else {
+                                        Some(entry.database.clone())
+                                    },
+                                    description: format!("Executed on {}", entry.timestamp),
+                                    created_at: entry.timestamp.clone(),
+                                });
+                            }
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+        });
+
+        if let Some(snip) = save_snippet_from_history {
+            let title = snip.title.clone();
+            self.config.snippets.push(snip);
+            let _ = self.config.save();
+            self.status_banner = format!("Saved '{title}' to library.");
+        }
+
+        if clear_all_history {
+            self.config.history.clear();
+            let _ = self.config.save();
+            self.status_banner = "Query history cleared.".to_string();
+        }
+
+        if let Some(sql) = load_sql
+            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+        {
+            tab.sql = sql;
+            tab.is_dirty = true;
+        }
+
+        if let Some(sql) = new_tab_sql {
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Query {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+        }
+    }
+}

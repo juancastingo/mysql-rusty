@@ -1,0 +1,213 @@
+use super::*;
+
+pub enum AsyncEvent {
+    Connected {
+        profile_id: String,
+        session: Arc<ActiveSession>,
+        databases: Vec<String>,
+        initial_schema: Option<DatabaseSchema>,
+    },
+    ConnectionFailed(String),
+    SchemaLoaded(DatabaseSchema),
+    QueryFinished {
+        tab_id: String,
+        result: Result<QueryResult, String>,
+    },
+    MultiQueryFinished {
+        tab_id: String,
+        results: Vec<Result<QueryResult, String>>,
+    },
+    CellEditsApplied {
+        tab_id: String,
+        updated_count: Result<u64, String>,
+    },
+    InlineAiCompletion {
+        tab_id: String,
+        req_id: u64,
+        result: Result<String, String>,
+    },
+    ChatAiReply(Result<ChatMessage, String>),
+    ServerAdminLoaded {
+        status: Result<HashMap<String, String>, String>,
+        processes: Result<QueryResult, String>,
+    },
+    QueryKilled(Result<u64, String>),
+    TestConnectionResult(Result<String, String>),
+    ServerVariablesLoaded(Result<Vec<(String, String)>, String>),
+    CopilotDeviceCodeReady(Result<crate::ai::CopilotDeviceCodeResponse, String>),
+    CopilotPollFinished(Result<String, String>),
+    FkLookupLoaded {
+        key: String,
+        result: Result<QueryResult, String>,
+    },
+    DataDiffLoaded {
+        left: Result<QueryResult, String>,
+        right: Result<QueryResult, String>,
+        key_col_idx: usize,
+    },
+    SqlDumpLoaded {
+        sql: Result<String, String>,
+        suggested_name: String,
+    },
+    SqlDumpImportFinished(Result<usize, String>),
+    RowDeletesApplied {
+        tab_id: String,
+        deleted_count: Result<u64, String>,
+    },
+}
+
+pub struct CsvImportWizard {
+    pub file_path: Option<std::path::PathBuf>,
+    pub file_name: String,
+    pub headers: Vec<String>,
+    pub sample_rows: Vec<Vec<String>>,
+    pub total_rows: usize,
+    pub target_table: String,
+    pub new_table_name: String,
+    pub create_new_table: bool,
+    pub column_mappings: Vec<(String, String)>,
+    pub is_importing: bool,
+    pub status_message: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct QueryTab {
+    pub id: String,
+    pub title: String,
+    pub sql: String,
+    pub cursor_index: usize,
+    pub selected_sql: Option<String>,
+    pub last_edit_instant: Option<std::time::Instant>,
+    pub ghost_completion: Option<String>,
+    pub local_suggestions: Vec<CompletionItem>,
+    pub selected_suggestion_idx: usize,
+    pub current_token_prefix: String,
+    pub inline_req_id: u64,
+    pub is_running: bool,
+    pub task_abort_handle: Option<tokio::task::AbortHandle>,
+    pub last_result: Option<QueryResult>,
+    pub multi_results: Vec<QueryResult>,
+    pub active_result_idx: usize,
+    pub multi_result_layout: MultiResultLayout,
+    pub multi_result_heights: HashMap<usize, f32>,
+    pub multi_result_collapsed: HashMap<usize, bool>,
+    pub multi_result_columns: Option<usize>,
+    pub last_error: Option<String>,
+    pub query_params: HashMap<String, String>,
+    pub row_filter: String,
+    pub visual_filter_col: Option<usize>,
+    pub visual_filter_op: VisualFilterOp,
+    pub visual_filter_val: String,
+    pub show_visual_filter: bool,
+    pub current_page: usize,
+    pub page_size: usize,
+    pub sort_column: Option<(usize, bool)>, // (col_idx, ascending)
+    pub editing_cell: Option<(usize, usize, String)>, // (row_idx, col_idx, buffer)
+    pub pending_edits: Vec<PendingCellEdit>,
+    pub selected_rows: std::collections::HashSet<usize>,
+    pub pending_row_deletes: Vec<(usize, String, String)>, // (row_idx, pk_col, pk_val)
+    pub show_row_inspector: bool,
+    pub row_inspector_row: Option<usize>,
+    pub row_inspector_buffers: Vec<String>,
+    pub baseline_result: Option<QueryResult>,
+    pub show_baseline_compare: bool,
+    pub view_mode: ResultViewMode,
+    pub chart_type: ChartType,
+    pub chart_x_col: usize,
+    pub chart_y_col: usize,
+    pub file_path: Option<std::path::PathBuf>,
+    pub is_dirty: bool,
+}
+
+impl QueryTab {
+    pub fn new(title: impl Into<String>, sql: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            title: title.into(),
+            sql: sql.into(),
+            cursor_index: 0,
+            selected_sql: None,
+            last_edit_instant: None,
+            ghost_completion: None,
+            local_suggestions: Vec::new(),
+            selected_suggestion_idx: 0,
+            current_token_prefix: String::new(),
+            inline_req_id: 0,
+            is_running: false,
+            task_abort_handle: None,
+            last_result: None,
+            multi_results: Vec::new(),
+            active_result_idx: 0,
+            multi_result_layout: MultiResultLayout::Tabs,
+            multi_result_heights: HashMap::new(),
+            multi_result_collapsed: HashMap::new(),
+            multi_result_columns: None,
+            last_error: None,
+            query_params: HashMap::new(),
+            row_filter: String::new(),
+            visual_filter_col: None,
+            visual_filter_op: VisualFilterOp::Contains,
+            visual_filter_val: String::new(),
+            show_visual_filter: false,
+            current_page: 0,
+            page_size: 50,
+            sort_column: None,
+            editing_cell: None,
+            pending_edits: Vec::new(),
+            selected_rows: std::collections::HashSet::new(),
+            pending_row_deletes: Vec::new(),
+            show_row_inspector: false,
+            row_inspector_row: None,
+            row_inspector_buffers: Vec::new(),
+            baseline_result: None,
+            show_baseline_compare: false,
+            view_mode: ResultViewMode::Grid,
+            chart_type: ChartType::Bar,
+            chart_x_col: 0,
+            chart_y_col: 1,
+            file_path: None,
+            is_dirty: false,
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        if self.is_dirty {
+            format!("{} *", self.title)
+        } else {
+            self.title.clone()
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub(crate) enum SidebarTab {
+    Schema,
+    Connections,
+    SavedQueries,
+    History,
+}
+
+#[derive(PartialEq, Eq)]
+pub(crate) enum BottomTab {
+    ResultsGrid,
+    ErRelationships,
+    ExecutionPlanAndLog,
+    ServerAdmin,
+}
+
+#[derive(Clone)]
+pub(crate) struct OpenConnectionWorkspace {
+    pub(crate) profile_id: String,
+    pub(crate) title: String,
+    pub(crate) env_color: (u8, u8, u8),
+    pub(crate) session: Arc<ActiveSession>,
+    pub(crate) databases: Vec<String>,
+    pub(crate) active_database: String,
+    pub(crate) schemas: HashMap<String, DatabaseSchema>,
+    pub(crate) tabs: Vec<QueryTab>,
+    pub(crate) active_tab_idx: usize,
+    pub(crate) in_transaction: bool,
+    pub(crate) uncommitted_mutations: usize,
+    pub(crate) er_state: ErCanvasState,
+}
