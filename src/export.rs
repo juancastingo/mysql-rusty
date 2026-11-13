@@ -75,7 +75,7 @@ pub fn to_sql_inserts(result: &QueryResult, target_table: &str) -> String {
     let cols = result
         .columns
         .iter()
-        .map(|c| format!("`{}`", c.replace('`', "``")))
+        .map(|c| crate::dialect::Dialect::MySql.quote_ident(c))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -122,7 +122,7 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
     let clean_table = table.trim().trim_matches('`');
     let cols_escaped = headers
         .iter()
-        .map(|h| format!("`{}`", h.trim().replace('`', "``")))
+        .map(|h| crate::dialect::Dialect::MySql.quote_ident(h.trim()))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -333,7 +333,7 @@ pub fn generate_mock_data_sql(table: &TableSchema, count: usize) -> String {
 
     let col_names = insert_cols
         .iter()
-        .map(|c| format!("`{}`", c.name.replace('`', "``")))
+        .map(|c| crate::dialect::Dialect::MySql.quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
 

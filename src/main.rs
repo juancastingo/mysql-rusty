@@ -7,6 +7,7 @@ mod db;
 #[cfg(test)]
 mod db_integration_tests;
 mod demo;
+mod dialect;
 mod er_diagram;
 mod export;
 mod find;

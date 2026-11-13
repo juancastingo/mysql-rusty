@@ -351,6 +351,13 @@ pub enum ActiveSession {
 }
 
 impl ActiveSession {
+    #[allow(dead_code)]
+    pub fn dialect(&self) -> crate::dialect::Dialect {
+        match self {
+            Self::DemoSandbox { .. } | Self::RealMysql { .. } => crate::dialect::Dialect::MySql,
+        }
+    }
+
     pub async fn connect(profile: ConnectionProfile) -> Result<Self> {
         if profile.is_demo {
             tracing::info!("Connecting to built-in DemoSandbox");
@@ -924,7 +931,10 @@ impl ActiveSession {
                         cur.as_deref() != Some(db_trimmed)
                     };
                     if needs_use {
-                        let use_stmt = format!("USE `{}`", db_trimmed.replace('`', "``"));
+                        let use_stmt = format!(
+                            "USE {}",
+                            crate::dialect::Dialect::MySql.quote_ident(db_trimmed)
+                        );
                         if let Err(err) = conn.query_drop(use_stmt).await {
                             if Self::is_connection_error(&err) {
                                 *guard = None;
@@ -1086,12 +1096,12 @@ impl ActiveSession {
                 let conn = guard.as_mut().expect("editor_conn initialized");
                 let mut total_affected = 0;
                 for edit in edits {
+                    let d = crate::dialect::Dialect::MySql;
                     let stmt = format!(
-                        "UPDATE `{}`.`{}` SET `{}` = ? WHERE `{}` = ?",
-                        database.replace('`', "``"),
-                        table.replace('`', "``"),
-                        edit.column_name.replace('`', "``"),
-                        edit.pk_column.replace('`', "``")
+                        "UPDATE {} SET {} = ? WHERE {} = ?",
+                        d.quote_qualified(database, table),
+                        d.quote_ident(&edit.column_name),
+                        d.quote_ident(&edit.pk_column)
                     );
                     let new_val: Value = if edit.new_value.eq_ignore_ascii_case("NULL") {
                         Value::NULL
@@ -1317,14 +1327,13 @@ impl ActiveSession {
             Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
-                let q_db = db.replace('`', "``");
-                let q_name = name.replace('`', "``");
+                let qual = crate::dialect::Dialect::MySql.quote_qualified(db, name);
                 let (sql, col_idx) = match kind.to_ascii_uppercase().as_str() {
-                    "TABLE" => (format!("SHOW CREATE TABLE `{q_db}`.`{q_name}`"), 1usize),
-                    "VIEW" => (format!("SHOW CREATE VIEW `{q_db}`.`{q_name}`"), 1usize),
-                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE `{q_db}`.`{q_name}`"), 2usize),
-                    "FUNCTION" => (format!("SHOW CREATE FUNCTION `{q_db}`.`{q_name}`"), 2usize),
-                    "TRIGGER" => (format!("SHOW CREATE TRIGGER `{q_db}`.`{q_name}`"), 2usize),
+                    "TABLE" => (format!("SHOW CREATE TABLE {qual}"), 1usize),
+                    "VIEW" => (format!("SHOW CREATE VIEW {qual}"), 1usize),
+                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE {qual}"), 2usize),
+                    "FUNCTION" => (format!("SHOW CREATE FUNCTION {qual}"), 2usize),
+                    "TRIGGER" => (format!("SHOW CREATE TRIGGER {qual}"), 2usize),
                     other => return Err(anyhow::anyhow!("Unsupported object kind: {other}")),
                 };
                 let row: Option<mysql_async::Row> = conn.query_first(sql).await?;
@@ -1393,9 +1402,8 @@ impl ActiveSession {
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let sql = format!(
-                    "SELECT * FROM `{}`.`{}`",
-                    db.replace('`', "``"),
-                    table.replace('`', "``")
+                    "SELECT * FROM {}",
+                    crate::dialect::Dialect::MySql.quote_qualified(db, table)
                 );
                 let mut result = conn.query_iter(sql).await?;
                 let columns: Vec<String> = result
@@ -1432,7 +1440,10 @@ impl ActiveSession {
                 let mut conn = pool.get_conn().await?;
                 let db_trimmed = db.trim();
                 if !db_trimmed.is_empty() {
-                    let sql = format!("USE `{}`", db_trimmed.replace('`', "``"));
+                    let sql = format!(
+                        "USE {}",
+                        crate::dialect::Dialect::MySql.quote_ident(db_trimmed)
+                    );
                     conn.query_drop(sql).await?;
                 }
                 Ok(conn)
@@ -1628,15 +1639,14 @@ impl ActiveSession {
             },
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
-                let q_db = db.replace('`', "``");
-                let q_name = name.replace('`', "``");
+                let qual = crate::dialect::Dialect::MySql.quote_qualified(db, name);
                 let (sql, col_idx) = match obj_type.to_ascii_uppercase().as_str() {
-                    "TABLE" => (format!("SHOW CREATE TABLE `{q_db}`.`{q_name}`"), 1usize),
-                    "VIEW" => (format!("SHOW CREATE VIEW `{q_db}`.`{q_name}`"), 1usize),
-                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE `{q_db}`.`{q_name}`"), 2usize),
-                    "FUNCTION" => (format!("SHOW CREATE FUNCTION `{q_db}`.`{q_name}`"), 2usize),
-                    "TRIGGER" => (format!("SHOW CREATE TRIGGER `{q_db}`.`{q_name}`"), 2usize),
-                    "EVENT" => (format!("SHOW CREATE EVENT `{q_db}`.`{q_name}`"), 3usize),
+                    "TABLE" => (format!("SHOW CREATE TABLE {qual}"), 1usize),
+                    "VIEW" => (format!("SHOW CREATE VIEW {qual}"), 1usize),
+                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE {qual}"), 2usize),
+                    "FUNCTION" => (format!("SHOW CREATE FUNCTION {qual}"), 2usize),
+                    "TRIGGER" => (format!("SHOW CREATE TRIGGER {qual}"), 2usize),
+                    "EVENT" => (format!("SHOW CREATE EVENT {qual}"), 3usize),
                     other => return Err(anyhow!("Unsupported object type: {other}")),
                 };
                 let row: Option<Row> = conn.query_first(sql).await?;
@@ -2079,8 +2089,8 @@ pub fn generate_routine_call_sql(
         }
     }
     lines.push(format!(
-        "CALL `{}`({});",
-        routine_name.replace('`', "``"),
+        "CALL {}({});",
+        crate::dialect::Dialect::MySql.quote_ident(routine_name),
         call_args.join(", ")
     ));
     if !out_vars.is_empty() {

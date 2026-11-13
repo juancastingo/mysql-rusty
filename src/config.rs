@@ -118,6 +118,8 @@ pub struct ConnectionProfile {
     pub read_only: bool,
     #[serde(default)]
     pub favorite_tables: Vec<String>,
+    #[serde(default)]
+    pub dialect: crate::dialect::Dialect,
 }
 
 impl Default for ConnectionProfile {
@@ -141,6 +143,7 @@ impl Default for ConnectionProfile {
             environment: Environment::Development,
             read_only: false,
             favorite_tables: Vec::new(),
+            dialect: crate::dialect::Dialect::MySql,
         }
     }
 }
@@ -166,6 +169,7 @@ impl ConnectionProfile {
             environment: Environment::Development,
             read_only: false,
             favorite_tables: Vec::new(),
+            dialect: crate::dialect::Dialect::MySql,
         }
     }
 }

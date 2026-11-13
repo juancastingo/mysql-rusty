@@ -164,3 +164,11 @@ Each phase below is self-contained and ordered by priority. Follow the instructi
    - Add an `📥 Import CSV` button in the Schema Explorer table actions.
 3. **Verification:**
    - Add unit tests for `parse_csv_to_batch_insert` and run `cargo test`.
+
+---
+
+### Multi-dialect support (`src/dialect.rs`)
+`Dialect` (`MySql`, `Postgres`, `Sqlite`) abstracts identifier quoting (`quote_ident`, `quote_qualified`), string literal escaping (`string_literal`), `LIMIT` clauses (`limit_clause`), and database switching (`supports_use_database`).
+- `ConnectionProfile::dialect` defaults to `Dialect::MySql` via `#[serde(default)]` for backwards compatibility with existing `config.json` files.
+- `ActiveSession::dialect(&self) -> Dialect` returns the engine dialect for the active session.
+- Subsequent issues add `ActiveSession::Sqlite` and `ActiveSession::Postgres` variants, implementing `list_databases`, `introspect_database`, `execute_query`, `apply_cell_edits`, and (where supported) `list_processes`, `kill_query`, `server_status_summary`, and `list_server_variables`.

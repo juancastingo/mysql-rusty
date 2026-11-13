@@ -73,7 +73,7 @@ pub fn format_backup_footer() -> &'static str {
 }
 
 fn quote_ident(ident: &str) -> String {
-    format!("`{}`", ident.replace('`', "``"))
+    crate::dialect::Dialect::MySql.quote_ident(ident)
 }
 
 pub async fn run_backup(

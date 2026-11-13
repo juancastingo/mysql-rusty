@@ -340,7 +340,7 @@ fn generate_cell_sql(
 
 pub fn generate_mock_insert_statements(cfg: &MockGenConfig, batch_size: usize) -> Vec<String> {
     let mut stmts = Vec::new();
-    let table_ident = format!("`{}`", cfg.table_name.replace('`', "``"));
+    let table_ident = crate::dialect::Dialect::MySql.quote_ident(&cfg.table_name);
     if cfg.truncate_before {
         stmts.push(format!("TRUNCATE TABLE {table_ident};"));
     }
@@ -357,7 +357,7 @@ pub fn generate_mock_insert_statements(cfg: &MockGenConfig, batch_size: usize) -
 
     let col_list = active_cols
         .iter()
-        .map(|(name, _)| format!("`{}`", name.replace('`', "``")))
+        .map(|(name, _)| crate::dialect::Dialect::MySql.quote_ident(name))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -393,9 +393,9 @@ pub async fn fetch_fk_parent_samples(
 ) -> Result<HashMap<String, Vec<String>>> {
     let mut out = HashMap::new();
     for fk in &table.foreign_keys {
-        let ref_tbl = fk.referenced_table.replace('`', "``");
-        let ref_col = fk.referenced_column.replace('`', "``");
-        let sql = format!("SELECT DISTINCT `{ref_col}` FROM `{ref_tbl}` LIMIT 200");
+        let ref_tbl = crate::dialect::Dialect::MySql.quote_ident(&fk.referenced_table);
+        let ref_col = crate::dialect::Dialect::MySql.quote_ident(&fk.referenced_column);
+        let sql = format!("SELECT DISTINCT {ref_col} FROM {ref_tbl} LIMIT 200");
         if let Ok(res) = session.execute_query(database, &sql, None, Some(200)).await {
             let samples: Vec<String> = res
                 .rows
