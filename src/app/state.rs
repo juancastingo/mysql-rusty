@@ -215,6 +215,7 @@ pub struct QueryTab {
     pub ai_plan_loading: bool,
     pub ai_plan_report: Option<crate::ai::QueryOptimizationReport>,
     pub ai_plan_error: Option<String>,
+    pub vim_state: crate::vim::VimState,
 }
 
 impl QueryTab {
@@ -283,6 +284,7 @@ impl QueryTab {
             ai_plan_loading: false,
             ai_plan_report: None,
             ai_plan_error: None,
+            vim_state: crate::vim::VimState::default(),
         }
     }
 

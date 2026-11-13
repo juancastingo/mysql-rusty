@@ -163,6 +163,7 @@ impl MysqlRustyApp {
             let mut editor_run_stmt = false;
             let in_tx = self.in_transaction;
             let uncommitted_muts = self.uncommitted_mutations;
+            let vim_mode_enabled = self.config.ui.vim_mode;
             let mut trigger_tx_action: Option<u8> = None;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
@@ -917,6 +918,95 @@ impl MysqlRustyApp {
                     job.wrap.max_width = wrap_width;
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
+
+                if vim_mode_enabled
+                    && ui.memory(|m| m.has_focus(editor_id))
+                    && !tab.find_open
+                    && !tab.nl2sql_open
+                {
+                    let mut vim_changed = false;
+                    let mut cur = tab.cursor_index;
+                    ui.input_mut(|i| {
+                        let mut remaining = Vec::with_capacity(i.events.len());
+                        for ev in i.events.drain(..) {
+                            let is_insert = tab.vim_state.mode == crate::vim::Mode::Insert;
+                            let vim_key = match &ev {
+                                egui::Event::Text(t) if !is_insert => {
+                                    t.chars().next().map(crate::vim::VimKey::Char)
+                                }
+                                egui::Event::Key {
+                                    key,
+                                    pressed: true,
+                                    modifiers,
+                                    ..
+                                } => match key {
+                                    egui::Key::Escape => Some(crate::vim::VimKey::Esc),
+                                    egui::Key::Enter if !is_insert && !modifiers.ctrl && !modifiers.command => {
+                                        Some(crate::vim::VimKey::Enter)
+                                    }
+                                    egui::Key::Backspace if !is_insert => {
+                                        Some(crate::vim::VimKey::Backspace)
+                                    }
+                                    egui::Key::Delete if !is_insert => {
+                                        Some(crate::vim::VimKey::Delete)
+                                    }
+                                    egui::Key::ArrowLeft if !is_insert => {
+                                        Some(crate::vim::VimKey::Left)
+                                    }
+                                    egui::Key::ArrowRight if !is_insert => {
+                                        Some(crate::vim::VimKey::Right)
+                                    }
+                                    egui::Key::ArrowUp if !is_insert => {
+                                        Some(crate::vim::VimKey::Up)
+                                    }
+                                    egui::Key::ArrowDown if !is_insert => {
+                                        Some(crate::vim::VimKey::Down)
+                                    }
+                                    egui::Key::D if !is_insert && modifiers.ctrl => {
+                                        Some(crate::vim::VimKey::CtrlD)
+                                    }
+                                    egui::Key::U if !is_insert && modifiers.ctrl => {
+                                        Some(crate::vim::VimKey::CtrlU)
+                                    }
+                                    egui::Key::R if !is_insert && modifiers.ctrl => {
+                                        Some(crate::vim::VimKey::CtrlR)
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            };
+
+                            if let Some(vk) = vim_key
+                                && tab.vim_state.handle_key(vk, &mut tab.sql, &mut cur)
+                            {
+                                vim_changed = true;
+                                continue;
+                            }
+                            if !is_insert && matches!(ev, egui::Event::Text(_)) {
+                                continue;
+                            }
+                            remaining.push(ev);
+                        }
+                        i.events = remaining;
+                    });
+                    if vim_changed {
+                        tab.cursor_index = cur;
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                            let range = if let Some((s, e)) =
+                                tab.vim_state.visual_selection_range(&tab.sql, cur)
+                            {
+                                egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(s),
+                                    egui::text::CCursor::new(e),
+                                )
+                            } else {
+                                egui::text::CCursorRange::one(egui::text::CCursor::new(cur))
+                            };
+                            state.cursor.set_char_range(Some(range));
+                            state.store(ui.ctx(), editor_id);
+                        }
+                    }
+                }
 
                 let output = egui::ScrollArea::vertical()
                     .id_salt("sql_editor_scroll")

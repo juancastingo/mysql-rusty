@@ -302,6 +302,7 @@ impl MysqlRustyApp {
             OpenSnippet { title: String, sql: String },
             OpenLogsFolder,
             OpenRunSqlFile,
+            ToggleVimMode,
         }
 
         struct PaletteEntry {
@@ -383,6 +384,12 @@ impl MysqlRustyApp {
                 label: "Run SQL file...".to_string(),
                 detail: "Stream and execute a large .sql dump file".to_string(),
                 action: PaletteAction::OpenRunSqlFile,
+            },
+            PaletteEntry {
+                category: "Action",
+                label: "Toggle Vim Mode".to_string(),
+                detail: "Enable or disable Vim keybindings in SQL editor".to_string(),
+                action: PaletteAction::ToggleVimMode,
             },
         ];
 
@@ -589,6 +596,15 @@ impl MysqlRustyApp {
                         status: None,
                         prod_confirm_input: String::new(),
                     });
+                }
+                PaletteAction::ToggleVimMode => {
+                    self.config.ui.vim_mode = !self.config.ui.vim_mode;
+                    let _ = self.config.save();
+                    self.status_banner = if self.config.ui.vim_mode {
+                        "Vim Mode enabled".to_string()
+                    } else {
+                        "Vim Mode disabled".to_string()
+                    };
                 }
                 PaletteAction::NewTableDesigner => {
                     self.table_designer_draft = Some(TableDraft::new_empty("new_table"));

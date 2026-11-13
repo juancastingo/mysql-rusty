@@ -242,6 +242,10 @@ impl MysqlRustyApp {
                             .speed(100.0),
                     );
                 });
+                ui.checkbox(
+                    &mut self.config.ui.vim_mode,
+                    "Enable Vim Mode in SQL Editor",
+                );
 
                 ui.separator();
                 if ui.button("Save Configuration").clicked() {

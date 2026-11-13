@@ -342,12 +342,20 @@ impl Default for QuerySettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UiSettings {
+    #[serde(default)]
+    pub vim_mode: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub connections: Vec<ConnectionProfile>,
     pub ai: AiConfig,
     #[serde(default)]
     pub query: QuerySettings,
+    #[serde(default)]
+    pub ui: UiSettings,
     pub history: Vec<QueryHistoryEntry>,
     pub snippets: Vec<SavedSnippet>,
     #[serde(default)]
@@ -365,6 +373,7 @@ impl Default for AppConfig {
             ],
             ai: AiConfig::default(),
             query: QuerySettings::default(),
+            ui: UiSettings::default(),
             history: Vec::new(),
             scratchpads: Vec::new(),
             trashed_connections: Vec::new(),

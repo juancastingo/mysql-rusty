@@ -19,6 +19,7 @@ mod syntax;
 mod table_designer;
 #[cfg(test)]
 pub mod test_fixtures;
+mod vim;
 
 use app::MysqlRustyApp;
 use config::AppConfig;

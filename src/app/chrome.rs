@@ -482,6 +482,20 @@ impl MysqlRustyApp {
                                 .weak()
                                 .small(),
                         );
+                        if self.config.ui.vim_mode
+                            && let Some(tab) = self.tabs.get(self.active_tab_idx)
+                        {
+                            let mode = tab.vim_state.mode;
+                            let color = match mode {
+                                crate::vim::Mode::Normal => Color32::from_rgb(56, 189, 248),
+                                crate::vim::Mode::Insert => Color32::from_rgb(34, 197, 94),
+                                crate::vim::Mode::Visual | crate::vim::Mode::VisualLine => {
+                                    Color32::from_rgb(250, 204, 21)
+                                }
+                            };
+                            ui.separator();
+                            ui.label(RichText::new(mode.status_label()).strong().small().color(color));
+                        }
                     });
                 });
             });
