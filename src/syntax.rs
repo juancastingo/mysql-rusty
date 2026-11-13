@@ -190,38 +190,18 @@ pub fn highlight_sql(text: &str, ghost_suffix: Option<&str>, font_size: f32) -> 
     job
 }
 
-/// Formats a SQL query by upper-casing major clauses and placing them on clean lines.
+/// Formats a SQL query with proper indentation, uppercase keywords, and clause line breaks.
 pub fn format_sql_pretty(sql: &str) -> String {
-    let collapsed = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-    let major_clauses = [
-        "SELECT ",
-        "FROM ",
-        "LEFT JOIN ",
-        "RIGHT JOIN ",
-        "INNER JOIN ",
-        "JOIN ",
-        "WHERE ",
-        "GROUP BY ",
-        "HAVING ",
-        "ORDER BY ",
-        "LIMIT ",
-    ];
-
-    let mut out = collapsed;
-    for clause in major_clauses {
-        let lower_clause = clause.to_lowercase();
-        if let Some(pos) = out.to_lowercase().find(&lower_clause) {
-            if pos > 0 {
-                let prefix = out[..pos].trim_end();
-                let suffix = &out[pos + clause.len()..];
-                out = format!("{prefix}\n{clause}{suffix}");
-            } else {
-                let suffix = &out[clause.len()..];
-                out = format!("{clause}{suffix}");
-            }
-        }
+    let mut options = sqlformat::FormatOptions::default();
+    options.indent = sqlformat::Indent::Spaces(2);
+    options.uppercase = Some(true);
+    options.lines_between_queries = 2;
+    let formatted = sqlformat::format(sql, &sqlformat::QueryParams::None, &options);
+    if formatted.trim().is_empty() {
+        sql.to_string()
+    } else {
+        formatted
     }
-    out
 }
 
 /// Extracts the SQL statement located at the specified character cursor index.

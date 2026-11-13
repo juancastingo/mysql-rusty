@@ -277,6 +277,64 @@ impl TableDraft {
         }
     }
 
+    pub fn generate_up_down_migration(&self) -> (String, String) {
+        let up = self.generate_ddl_diff();
+        let down = if let Some(old) = &self.original_table {
+            let mut stmts = Vec::new();
+            let target_tbl = &self.table_name;
+            let old_col_map: std::collections::HashMap<&str, &ColumnInfo> =
+                old.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+            let new_col_map: std::collections::HashMap<&str, &ColumnInfo> =
+                self.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+
+            // Reverse added columns -> DROP COLUMN
+            for col in &self.columns {
+                if !old_col_map.contains_key(col.name.as_str()) {
+                    stmts.push(format!("ALTER TABLE `{target_tbl}` DROP COLUMN `{}`;", col.name));
+                }
+            }
+            // Reverse modified columns -> revert to old col definition
+            for col in &self.columns {
+                if let Some(old_col) = old_col_map.get(col.name.as_str()) {
+                    let changed = old_col.data_type != col.data_type
+                        || old_col.is_nullable != col.is_nullable
+                        || old_col.default_value != col.default_value
+                        || old_col.extra != col.extra;
+                    if changed {
+                        stmts.push(format!("ALTER TABLE `{target_tbl}` MODIFY COLUMN {};", Self::format_col_def(old_col)));
+                    }
+                }
+            }
+            // Reverse dropped columns -> ADD COLUMN back
+            for old_col in &old.columns {
+                if !new_col_map.contains_key(old_col.name.as_str()) {
+                    stmts.push(format!("ALTER TABLE `{target_tbl}` ADD COLUMN {};", Self::format_col_def(old_col)));
+                }
+            }
+            if old.name != self.table_name {
+                stmts.push(format!("ALTER TABLE `{target_tbl}` RENAME TO `{}`;", old.name));
+            }
+            if stmts.is_empty() {
+                "-- No rollback operations required".to_string()
+            } else {
+                stmts.join("\n")
+            }
+        } else {
+            format!("DROP TABLE IF EXISTS `{}`;", self.table_name)
+        };
+
+        (up, down)
+    }
+
+    pub fn generate_migration_file_content(&self) -> String {
+        let (up, down) = self.generate_up_down_migration();
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        format!(
+            "-- ========================================================\n-- Migration for `{}` generated at {}\n-- ========================================================\n\n-- >>> UP MIGRATION (APPLY)\n{}\n\n-- <<< DOWN MIGRATION (ROLLBACK)\n{}\n",
+            self.table_name, now, up, down
+        )
+    }
+
     pub fn render_editor(&mut self, ui: &mut Ui) -> TableDesignerAction {
         let mut action = TableDesignerAction::None;
 
@@ -504,6 +562,18 @@ impl TableDraft {
             );
             if ui.add(open_tab_btn).clicked() {
                 action = TableDesignerAction::OpenInQueryTab(ddl.clone());
+            }
+
+            let migration_btn = egui::Button::new(
+                RichText::new("Generate Migration (Up/Down)")
+                    .color(Color32::from_rgb(168, 85, 247)),
+            );
+            if ui
+                .add(migration_btn)
+                .on_hover_text("Generate structured UP/DOWN migration script in a new SQL query tab")
+                .clicked()
+            {
+                action = TableDesignerAction::OpenInQueryTab(self.generate_migration_file_content());
             }
 
             if ui.button("Cancel").clicked() {

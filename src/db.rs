@@ -923,6 +923,55 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn list_server_variables(&self) -> Result<Vec<(String, String)>> {
+        match self {
+            Self::DemoSandbox { .. } => {
+                Ok(vec![
+                    ("auto_increment_increment".into(), "1".into()),
+                    ("autocommit".into(), "ON".into()),
+                    ("character_set_client".into(), "utf8mb4".into()),
+                    ("character_set_connection".into(), "utf8mb4".into()),
+                    ("character_set_database".into(), "utf8mb4".into()),
+                    ("character_set_server".into(), "utf8mb4".into()),
+                    ("collation_connection".into(), "utf8mb4_0900_ai_ci".into()),
+                    ("collation_server".into(), "utf8mb4_0900_ai_ci".into()),
+                    ("default_storage_engine".into(), "InnoDB".into()),
+                    ("event_scheduler".into(), "ON".into()),
+                    ("foreign_key_checks".into(), "ON".into()),
+                    ("general_log".into(), "OFF".into()),
+                    ("innodb_buffer_pool_size".into(), "134217728".into()),
+                    ("innodb_file_per_table".into(), "ON".into()),
+                    ("innodb_flush_log_at_trx_commit".into(), "1".into()),
+                    ("innodb_lock_wait_timeout".into(), "50".into()),
+                    ("interactive_timeout".into(), "28800".into()),
+                    ("log_error_verbosity".into(), "2".into()),
+                    ("max_allowed_packet".into(), "67108864".into()),
+                    ("max_connections".into(), "151".into()),
+                    ("net_read_timeout".into(), "30".into()),
+                    ("net_write_timeout".into(), "60".into()),
+                    ("slow_query_log".into(), "ON".into()),
+                    ("sql_mode".into(), "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION".into()),
+                    ("time_zone".into(), "SYSTEM".into()),
+                    ("transaction_isolation".into(), "REPEATABLE-READ".into()),
+                    ("version".into(), "8.0.36-0ubuntu0.22.04.1".into()),
+                    ("wait_timeout".into(), "28800".into()),
+                ])
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let rows: Vec<Row> = conn.query("SHOW VARIABLES").await?;
+                let mut vars = Vec::new();
+                for r in rows {
+                    if let (Some(k), Some(v)) = (r.get::<String, _>(0), r.get::<String, _>(1)) {
+                        vars.push((k, v));
+                    }
+                }
+                vars.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(vars)
+            }
+        }
+    }
 }
 
 fn expand_tilde(path: &str) -> String {

@@ -137,9 +137,10 @@ mod tests {
     #[test]
     fn test_format_sql_pretty() {
         let formatted = format_sql_pretty("SELECT id, name FROM users WHERE id = 1 LIMIT 10");
-        assert!(formatted.contains("\nFROM "));
-        assert!(formatted.contains("\nWHERE "));
-        assert!(formatted.contains("\nLIMIT "));
+        assert!(formatted.contains("FROM"));
+        assert!(formatted.contains("WHERE"));
+        assert!(formatted.contains("LIMIT"));
+        assert!(formatted.contains('\n'));
     }
 
     #[test]
@@ -226,7 +227,36 @@ mod tests {
         assert!(status.contains_key("Threads_connected"));
         assert!(status.contains_key("Questions"));
 
+        let vars = session.list_server_variables().await.expect("Failed to get server variables");
+        assert!(!vars.is_empty());
+        assert!(vars.iter().any(|(k, _)| k == "max_connections"));
+        assert!(vars.iter().any(|(k, _)| k == "version"));
+
         session.kill_query(101).await.expect("Failed to kill query");
+    }
+
+    #[test]
+    fn test_table_designer_up_down_migration() {
+        use crate::db::ColumnInfo;
+        use crate::table_designer::TableDraft;
+
+        let mut draft = TableDraft::new_empty("audit_logs");
+        draft.columns.push(ColumnInfo {
+            name: "action".to_string(),
+            data_type: "VARCHAR(100)".to_string(),
+            is_nullable: false,
+            default_value: None,
+            extra: String::new(),
+            is_primary_key: false,
+        });
+
+        let (up, down) = draft.generate_up_down_migration();
+        assert!(up.contains("CREATE TABLE `audit_logs`"));
+        assert!(down.contains("DROP TABLE IF EXISTS `audit_logs`"));
+
+        let migration_content = draft.generate_migration_file_content();
+        assert!(migration_content.contains(">>> UP MIGRATION (APPLY)"));
+        assert!(migration_content.contains("<<< DOWN MIGRATION (ROLLBACK)"));
     }
 
     #[test]
@@ -243,6 +273,27 @@ mod tests {
         // Error cases
         assert!(parse_csv_to_batch_insert("test", "").is_err());
         assert!(parse_csv_to_batch_insert("test", "id,name\n").is_err());
+    }
+
+    #[test]
+    fn test_csv_import_wizard_logic() {
+        use crate::export::{generate_csv_import_sql, inspect_csv_content};
+
+        let csv = "first_name,last_name,email,age\nAlice,Smith,alice@example.com,29\nBob,Jones,bob@example.com,41";
+        let (headers, samples, count) = inspect_csv_content(csv, 5).expect("Failed to inspect CSV");
+        assert_eq!(headers, vec!["first_name", "last_name", "email", "age"]);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(count, 2);
+
+        let mappings = vec![
+            ("first_name".to_string(), "name".to_string()),
+            ("email".to_string(), "user_email".to_string()),
+        ];
+        let sql = generate_csv_import_sql("customers", &headers, &mappings, csv, true)
+            .expect("Failed to generate import SQL");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS `customers`"));
+        assert!(sql.contains("INSERT INTO `customers` (`name`, `user_email`) VALUES"));
+        assert!(sql.contains("('Alice', 'alice@example.com')"));
     }
 
     #[test]

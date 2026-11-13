@@ -133,6 +133,116 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
     ))
 }
 
+/// Inspects a CSV content string and returns its headers, first N sample rows, and total row count.
+pub fn inspect_csv_content(csv_content: &str, max_samples: usize) -> Result<(Vec<String>, Vec<Vec<String>>, usize)> {
+    let trimmed = csv_content.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("CSV file is empty."));
+    }
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(trimmed.as_bytes());
+
+    let headers: Vec<String> = reader.headers()?.iter().map(|h| h.trim().to_string()).collect();
+    let mut sample_rows = Vec::new();
+    let mut total_count = 0;
+
+    for result in reader.records() {
+        let rec = result?;
+        if sample_rows.len() < max_samples {
+            sample_rows.push(rec.iter().map(|s| s.to_string()).collect());
+        }
+        total_count += 1;
+    }
+
+    Ok((headers, sample_rows, total_count))
+}
+
+/// Generates executable INSERT statements mapping CSV columns to target DB table columns.
+pub fn generate_csv_import_sql(
+    target_table: &str,
+    headers: &[String],
+    mappings: &[(String, String)], // (csv_col, db_col)
+    csv_content: &str,
+    create_table: bool,
+) -> Result<String> {
+    let mut stmts = Vec::new();
+    let clean_table = target_table.trim().trim_matches('`');
+
+    let active_mappings: Vec<(usize, &String)> = mappings
+        .iter()
+        .filter(|(_, db)| !db.trim().is_empty())
+        .filter_map(|(csv_col, db_col)| {
+            headers.iter().position(|h| h == csv_col).map(|idx| (idx, db_col))
+        })
+        .collect();
+
+    if active_mappings.is_empty() {
+        return Err(anyhow::anyhow!("No active column mappings configured."));
+    }
+
+    if create_table {
+        let mut col_defs = Vec::new();
+        col_defs.push("  `id` INT AUTO_INCREMENT PRIMARY KEY".to_string());
+        for (_, db_col) in &active_mappings {
+            col_defs.push(format!("  `{}` TEXT NULL", db_col.trim_matches('`')));
+        }
+        stmts.push(format!(
+            "CREATE TABLE IF NOT EXISTS `{clean_table}` (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
+            col_defs.join(",\n")
+        ));
+    }
+
+    let col_names = active_mappings
+        .iter()
+        .map(|(_, db_col)| format!("`{}`", db_col.trim_matches('`')))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(csv_content.trim().as_bytes());
+
+    let mut value_rows = Vec::new();
+    for result in reader.records() {
+        let rec = result?;
+        let mut row_vals = Vec::new();
+        for &(idx, _) in &active_mappings {
+            let field_trimmed = rec.get(idx).map(|s| s.trim()).unwrap_or("");
+            if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
+                row_vals.push("NULL".to_string());
+            } else if field_trimmed.parse::<i64>().is_ok() {
+                row_vals.push(field_trimmed.to_string());
+            } else if (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0')) || field_trimmed == "0" || field_trimmed.starts_with("0.") {
+                row_vals.push(field_trimmed.to_string());
+            } else if field_trimmed.eq_ignore_ascii_case("true") {
+                row_vals.push("1".to_string());
+            } else if field_trimmed.eq_ignore_ascii_case("false") {
+                row_vals.push("0".to_string());
+            } else {
+                row_vals.push(format!("'{}'", field_trimmed.replace('\'', "''")));
+            }
+        }
+        value_rows.push(format!("  ({})", row_vals.join(", ")));
+    }
+
+    if value_rows.is_empty() {
+        return Err(anyhow::anyhow!("No rows found to import in CSV."));
+    }
+
+    // Chunk into batches of 200 rows per INSERT statement for safe execution
+    for chunk in value_rows.chunks(200) {
+        stmts.push(format!(
+            "INSERT INTO `{clean_table}` ({col_names}) VALUES\n{};",
+            chunk.join(",\n")
+        ));
+    }
+
+    Ok(stmts.join("\n\n"))
+}
+
 /// Formats a `QueryResult` into a GitHub-flavored Markdown table.
 pub fn to_markdown_table(result: &QueryResult) -> String {
     if result.columns.is_empty() {

@@ -9,6 +9,16 @@ pub struct SchemaDiffReport {
     pub migration_sql: String,
 }
 
+impl SchemaDiffReport {
+    pub fn generate_migration_file_content(&self) -> String {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        format!(
+            "-- ========================================================\n-- Schema Diff Migration: `{}` -> `{}`\n-- Generated at: {}\n-- ========================================================\n\n-- >>> UP MIGRATION (APPLY CHANGES)\n{}\n\n-- >>> SUMMARY OF CHANGES:\n-- {}\n",
+            self.source_name, self.target_name, now, self.migration_sql, self.summary.join("\n-- ")
+        )
+    }
+}
+
 pub fn format_column_def(c: &ColumnInfo) -> String {
     let mut def = format!("`{}` {}", c.name, c.data_type);
     if c.is_nullable {

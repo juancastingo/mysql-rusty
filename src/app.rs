@@ -8,8 +8,9 @@ use crate::config::{
 use crate::db::{ActiveSession, DatabaseSchema, PendingCellEdit, QueryResult};
 use crate::er_diagram::ErCanvasState;
 use crate::export::{
-    generate_mock_data_sql, parse_csv_to_batch_insert, save_string_to_path, to_csv_string,
-    to_json_string, to_markdown_table, to_sql_inserts,
+    generate_csv_import_sql, generate_mock_data_sql, inspect_csv_content,
+    parse_csv_to_batch_insert, save_string_to_path, to_csv_string, to_json_string,
+    to_markdown_table, to_sql_inserts,
 };
 use crate::schema_diff::{diff_schemas, SchemaDiffReport};
 use crate::syntax::{
@@ -56,6 +57,7 @@ pub enum AsyncEvent {
     },
     QueryKilled(Result<u64, String>),
     TestConnectionResult(Result<String, String>),
+    ServerVariablesLoaded(Result<Vec<(String, String)>, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,63 @@ pub enum ResultViewMode {
 pub enum ChartType {
     Bar,
     Line,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VisualFilterOp {
+    Contains,
+    Equals,
+    NotEquals,
+    StartsWith,
+    GreaterThan,
+    LessThan,
+    IsNull,
+    IsNotNull,
+}
+
+impl VisualFilterOp {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Contains => "contains",
+            Self::Equals => "= (exact)",
+            Self::NotEquals => "!= (not equal)",
+            Self::StartsWith => "starts with",
+            Self::GreaterThan => "> (greater)",
+            Self::LessThan => "< (less)",
+            Self::IsNull => "IS NULL / empty",
+            Self::IsNotNull => "IS NOT NULL",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CellInspectorState {
+    pub table_name: Option<String>,
+    pub column_name: String,
+    pub row_index: usize,
+    pub raw_value: String,
+    pub formatted_json: Option<String>,
+}
+
+pub struct CsvImportWizard {
+    pub file_path: Option<std::path::PathBuf>,
+    pub file_name: String,
+    pub headers: Vec<String>,
+    pub sample_rows: Vec<Vec<String>>,
+    pub total_rows: usize,
+    pub target_table: String,
+    pub new_table_name: String,
+    pub create_new_table: bool,
+    pub column_mappings: Vec<(String, String)>,
+    pub is_importing: bool,
+    pub status_message: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum ServerAdminSubtab {
+    OverviewAndMetrics,
+    ServerVariables,
 }
 
 #[derive(Clone)]
@@ -87,6 +146,10 @@ pub struct QueryTab {
     pub last_result: Option<QueryResult>,
     pub last_error: Option<String>,
     pub row_filter: String,
+    pub visual_filter_col: Option<usize>,
+    pub visual_filter_op: VisualFilterOp,
+    pub visual_filter_val: String,
+    pub show_visual_filter: bool,
     pub current_page: usize,
     pub page_size: usize,
     pub sort_column: Option<(usize, bool)>, // (col_idx, ascending)
@@ -118,8 +181,12 @@ impl QueryTab {
             last_result: None,
             last_error: None,
             row_filter: String::new(),
+            visual_filter_col: None,
+            visual_filter_op: VisualFilterOp::Contains,
+            visual_filter_val: String::new(),
+            show_visual_filter: false,
             current_page: 0,
-            page_size: 100,
+            page_size: 50,
             sort_column: None,
             editing_cell: None,
             pending_edits: Vec::new(),
@@ -228,6 +295,22 @@ pub struct MysqlRustyApp {
     threads_history: Vec<[f64; 2]>,
     last_poll_instant: Option<std::time::Instant>,
     last_questions_count: Option<u64>,
+
+    // Transaction Management
+    in_transaction: bool,
+    uncommitted_mutations: usize,
+
+    // Cell Inspector
+    cell_inspector: Option<CellInspectorState>,
+
+    // CSV Import Wizard
+    csv_wizard: Option<CsvImportWizard>,
+
+    // Server Variables
+    server_variables: Vec<(String, String)>,
+    server_variables_filter: String,
+    is_loading_variables: bool,
+    server_admin_subtab: ServerAdminSubtab,
 }
 
 impl MysqlRustyApp {
@@ -302,6 +385,15 @@ impl MysqlRustyApp {
             threads_history: Vec::new(),
             last_poll_instant: None,
             last_questions_count: None,
+
+            in_transaction: false,
+            uncommitted_mutations: 0,
+            cell_inspector: None,
+            csv_wizard: None,
+            server_variables: Vec::new(),
+            server_variables_filter: String::new(),
+            is_loading_variables: false,
+            server_admin_subtab: ServerAdminSubtab::OverviewAndMetrics,
         }
     }
 
@@ -654,6 +746,11 @@ impl MysqlRustyApp {
         tab.last_error = None;
         tab.pending_edits.clear();
         tab.editing_cell = None;
+
+        if self.in_transaction && is_write_query(&sql) {
+            self.uncommitted_mutations += 1;
+        }
+
         let tab_id = tab.id.clone();
         let db = self.active_database.clone();
         let schema = self.schemas.get(&db).cloned();
@@ -671,6 +768,120 @@ impl MysqlRustyApp {
             });
         });
         tab.task_abort_handle = Some(join_handle.abort_handle());
+    }
+
+    pub fn start_transaction(&mut self) {
+        self.in_transaction = true;
+        self.uncommitted_mutations = 0;
+        self.status_banner = "Transaction started (Manual Commit Mode).".to_string();
+        self.execute_sql_forced("START TRANSACTION;".to_string());
+    }
+
+    pub fn commit_transaction(&mut self) {
+        self.in_transaction = false;
+        self.uncommitted_mutations = 0;
+        self.status_banner = "Transaction committed successfully.".to_string();
+        self.execute_sql_forced("COMMIT;".to_string());
+    }
+
+    pub fn rollback_transaction(&mut self) {
+        self.in_transaction = false;
+        self.uncommitted_mutations = 0;
+        self.status_banner = "Transaction rolled back.".to_string();
+        self.execute_sql_forced("ROLLBACK;".to_string());
+    }
+
+    pub fn fetch_server_variables(&mut self) {
+        let Some(session) = self.active_session.clone() else {
+            return;
+        };
+        self.is_loading_variables = true;
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let res = session.list_server_variables().await.map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::ServerVariablesLoaded(res));
+        });
+    }
+
+    pub fn open_csv_import_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Select CSV file to import")
+            .add_filter("CSV Files", &["csv"])
+            .pick_file()
+        {
+            let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let default_table = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    match inspect_csv_content(&content, 5) {
+                        Ok((headers, sample_rows, total_rows)) => {
+                            let mappings = headers.iter().map(|h| (h.clone(), h.clone())).collect();
+                            self.csv_wizard = Some(CsvImportWizard {
+                                file_path: Some(path),
+                                file_name,
+                                headers,
+                                sample_rows,
+                                total_rows,
+                                target_table: default_table.clone(),
+                                new_table_name: default_table,
+                                create_new_table: false,
+                                column_mappings: mappings,
+                                is_importing: false,
+                                status_message: None,
+                                error_message: None,
+                            });
+                        }
+                        Err(e) => {
+                            self.status_banner = format!("Failed to inspect CSV: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.status_banner = format!("Failed to read CSV file: {e}");
+                }
+            }
+        }
+    }
+
+    pub fn execute_csv_import(&mut self) {
+        let Some(wizard) = &mut self.csv_wizard else {
+            return;
+        };
+        let Some(path) = &wizard.file_path else {
+            return;
+        };
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                wizard.error_message = Some(format!("Failed to read file: {e}"));
+                return;
+            }
+        };
+
+        let target_name = if wizard.create_new_table {
+            wizard.new_table_name.trim().to_string()
+        } else {
+            wizard.target_table.trim().to_string()
+        };
+
+        match generate_csv_import_sql(
+            &target_name,
+            &wizard.headers,
+            &wizard.column_mappings,
+            &content,
+            wizard.create_new_table,
+        ) {
+            Ok(sql) => {
+                let count = wizard.total_rows;
+                self.tabs.push(QueryTab::new(format!("Import {target_name}"), sql));
+                self.active_tab_idx = self.tabs.len() - 1;
+                self.status_banner = format!("Generated import SQL for `{target_name}` ({count} rows).");
+                self.csv_wizard = None;
+            }
+            Err(e) => {
+                wizard.error_message = Some(format!("Error generating import SQL: {e}"));
+            }
+        }
     }
 
     fn execute_current_tab_query(&mut self, prefix_override: Option<&str>) {
@@ -1018,6 +1229,18 @@ impl MysqlRustyApp {
                     self.testing_connection = false;
                     self.test_connection_result = Some(res);
                 }
+                AsyncEvent::ServerVariablesLoaded(res) => {
+                    self.is_loading_variables = false;
+                    match res {
+                        Ok(vars) => {
+                            self.server_variables = vars;
+                            self.status_banner = format!("Loaded {} server variables.", self.server_variables.len());
+                        }
+                        Err(e) => {
+                            self.status_banner = format!("Failed to load server variables: {e}");
+                        }
+                    }
+                }
             }
         }
     }
@@ -1027,11 +1250,12 @@ impl eframe::App for MysqlRustyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_async_events();
 
-        // Global keyboard shortcuts (Ctrl+Enter, F5, Ctrl+Shift+Enter, Shift+F5)
+        // Global keyboard shortcuts (Ctrl+Enter, F5, Ctrl+Shift+Enter, Shift+F5, Ctrl+Shift+F)
         let is_modal_open = self.show_connection_modal || self.show_ai_settings_modal;
         if !is_modal_open {
             let mut global_run_stmt = false;
             let mut global_run_query = false;
+            let mut global_format_sql = false;
 
             ui.ctx().input_mut(|i| {
                 let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
@@ -1056,6 +1280,8 @@ impl eframe::App for MysqlRustyApp {
                     global_run_stmt = true;
                 } else if i.consume_key(Modifiers::NONE, Key::F5) {
                     global_run_query = true;
+                } else if is_ctrl && is_shift && i.consume_key(Modifiers::NONE, Key::F) {
+                    global_format_sql = true;
                 }
             });
 
@@ -1063,6 +1289,11 @@ impl eframe::App for MysqlRustyApp {
                 self.execute_current_statement();
             } else if global_run_query {
                 self.execute_current_tab_query(None);
+            } else if global_format_sql {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                    tab.sql = format_sql_pretty(&tab.sql);
+                    self.status_banner = "Formatted SQL query (Ctrl+Shift+F).".to_string();
+                }
             }
         }
 
@@ -1118,6 +1349,8 @@ impl eframe::App for MysqlRustyApp {
         self.render_schema_diff_modal(&ctx);
         self.render_mock_data_modal(&ctx);
         self.render_save_snippet_modal(&ctx);
+        self.render_cell_inspector_modal(&ctx);
+        self.render_csv_import_modal(&ctx);
     }
 }
 
@@ -1328,6 +1561,14 @@ impl MysqlRustyApp {
                     }
 
                     if ui
+                        .button("Save As...")
+                        .on_hover_text("Save query with custom title, tags, and description")
+                        .clicked()
+                    {
+                        self.open_save_query_modal();
+                    }
+
+                    if ui
                         .button("Open SQL...")
                         .on_hover_text("Open .sql script from disk (Ctrl+O)")
                         .clicked()
@@ -1522,6 +1763,13 @@ impl MysqlRustyApp {
                 .clicked()
             {
                 self.table_designer_draft = Some(TableDraft::new_empty("new_table"));
+            }
+            if ui
+                .small_button("📥 Import CSV")
+                .on_hover_text("Import a CSV file into a new or existing table with preview and mapping")
+                .clicked()
+            {
+                self.open_csv_import_dialog();
             }
             if ui
                 .small_button("Diff & Sync")
@@ -2641,6 +2889,9 @@ impl MysqlRustyApp {
             let mut request_fix_with_ai: Option<String> = None;
             let mut editor_run_query = false;
             let mut editor_run_stmt = false;
+            let in_tx = self.in_transaction;
+            let uncommitted_muts = self.uncommitted_mutations;
+            let mut trigger_tx_action: Option<u8> = None;
 
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 // Quick LIMIT Presets Bar
@@ -2746,6 +2997,72 @@ impl MysqlRustyApp {
                                 tab.is_dirty = true;
                             }
                         });
+
+                    ui.separator();
+                    if in_tx {
+                        ui.label(
+                            RichText::new(format!(
+                                "⚠️ IN TX ({} edit{})",
+                                uncommitted_muts,
+                                if uncommitted_muts == 1 { "" } else { "s" }
+                            ))
+                            .size(11.0)
+                            .color(Color32::from_rgb(250, 204, 21))
+                            .strong(),
+                        );
+                        let commit_btn = egui::Button::new(
+                            RichText::new("Commit")
+                                .size(11.0)
+                                .strong()
+                                .color(Color32::from_rgb(220, 252, 231)),
+                        )
+                        .fill(Color32::from_rgb(22, 101, 52))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(34, 197, 94)))
+                        .corner_radius(egui::CornerRadius::same(4));
+
+                        if ui
+                            .add(commit_btn)
+                            .on_hover_text("Commit current open transaction (COMMIT)")
+                            .clicked()
+                        {
+                            trigger_tx_action = Some(1);
+                        }
+
+                        let rb_btn = egui::Button::new(
+                            RichText::new("Rollback")
+                                .size(11.0)
+                                .strong()
+                                .color(Color32::from_rgb(254, 202, 202)),
+                        )
+                        .fill(Color32::from_rgb(153, 27, 27))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                        .corner_radius(egui::CornerRadius::same(4));
+
+                        if ui
+                            .add(rb_btn)
+                            .on_hover_text("Rollback current open transaction (ROLLBACK)")
+                            .clicked()
+                        {
+                            trigger_tx_action = Some(2);
+                        }
+                    } else {
+                        let begin_btn = egui::Button::new(
+                            RichText::new("Begin Tx")
+                                .size(11.0)
+                                .color(Color32::from_rgb(203, 213, 225)),
+                        )
+                        .fill(Color32::from_rgb(20, 27, 41))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .corner_radius(egui::CornerRadius::same(4));
+
+                        if ui
+                            .add(begin_btn)
+                            .on_hover_text("Start a manual transaction (START TRANSACTION)")
+                            .clicked()
+                        {
+                            trigger_tx_action = Some(3);
+                        }
+                    }
                 });
                 ui.add_space(2.0);
 
@@ -2950,6 +3267,13 @@ impl MysqlRustyApp {
                 }
             }
 
+            match trigger_tx_action {
+                Some(1) => self.commit_transaction(),
+                Some(2) => self.rollback_transaction(),
+                Some(3) => self.start_transaction(),
+                _ => {}
+            }
+
             if editor_run_stmt {
                 self.execute_current_statement();
             } else if editor_run_query {
@@ -3028,6 +3352,7 @@ impl MysqlRustyApp {
         let result = self.tabs[self.active_tab_idx].last_result.clone().unwrap();
         let mut trigger_commit_edits = false;
         let mut trigger_ai_prompt: Option<String> = None;
+        let mut cell_inspector_to_open: Option<CellInspectorState> = None;
         let pending_edits;
 
         {
@@ -3035,12 +3360,31 @@ impl MysqlRustyApp {
 
             // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
             ui.horizontal_wrapped(|ui| {
-            ui.label("Filter rows:");
+            ui.label("Filter:");
             ui.add(
                 egui::TextEdit::singleline(&mut tab.row_filter)
-                    .desired_width(170.0)
-                    .hint_text("Search any cell..."),
+                    .desired_width(130.0)
+                    .hint_text("Search text..."),
             );
+
+            let filter_btn_txt = if tab.show_visual_filter { "Hide Filter ▴" } else { "Column Filter ▾" };
+            if ui.small_button(filter_btn_txt).clicked() {
+                tab.show_visual_filter = !tab.show_visual_filter;
+            }
+
+            ui.separator();
+            egui::ComboBox::from_id_salt("results_page_size_combo")
+                .selected_text(if tab.page_size == 0 { "All rows".to_string() } else { format!("{} / page", tab.page_size) })
+                .width(85.0)
+                .show_ui(ui, |ui| {
+                    for ps in [25, 50, 100, 250, 500, 0] {
+                        let label = if ps == 0 { "All".to_string() } else { format!("{ps}") };
+                        if ui.selectable_label(tab.page_size == ps, label).clicked() {
+                            tab.page_size = ps;
+                            tab.current_page = 0;
+                        }
+                    }
+                });
 
             ui.separator();
             ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "Table");
@@ -3151,7 +3495,73 @@ impl MysqlRustyApp {
             });
         });
 
-        ui.add_space(4.0);
+        ui.add_space(2.0);
+
+        // Visual Column Filter Bar
+        if tab.show_visual_filter {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Where:").size(12.0).strong().color(Color32::from_rgb(56, 189, 248)));
+                let selected_col_name = tab.visual_filter_col
+                    .and_then(|idx| result.columns.get(idx))
+                    .cloned()
+                    .unwrap_or_else(|| "Any Column".to_string());
+
+                egui::ComboBox::from_id_salt("results_vis_filter_col_combo")
+                    .selected_text(selected_col_name)
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(tab.visual_filter_col.is_none(), "Any Column").clicked() {
+                            tab.visual_filter_col = None;
+                            tab.current_page = 0;
+                        }
+                        for (i, col) in result.columns.iter().enumerate() {
+                            if ui.selectable_label(tab.visual_filter_col == Some(i), col).clicked() {
+                                tab.visual_filter_col = Some(i);
+                                tab.current_page = 0;
+                            }
+                        }
+                    });
+
+                egui::ComboBox::from_id_salt("results_vis_filter_op_combo")
+                    .selected_text(tab.visual_filter_op.label())
+                    .width(115.0)
+                    .show_ui(ui, |ui| {
+                        for op in [
+                            VisualFilterOp::Contains,
+                            VisualFilterOp::Equals,
+                            VisualFilterOp::NotEquals,
+                            VisualFilterOp::StartsWith,
+                            VisualFilterOp::GreaterThan,
+                            VisualFilterOp::LessThan,
+                            VisualFilterOp::IsNull,
+                            VisualFilterOp::IsNotNull,
+                        ] {
+                            if ui.selectable_label(tab.visual_filter_op == op, op.label()).clicked() {
+                                tab.visual_filter_op = op;
+                                tab.current_page = 0;
+                            }
+                        }
+                    });
+
+                if tab.visual_filter_op != VisualFilterOp::IsNull && tab.visual_filter_op != VisualFilterOp::IsNotNull {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut tab.visual_filter_val)
+                            .desired_width(160.0)
+                            .hint_text("Value to match..."),
+                    );
+                    if resp.changed() {
+                        tab.current_page = 0;
+                    }
+                }
+
+                if (!tab.visual_filter_val.is_empty() || tab.visual_filter_col.is_some()) && ui.small_button("Clear").clicked() {
+                    tab.visual_filter_val.clear();
+                    tab.visual_filter_col = None;
+                    tab.current_page = 0;
+                }
+            });
+            ui.add_space(2.0);
+        }
 
         if tab.view_mode == ResultViewMode::Chart {
             Self::draw_results_chart(ui, tab, &result);
@@ -3160,14 +3570,53 @@ impl MysqlRustyApp {
 
         // Filter & sort rows
         let filter_lower = tab.row_filter.to_lowercase();
+        let val_filter_lower = tab.visual_filter_val.to_lowercase();
         let mut filtered_indices: Vec<usize> = (0..result.rows.len())
             .filter(|&r_idx| {
-                if filter_lower.is_empty() {
-                    return true;
+                let row = &result.rows[r_idx];
+                if !filter_lower.is_empty() && !row.iter().any(|c| c.display_text().to_lowercase().contains(&filter_lower)) {
+                    return false;
                 }
-                result.rows[r_idx]
-                    .iter()
-                    .any(|c| c.display_text().to_lowercase().contains(&filter_lower))
+                if let Some(col_idx) = tab.visual_filter_col {
+                    if let Some(cell) = row.get(col_idx) {
+                        let text = cell.display_text();
+                        let text_lower = text.to_lowercase();
+                        match tab.visual_filter_op {
+                            VisualFilterOp::Contains => text_lower.contains(&val_filter_lower),
+                            VisualFilterOp::Equals => text.eq_ignore_ascii_case(&tab.visual_filter_val),
+                            VisualFilterOp::NotEquals => !text.eq_ignore_ascii_case(&tab.visual_filter_val),
+                            VisualFilterOp::StartsWith => text_lower.starts_with(&val_filter_lower),
+                            VisualFilterOp::GreaterThan => {
+                                if let (Ok(n1), Ok(n2)) = (text.parse::<f64>(), tab.visual_filter_val.parse::<f64>()) {
+                                    n1 > n2
+                                } else {
+                                    text > tab.visual_filter_val
+                                }
+                            }
+                            VisualFilterOp::LessThan => {
+                                if let (Ok(n1), Ok(n2)) = (text.parse::<f64>(), tab.visual_filter_val.parse::<f64>()) {
+                                    n1 < n2
+                                } else {
+                                    text < tab.visual_filter_val
+                                }
+                            }
+                            VisualFilterOp::IsNull => text.is_empty() || text == "NULL",
+                            VisualFilterOp::IsNotNull => !text.is_empty() && text != "NULL",
+                        }
+                    } else {
+                        false
+                    }
+                } else if !val_filter_lower.is_empty() {
+                    match tab.visual_filter_op {
+                        VisualFilterOp::Contains => row.iter().any(|c| c.display_text().to_lowercase().contains(&val_filter_lower)),
+                        VisualFilterOp::Equals => row.iter().any(|c| c.display_text().eq_ignore_ascii_case(&tab.visual_filter_val)),
+                        VisualFilterOp::NotEquals => !row.iter().any(|c| c.display_text().eq_ignore_ascii_case(&tab.visual_filter_val)),
+                        VisualFilterOp::StartsWith => row.iter().any(|c| c.display_text().to_lowercase().starts_with(&val_filter_lower)),
+                        _ => true,
+                    }
+                } else {
+                    true
+                }
             })
             .collect();
 
@@ -3183,6 +3632,51 @@ impl MysqlRustyApp {
                     .unwrap_or_default();
                 if asc { va.cmp(&vb) } else { vb.cmp(&va) }
             });
+        }
+
+        let total_matching = filtered_indices.len();
+        let total_pages = if tab.page_size == 0 {
+            1
+        } else {
+            (total_matching + tab.page_size - 1) / tab.page_size
+        }.max(1);
+
+        if tab.current_page >= total_pages {
+            tab.current_page = total_pages.saturating_sub(1);
+        }
+
+        let (display_start, display_end) = if tab.page_size == 0 {
+            (0, total_matching)
+        } else {
+            let start = tab.current_page * tab.page_size;
+            let end = (start + tab.page_size).min(total_matching);
+            (start, end)
+        };
+        let page_indices: Vec<usize> = if total_matching > 0 && display_start < total_matching {
+            filtered_indices[display_start..display_end].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Render pagination navigation if pages > 1
+        if tab.page_size > 0 && total_pages > 1 {
+            ui.horizontal(|ui| {
+                if ui.small_button("◀ Prev").clicked() && tab.current_page > 0 {
+                    tab.current_page -= 1;
+                }
+                ui.label(RichText::new(format!(
+                    "Showing rows {}-{} of {} (Page {} of {})",
+                    if total_matching == 0 { 0 } else { display_start + 1 },
+                    display_end,
+                    total_matching,
+                    tab.current_page + 1,
+                    total_pages
+                )).small().weak());
+                if ui.small_button("Next ▶").clicked() && tab.current_page + 1 < total_pages {
+                    tab.current_page += 1;
+                }
+            });
+            ui.add_space(2.0);
         }
 
         let pk_col_idx = result.primary_key_column.as_ref().and_then(|pk| {
@@ -3226,8 +3720,8 @@ impl MysqlRustyApp {
                 }
             })
             .body(|body| {
-                body.rows(22.0, filtered_indices.len(), |mut row| {
-                    let actual_row_idx = filtered_indices[row.index()];
+                body.rows(22.0, page_indices.len(), |mut row| {
+                    let actual_row_idx = page_indices[row.index()];
                     let row_cells = &result.rows[actual_row_idx];
 
                     for col_idx in 0..result.columns.len() {
@@ -3288,13 +3782,48 @@ impl MysqlRustyApp {
 
                                 let label_resp =
                                     ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                                if label_resp.double_clicked() && pk_col_idx.is_some() {
-                                    tab.editing_cell = Some((
-                                        actual_row_idx,
-                                        col_idx,
-                                        cell.display_text(),
-                                    ));
+                                if label_resp.double_clicked() {
+                                    if pk_col_idx.is_some() {
+                                        tab.editing_cell = Some((
+                                            actual_row_idx,
+                                            col_idx,
+                                            cell.display_text(),
+                                        ));
+                                    } else {
+                                        let raw_val = cell.display_text();
+                                        let formatted_json = serde_json::from_str::<serde_json::Value>(&raw_val)
+                                            .ok()
+                                            .and_then(|v| serde_json::to_string_pretty(&v).ok());
+                                        cell_inspector_to_open = Some(CellInspectorState {
+                                            table_name: result.editable_table.clone(),
+                                            column_name: result.columns[col_idx].clone(),
+                                            row_index: actual_row_idx,
+                                            raw_value: raw_val,
+                                            formatted_json,
+                                        });
+                                    }
                                 }
+
+                                label_resp.context_menu(|ui| {
+                                    if ui.button("🔍 Inspect Cell / JSON").clicked() {
+                                        let raw_val = cell.display_text();
+                                        let formatted_json = serde_json::from_str::<serde_json::Value>(&raw_val)
+                                            .ok()
+                                            .and_then(|v| serde_json::to_string_pretty(&v).ok());
+                                        cell_inspector_to_open = Some(CellInspectorState {
+                                            table_name: result.editable_table.clone(),
+                                            column_name: result.columns[col_idx].clone(),
+                                            row_index: actual_row_idx,
+                                            raw_value: raw_val,
+                                            formatted_json,
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui.button("📋 Copy Value").clicked() {
+                                        ui.ctx().copy_text(cell.display_text());
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                     }
@@ -3302,6 +3831,10 @@ impl MysqlRustyApp {
             });
 
             pending_edits = tab.pending_edits.clone();
+        }
+
+        if let Some(ci) = cell_inspector_to_open {
+            self.cell_inspector = Some(ci);
         }
 
         if let Some(prompt) = trigger_ai_prompt {
@@ -3571,6 +4104,101 @@ impl MysqlRustyApp {
                             );
                         });
                 }
+
+                // Index Advisor Recommendation
+                let mut advise_index_actions: Vec<(String, String)> = Vec::new();
+                for row in &res.rows {
+                    let table_name = col_table_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_default();
+                    let access_type = col_type_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_default();
+                    let key_used = col_key_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_default();
+                    let extra = col_extra_idx
+                        .and_then(|i| row.get(i))
+                        .map(|c| c.display_text())
+                        .unwrap_or_default();
+
+                    if !table_name.is_empty()
+                        && (access_type.eq_ignore_ascii_case("ALL")
+                            || key_used == "NULL"
+                            || extra.contains("Using filesort"))
+                    {
+                        let recommended_cols = if let Some(schema) =
+                            self.schemas.get(&self.active_database)
+                        {
+                            if let Some(tbl) = schema
+                                .tables
+                                .iter()
+                                .find(|t| t.name.eq_ignore_ascii_case(&table_name))
+                            {
+                                tbl.columns
+                                    .iter()
+                                    .filter(|c| !c.is_primary_key)
+                                    .take(2)
+                                    .map(|c| c.name.clone())
+                                    .collect::<Vec<_>>()
+                            } else {
+                                vec!["created_at".to_string()]
+                            }
+                        } else {
+                            vec!["status".to_string()]
+                        };
+                        let col_str = recommended_cols.join(", ");
+                        let first_col = recommended_cols
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "lookup".into());
+                        let idx_name = format!("idx_{}_{}", table_name, first_col);
+                        let ddl =
+                            format!("CREATE INDEX `{idx_name}` ON `{table_name}` ({col_str});");
+                        if !advise_index_actions.iter().any(|(t, _)| t == &table_name) {
+                            advise_index_actions.push((table_name, ddl));
+                        }
+                    }
+                }
+
+                if !advise_index_actions.is_empty() {
+                    ui.add_space(6.0);
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(30, 27, 75))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(129, 140, 248)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("💡 Index Advisor Recommendations")
+                                        .strong()
+                                        .color(Color32::from_rgb(165, 180, 252)),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            for (tbl, ddl) in advise_index_actions {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("• For `{tbl}`:")).strong().small(),
+                                    );
+                                    ui.monospace(&ddl);
+                                    if ui.small_button("📋 Copy").clicked() {
+                                        ui.ctx().copy_text(ddl.clone());
+                                        self.status_banner =
+                                            format!("Copied index DDL for `{tbl}` to clipboard.");
+                                    }
+                                    if ui.small_button("⚡ Open in Tab").clicked() {
+                                        self.tabs.push(QueryTab::new(format!("Index {tbl}"), ddl));
+                                        self.active_tab_idx = self.tabs.len() - 1;
+                                    }
+                                });
+                            }
+                        });
+                }
             }
         }
         if let Some(schema) = self.schemas.get(&self.active_database) {
@@ -3606,6 +4234,112 @@ impl MysqlRustyApp {
             }
         });
         ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.server_admin_subtab,
+                ServerAdminSubtab::OverviewAndMetrics,
+                "📊 Metrics & Processes",
+            );
+            ui.selectable_value(
+                &mut self.server_admin_subtab,
+                ServerAdminSubtab::ServerVariables,
+                "⚙️ Server Variables (SHOW VARIABLES)",
+            );
+        });
+        ui.separator();
+
+        if self.server_admin_subtab == ServerAdminSubtab::ServerVariables {
+            if self.server_variables.is_empty() && !self.is_loading_variables {
+                self.fetch_server_variables();
+            }
+            ui.horizontal(|ui| {
+                ui.label("Filter variables:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.server_variables_filter)
+                        .desired_width(220.0)
+                        .hint_text("Search name or value..."),
+                );
+                if ui.button("Reload").clicked() {
+                    self.fetch_server_variables();
+                }
+                if self.is_loading_variables {
+                    ui.spinner();
+                    ui.label("Loading variables from server...");
+                }
+            });
+            ui.separator();
+
+            let filter = self.server_variables_filter.to_lowercase();
+            let filtered_vars: Vec<&(String, String)> = self
+                .server_variables
+                .iter()
+                .filter(|(k, v)| {
+                    filter.is_empty()
+                        || k.to_lowercase().contains(&filter)
+                        || v.to_lowercase().contains(&filter)
+                })
+                .collect();
+
+            ui.label(
+                RichText::new(format!(
+                    "Showing {} of {} server variables",
+                    filtered_vars.len(),
+                    self.server_variables.len()
+                ))
+                .small()
+                .weak(),
+            );
+
+            let mut copy_val: Option<String> = None;
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .column(Column::initial(240.0).at_least(140.0))
+                .column(Column::remainder().at_least(180.0))
+                .column(Column::exact(65.0))
+                .header(22.0, |mut h| {
+                    h.col(|ui| {
+                        ui.strong("Variable Name");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Value");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Action");
+                    });
+                })
+                .body(|body| {
+                    body.rows(20.0, filtered_vars.len(), |mut row| {
+                        let (k, v) = filtered_vars[row.index()];
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(k)
+                                    .monospace()
+                                    .color(Color32::from_rgb(56, 189, 248)),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.label(RichText::new(v).monospace());
+                        });
+                        row.col(|ui| {
+                            if ui
+                                .small_button("📋")
+                                .on_hover_text("Copy variable value")
+                                .clicked()
+                            {
+                                copy_val = Some(v.clone());
+                            }
+                        });
+                    });
+                });
+
+            if let Some(val) = copy_val {
+                ui.ctx().copy_text(val);
+                self.status_banner = "Copied variable value to clipboard.".to_string();
+            }
+            return;
+        }
 
         // Server Metrics Cards
         let uptime_str = self.server_status_metrics.get("Uptime");
@@ -4398,6 +5132,9 @@ impl MysqlRustyApp {
                         if ui.button("▶ Open in Query Tab").clicked() {
                             open_in_tab_sql = Some(report.migration_sql.clone());
                         }
+                        if ui.button("📄 Versioned Migration").clicked() {
+                            open_in_tab_sql = Some(report.generate_migration_file_content());
+                        }
                     });
                 } else {
                     ui.vertical_centered(|ui| {
@@ -4617,6 +5354,248 @@ impl MysqlRustyApp {
             self.save_active_tab_to_file(true);
         } else if !open {
             self.show_save_snippet_modal = false;
+        }
+    }
+
+    fn render_cell_inspector_modal(&mut self, ctx: &egui::Context) {
+        let Some(inspector) = &self.cell_inspector else {
+            return;
+        };
+        let mut close_modal = false;
+        let mut copy_val: Option<String> = None;
+
+        egui::Window::new("🔍 Cell Value & JSON Inspector")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([580.0, 420.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Column: `{}`", inspector.column_name))
+                            .strong()
+                            .color(Color32::from_rgb(56, 189, 248)),
+                    );
+                    if let Some(tbl) = &inspector.table_name {
+                        ui.label(RichText::new(format!("Table: `{tbl}`")).weak());
+                    }
+                    ui.label(RichText::new(format!("Row: #{}", inspector.row_index + 1)).weak());
+                    if inspector.formatted_json.is_some() {
+                        ui.label(
+                            RichText::new("[VALID JSON]")
+                                .color(Color32::from_rgb(34, 197, 94))
+                                .strong()
+                                .small(),
+                        );
+                    }
+                });
+                ui.separator();
+
+                let is_json = inspector.formatted_json.is_some();
+                let display_text = if let Some(pretty) = &inspector.formatted_json {
+                    pretty
+                } else {
+                    &inspector.raw_value
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Length: {} chars ({} bytes){}",
+                            display_text.len(),
+                            display_text.as_bytes().len(),
+                            if is_json { " (Prettified JSON)" } else { "" }
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("📋 Copy Value").clicked() {
+                            copy_val = Some(display_text.clone());
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+
+                egui::ScrollArea::both()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut display_text.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close_modal = true;
+                    }
+                });
+            });
+
+        if let Some(val) = copy_val {
+            ctx.copy_text(val);
+            self.status_banner = "Copied cell content to clipboard.".to_string();
+        }
+        if close_modal {
+            self.cell_inspector = None;
+        }
+    }
+
+    fn render_csv_import_modal(&mut self, ctx: &egui::Context) {
+        let Some(wizard) = &mut self.csv_wizard else {
+            return;
+        };
+        let mut close_modal = false;
+        let mut trigger_import = false;
+
+        egui::Window::new("📥 CSV Import Wizard")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([650.0, 520.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        RichText::new("Import Data from CSV")
+                            .color(Color32::from_rgb(56, 189, 248))
+                            .size(16.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("File: `{}`", wizard.file_name)).strong());
+                    ui.label(format!("({} total rows detected)", wizard.total_rows));
+                });
+                ui.add_space(6.0);
+
+                // Target table configuration
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut wizard.create_new_table, false, "Existing Table:");
+                    let current_target = &mut wizard.target_table;
+                    let tables = self
+                        .schemas
+                        .get(&self.active_database)
+                        .map(|s| s.tables.clone())
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("csv_target_table_combo")
+                        .selected_text(if current_target.is_empty() {
+                            "Select a table..."
+                        } else {
+                            current_target.as_str()
+                        })
+                        .show_ui(ui, |ui| {
+                            for tbl in &tables {
+                                ui.selectable_value(current_target, tbl.name.clone(), &tbl.name);
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut wizard.create_new_table, true, "Create New Table:");
+                    ui.add(egui::TextEdit::singleline(&mut wizard.new_table_name).hint_text("table_name"));
+                });
+
+                ui.separator();
+                ui.label(RichText::new("Column Mapping:").strong());
+                egui::ScrollArea::vertical()
+                    .id_salt("csv_mapping_scroll")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (csv_col, db_col) in wizard.column_mappings.iter_mut() {
+                            ui.horizontal(|ui| {
+                                ui.set_min_width(180.0);
+                                ui.label(RichText::new(format!("CSV `{csv_col}`")).monospace());
+                                ui.label("➜");
+                                ui.add(
+                                    egui::TextEdit::singleline(db_col)
+                                        .desired_width(160.0)
+                                        .hint_text("db_column_name"),
+                                );
+                            });
+                        }
+                    });
+
+                ui.separator();
+                ui.label(RichText::new("Data Preview (First 5 Rows):").strong());
+                egui::ScrollArea::horizontal()
+                    .id_salt("csv_preview_scroll")
+                    .max_height(100.0)
+                    .show(ui, |ui| {
+                        let num_cols = wizard.headers.len().max(1);
+                        let mut builder = TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                        for _ in 0..num_cols {
+                            builder = builder.column(Column::initial(100.0).at_least(60.0));
+                        }
+                        builder
+                            .header(20.0, |mut h| {
+                                for head in &wizard.headers {
+                                    h.col(|ui| {
+                                        ui.strong(head);
+                                    });
+                                }
+                            })
+                            .body(|mut b| {
+                                for row in &wizard.sample_rows {
+                                    b.row(18.0, |mut r| {
+                                        for cell in row {
+                                            r.col(|ui| {
+                                                ui.label(cell);
+                                            });
+                                        }
+                                    });
+                                }
+                            });
+                    });
+
+                if let Some(err) = &wizard.error_message {
+                    ui.colored_label(Color32::from_rgb(239, 68, 68), err);
+                }
+                if let Some(msg) = &wizard.status_message {
+                    ui.colored_label(Color32::from_rgb(34, 197, 94), msg);
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let target_name = if wizard.create_new_table {
+                        wizard.new_table_name.trim()
+                    } else {
+                        wizard.target_table.trim()
+                    };
+                    let can_import = !target_name.is_empty() && !wizard.is_importing;
+
+                    let btn = egui::Button::new(
+                        RichText::new("🚀 Import Now")
+                            .strong()
+                            .color(Color32::from_rgb(16, 185, 129)),
+                    )
+                    .fill(Color32::from_rgb(6, 78, 59));
+                    if ui.add_enabled(can_import, btn).clicked() {
+                        trigger_import = true;
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        close_modal = true;
+                    }
+                });
+            });
+
+        if trigger_import {
+            self.execute_csv_import();
+        }
+        if close_modal {
+            self.csv_wizard = None;
         }
     }
 }
