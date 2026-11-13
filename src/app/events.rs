@@ -736,6 +736,49 @@ impl MysqlRustyApp {
                         self.status_banner = format!("Failed to load routine parameters: {e}");
                     }
                 },
+                AsyncEvent::UsersLoaded(res) => {
+                    self.users_loading = false;
+                    match res {
+                        Ok(users) => {
+                            self.users_error = None;
+                            self.users_list = users;
+                            if self.selected_user_idx.is_none() && !self.users_list.is_empty() {
+                                self.select_user(0);
+                            }
+                        }
+                        Err(e) => {
+                            self.users_error = Some(e.clone());
+                            self.status_banner = format!("Failed to load users: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::UserGrantsLoaded { user, host, grants } => {
+                    if user == self.user_form_name && host == self.user_form_host {
+                        match grants {
+                            Ok(g) => {
+                                let parsed = crate::db::parse_granted_privileges(&g);
+                                self.user_original_privs = parsed.clone();
+                                self.user_edited_privs = parsed;
+                                self.user_raw_grants = g;
+                            }
+                            Err(e) => {
+                                self.users_error = Some(e.clone());
+                            }
+                        }
+                    }
+                }
+                AsyncEvent::UserActionFinished(res) => match res {
+                    Ok(msg) => {
+                        self.status_banner = msg;
+                        self.user_new_mode = false;
+                        self.user_form_password.clear();
+                        self.fetch_users();
+                    }
+                    Err(e) => {
+                        self.users_error = Some(e.clone());
+                        self.status_banner = format!("User action failed: {e}");
+                    }
+                },
             }
         }
     }

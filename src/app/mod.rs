@@ -225,6 +225,21 @@ pub struct MysqlRustyApp {
 
     // Routine Call Modal (#35)
     routine_call_modal: Option<RoutineCallModalState>,
+
+    // Users & Privileges (#36)
+    users_list: Vec<crate::db::UserInfo>,
+    users_loading: bool,
+    users_error: Option<String>,
+    selected_user_idx: Option<usize>,
+    user_original_privs: std::collections::HashSet<String>,
+    user_edited_privs: std::collections::HashSet<String>,
+    user_raw_grants: Vec<String>,
+    user_new_mode: bool,
+    user_form_name: String,
+    user_form_host: String,
+    user_form_plugin: String,
+    user_form_password: String,
+    user_form_expire: bool,
 }
 
 impl MysqlRustyApp {
@@ -403,6 +418,19 @@ impl MysqlRustyApp {
             slow_queries_confirm_reset: false,
             slow_queries_error: None,
             routine_call_modal: None,
+            users_list: Vec::new(),
+            users_loading: false,
+            users_error: None,
+            selected_user_idx: None,
+            user_original_privs: std::collections::HashSet::new(),
+            user_edited_privs: std::collections::HashSet::new(),
+            user_raw_grants: Vec::new(),
+            user_new_mode: false,
+            user_form_name: String::new(),
+            user_form_host: "%".to_string(),
+            user_form_plugin: "caching_sha2_password".to_string(),
+            user_form_password: String::new(),
+            user_form_expire: false,
         }
     }
 }

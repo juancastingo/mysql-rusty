@@ -73,6 +73,13 @@ pub enum AsyncEvent {
         routine_name: String,
         params: Result<Vec<crate::db::RoutineParamInfo>, String>,
     },
+    UsersLoaded(Result<Vec<crate::db::UserInfo>, String>),
+    UserGrantsLoaded {
+        user: String,
+        host: String,
+        grants: Result<Vec<String>, String>,
+    },
+    UserActionFinished(Result<String, String>),
 }
 
 pub struct RoutineCallModalState {

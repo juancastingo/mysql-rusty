@@ -5,6 +5,7 @@ pub enum ServerAdminSubtab {
     OverviewAndMetrics,
     ServerVariables,
     SlowQueries,
+    UsersAndPrivileges,
 }
 
 impl MysqlRustyApp {
@@ -105,8 +106,18 @@ impl MysqlRustyApp {
                 ServerAdminSubtab::SlowQueries,
                 "Slow Queries",
             );
+            ui.selectable_value(
+                &mut self.server_admin_subtab,
+                ServerAdminSubtab::UsersAndPrivileges,
+                "Users & Privileges",
+            );
         });
         ui.separator();
+
+        if self.server_admin_subtab == ServerAdminSubtab::UsersAndPrivileges {
+            self.render_users_and_privileges_subtab(ui);
+            return;
+        }
 
         if self.server_admin_subtab == ServerAdminSubtab::SlowQueries {
             self.render_slow_queries_subtab(ui);
@@ -683,6 +694,360 @@ impl MysqlRustyApp {
             self.tabs.push(QueryTab::new(format!("Explain {n}"), sql));
             self.active_tab_idx = self.tabs.len() - 1;
             self.execute_current_tab_query(Some("EXPLAIN"));
+        }
+    }
+
+    pub(crate) fn fetch_users(&mut self) {
+        let Some(session) = self.active_session.clone() else {
+            return;
+        };
+        self.users_loading = true;
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let res = session.list_users().await.map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::UsersLoaded(res));
+        });
+    }
+
+    pub(crate) fn select_user(&mut self, idx: usize) {
+        let Some(u) = self.users_list.get(idx).cloned() else {
+            return;
+        };
+        self.selected_user_idx = Some(idx);
+        self.user_new_mode = false;
+        self.user_form_name = u.user.clone();
+        self.user_form_host = u.host.clone();
+        self.user_form_plugin = u.plugin.clone();
+        self.user_form_password.clear();
+        self.user_form_expire = u.password_expired;
+
+        let Some(session) = self.active_session.clone() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let grants = session
+                .fetch_user_grants(&u.user, &u.host)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::UserGrantsLoaded {
+                user: u.user,
+                host: u.host,
+                grants,
+            });
+        });
+    }
+
+    fn render_users_and_privileges_subtab(&mut self, ui: &mut Ui) {
+        if self.users_list.is_empty() && !self.users_loading && self.users_error.is_none() {
+            self.fetch_users();
+        }
+
+        let is_read_only = self
+            .active_profile_id
+            .as_ref()
+            .and_then(|id| self.config.connections.iter().find(|p| &p.id == id))
+            .is_some_and(|p| p.read_only);
+
+        if is_read_only {
+            ui.colored_label(
+                Color32::from_rgb(251, 191, 36),
+                "Read-Only connection: user creation, deletion, and privilege edits are disabled.",
+            );
+        }
+        if let Some(err) = &self.users_error {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+        }
+
+        let mut select_idx: Option<usize> = None;
+        let mut do_refresh = false;
+        let mut do_delete: Option<(String, String)> = None;
+        let mut do_create = false;
+        let mut do_update_pw = false;
+        let mut do_apply_privs = false;
+
+        ui.columns(2, |cols| {
+            // Left pane: Master list
+            cols[0].horizontal(|ui| {
+                ui.label(RichText::new("Database Accounts").strong());
+                if ui.small_button("Refresh").clicked() {
+                    do_refresh = true;
+                }
+                if ui
+                    .add_enabled(!is_read_only, egui::Button::new("+ Add Account").small())
+                    .clicked()
+                {
+                    self.user_new_mode = true;
+                    self.selected_user_idx = None;
+                    self.user_form_name.clear();
+                    self.user_form_host = "%".to_string();
+                    self.user_form_plugin = "caching_sha2_password".to_string();
+                    self.user_form_password.clear();
+                    self.user_form_expire = false;
+                    self.user_original_privs.clear();
+                    self.user_edited_privs.clear();
+                }
+                if let Some(idx) = self.selected_user_idx
+                    && let Some(u) = self.users_list.get(idx)
+                    && ui
+                        .add_enabled(!is_read_only, egui::Button::new("Delete").small())
+                        .clicked()
+                {
+                    do_delete = Some((u.user.clone(), u.host.clone()));
+                }
+            });
+            cols[0].separator();
+            egui::ScrollArea::vertical()
+                .id_salt("users_master_list")
+                .max_height(380.0)
+                .show(&mut cols[0], |ui| {
+                    for (idx, u) in self.users_list.iter().enumerate() {
+                        let selected = !self.user_new_mode && self.selected_user_idx == Some(idx);
+                        let label = if u.account_locked {
+                            format!("{}@{} [LOCKED]", u.user, u.host)
+                        } else {
+                            format!("{}@{}", u.user, u.host)
+                        };
+                        if ui.selectable_label(selected, label).clicked() {
+                            select_idx = Some(idx);
+                        }
+                    }
+                });
+
+            // Right pane: Details & Privileges
+            cols[1].heading(if self.user_new_mode {
+                "New User Account".to_string()
+            } else if !self.user_form_name.is_empty() {
+                format!("Account: {}@{}", self.user_form_name, self.user_form_host)
+            } else {
+                "Select a user account".to_string()
+            });
+            cols[1].separator();
+
+            egui::Grid::new("user_login_grid")
+                .num_columns(2)
+                .spacing([10.0, 6.0])
+                .show(&mut cols[1], |ui| {
+                    ui.label("Username:");
+                    ui.add_enabled(
+                        self.user_new_mode && !is_read_only,
+                        egui::TextEdit::singleline(&mut self.user_form_name).desired_width(200.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Host:");
+                    ui.add_enabled(
+                        self.user_new_mode && !is_read_only,
+                        egui::TextEdit::singleline(&mut self.user_form_host).desired_width(200.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Auth Plugin:");
+                    egui::ComboBox::from_id_salt("user_plugin_combo")
+                        .selected_text(&self.user_form_plugin)
+                        .show_ui(ui, |ui| {
+                            for p in ["caching_sha2_password", "mysql_native_password"] {
+                                ui.selectable_value(&mut self.user_form_plugin, p.to_string(), p);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Password:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.user_form_password)
+                            .password(true)
+                            .desired_width(200.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Password Status:");
+                    ui.checkbox(&mut self.user_form_expire, "Expire password");
+                    ui.end_row();
+                });
+
+            cols[1].horizontal(|ui| {
+                if self.user_new_mode {
+                    if ui
+                        .add_enabled(
+                            !is_read_only && !self.user_form_name.trim().is_empty(),
+                            egui::Button::new("Create User"),
+                        )
+                        .clicked()
+                    {
+                        do_create = true;
+                    }
+                } else if self.selected_user_idx.is_some()
+                    && ui
+                        .add_enabled(
+                            !is_read_only && !self.user_form_password.is_empty(),
+                            egui::Button::new("Update Password"),
+                        )
+                        .clicked()
+                {
+                    do_update_pw = true;
+                }
+            });
+
+            if !self.user_new_mode && self.selected_user_idx.is_some() {
+                cols[1].separator();
+                cols[1].label(RichText::new("Administrative & Schema Privileges").strong());
+                let groups: &[(&str, &[&str])] = &[
+                    ("Data", &["SELECT", "INSERT", "UPDATE", "DELETE"]),
+                    (
+                        "Structure",
+                        &[
+                            "CREATE",
+                            "ALTER",
+                            "DROP",
+                            "INDEX",
+                            "CREATE VIEW",
+                            "SHOW VIEW",
+                        ],
+                    ),
+                    (
+                        "Administration",
+                        &[
+                            "SUPER",
+                            "PROCESS",
+                            "RELOAD",
+                            "REPLICATION CLIENT",
+                            "SHOW DATABASES",
+                        ],
+                    ),
+                ];
+                for (group_name, privs) in groups {
+                    cols[1].label(RichText::new(*group_name).small().weak());
+                    cols[1].horizontal_wrapped(|ui| {
+                        for p in *privs {
+                            let mut checked = self.user_edited_privs.contains(*p);
+                            if ui
+                                .add_enabled(!is_read_only, egui::Checkbox::new(&mut checked, *p))
+                                .changed()
+                            {
+                                if checked {
+                                    self.user_edited_privs.insert((*p).to_string());
+                                } else {
+                                    self.user_edited_privs.remove(*p);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                let mut grants: Vec<String> = self
+                    .user_edited_privs
+                    .difference(&self.user_original_privs)
+                    .cloned()
+                    .collect();
+                let mut revokes: Vec<String> = self
+                    .user_original_privs
+                    .difference(&self.user_edited_privs)
+                    .cloned()
+                    .collect();
+                grants.sort();
+                revokes.sort();
+
+                let preview = crate::db::build_grant_revoke_sql(
+                    &self.user_form_name,
+                    &self.user_form_host,
+                    "*.*",
+                    &grants,
+                    &revokes,
+                );
+                if !preview.is_empty() {
+                    cols[1].add_space(4.0);
+                    cols[1].label(RichText::new(preview.join(";\n")).monospace().small());
+                }
+
+                cols[1].horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !is_read_only && (!grants.is_empty() || !revokes.is_empty()),
+                            egui::Button::new("Apply Changes"),
+                        )
+                        .clicked()
+                    {
+                        do_apply_privs = true;
+                    }
+                    if ui.button("Revert").clicked() {
+                        self.user_edited_privs = self.user_original_privs.clone();
+                    }
+                });
+            }
+        });
+
+        if do_refresh {
+            self.fetch_users();
+        }
+        if let Some(idx) = select_idx {
+            self.select_user(idx);
+        }
+        if let Some((user, host)) = do_delete
+            && let Some(session) = self.active_session.clone()
+        {
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let res = session
+                    .drop_user(&user, &host)
+                    .await
+                    .map(|()| format!("Dropped user `{user}`@`{host}`."))
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::UserActionFinished(res));
+            });
+        }
+        if do_create && let Some(session) = self.active_session.clone() {
+            let user = self.user_form_name.trim().to_string();
+            let host = self.user_form_host.trim().to_string();
+            let pw = self.user_form_password.clone();
+            let plugin = self.user_form_plugin.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let res = session
+                    .create_user(&user, &host, &pw, &plugin)
+                    .await
+                    .map(|()| format!("Created user `{user}`@`{host}`."))
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::UserActionFinished(res));
+            });
+        }
+        if do_update_pw && let Some(session) = self.active_session.clone() {
+            let user = self.user_form_name.clone();
+            let host = self.user_form_host.clone();
+            let pw = self.user_form_password.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let res = session
+                    .update_user_password(&user, &host, &pw)
+                    .await
+                    .map(|()| format!("Updated password for `{user}`@`{host}`."))
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::UserActionFinished(res));
+            });
+        }
+        if do_apply_privs && let Some(session) = self.active_session.clone() {
+            let mut grants: Vec<String> = self
+                .user_edited_privs
+                .difference(&self.user_original_privs)
+                .cloned()
+                .collect();
+            let mut revokes: Vec<String> = self
+                .user_original_privs
+                .difference(&self.user_edited_privs)
+                .cloned()
+                .collect();
+            grants.sort();
+            revokes.sort();
+            let user = self.user_form_name.clone();
+            let host = self.user_form_host.clone();
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let res = session
+                    .apply_user_privileges(&user, &host, &grants, &revokes)
+                    .await
+                    .map(|()| format!("Updated privileges for `{user}`@`{host}`."))
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::UserActionFinished(res));
+            });
         }
     }
 }

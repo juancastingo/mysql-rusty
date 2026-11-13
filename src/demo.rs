@@ -5,9 +5,12 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+pub type DemoUserList = Vec<(crate::db::UserInfo, Vec<String>)>;
+
 #[derive(Clone)]
 pub struct DemoStore {
     pub tables: Arc<Mutex<HashMap<String, QueryResult>>>,
+    pub users: Arc<Mutex<DemoUserList>>,
 }
 
 impl Default for DemoStore {
@@ -25,8 +28,44 @@ impl Default for DemoStore {
         );
         map.insert("tables".to_string(), demo_tables_table());
         map.insert("columns".to_string(), demo_columns_table());
+        let demo_users = vec![
+            (
+                crate::db::UserInfo {
+                    user: "admin".to_string(),
+                    host: "%".to_string(),
+                    plugin: "caching_sha2_password".to_string(),
+                    account_locked: false,
+                    password_expired: false,
+                },
+                vec!["GRANT ALL PRIVILEGES ON *.* TO `admin`@`%` WITH GRANT OPTION".to_string()],
+            ),
+            (
+                crate::db::UserInfo {
+                    user: "app_user".to_string(),
+                    host: "%".to_string(),
+                    plugin: "caching_sha2_password".to_string(),
+                    account_locked: false,
+                    password_expired: false,
+                },
+                vec![
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON `ecommerce_prod`.* TO `app_user`@`%`"
+                        .to_string(),
+                ],
+            ),
+            (
+                crate::db::UserInfo {
+                    user: "read_only".to_string(),
+                    host: "localhost".to_string(),
+                    plugin: "mysql_native_password".to_string(),
+                    account_locked: false,
+                    password_expired: false,
+                },
+                vec!["GRANT SELECT ON *.* TO `read_only`@`localhost`".to_string()],
+            ),
+        ];
         Self {
             tables: Arc::new(Mutex::new(map)),
+            users: Arc::new(Mutex::new(demo_users)),
         }
     }
 }

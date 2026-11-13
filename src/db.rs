@@ -90,6 +90,15 @@ pub struct RoutineParamInfo {
     pub data_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UserInfo {
+    pub user: String,
+    pub host: String,
+    pub plugin: String,
+    pub account_locked: bool,
+    pub password_expired: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DatabaseSchema {
     pub name: String,
@@ -1688,6 +1697,298 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn list_users(&self) -> Result<Vec<UserInfo>> {
+        match self {
+            Self::DemoSandbox { store, .. } => {
+                let guard = store
+                    .users
+                    .lock()
+                    .map_err(|_| anyhow!("Demo user store poisoned"))?;
+                Ok(guard.iter().map(|(u, _)| u.clone()).collect())
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                type UserRow = (
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                );
+                let rows: Vec<UserRow> = conn
+                    .query(
+                        "SELECT user, host, plugin, account_locked, password_expired
+                         FROM mysql.user
+                         ORDER BY user, host",
+                    )
+                    .await?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(user, host, plugin, locked, expired)| UserInfo {
+                        user,
+                        host,
+                        plugin: plugin.unwrap_or_else(|| "caching_sha2_password".to_string()),
+                        account_locked: locked.as_deref() == Some("Y"),
+                        password_expired: expired.as_deref() == Some("Y"),
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    pub async fn fetch_user_grants(&self, user: &str, host: &str) -> Result<Vec<String>> {
+        match self {
+            Self::DemoSandbox { store, .. } => {
+                let guard = store
+                    .users
+                    .lock()
+                    .map_err(|_| anyhow!("Demo user store poisoned"))?;
+                Ok(guard
+                    .iter()
+                    .find(|(u, _)| u.user == user && u.host == host)
+                    .map(|(_, g)| g.clone())
+                    .unwrap_or_default())
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let sql = format!(
+                    "SHOW GRANTS FOR '{}'@'{}'",
+                    escape_sql_str(user),
+                    escape_sql_str(host)
+                );
+                let grants: Vec<String> = conn.query(sql).await?;
+                Ok(grants)
+            }
+        }
+    }
+
+    pub async fn create_user(
+        &self,
+        user: &str,
+        host: &str,
+        password: &str,
+        auth_plugin: &str,
+    ) -> Result<()> {
+        let sql = build_create_user_sql(user, host, password, auth_plugin);
+        match self {
+            Self::DemoSandbox { store, .. } => {
+                let mut guard = store
+                    .users
+                    .lock()
+                    .map_err(|_| anyhow!("Demo user store poisoned"))?;
+                if guard.iter().any(|(u, _)| u.user == user && u.host == host) {
+                    return Err(anyhow!("User `{user}`@`{host}` already exists"));
+                }
+                guard.push((
+                    UserInfo {
+                        user: user.to_string(),
+                        host: host.to_string(),
+                        plugin: auth_plugin.to_string(),
+                        account_locked: false,
+                        password_expired: false,
+                    },
+                    vec![format!("GRANT USAGE ON *.* TO `{user}`@`{host}`")],
+                ));
+                Ok(())
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                conn.query_drop(sql).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn drop_user(&self, user: &str, host: &str) -> Result<()> {
+        let sql = format!(
+            "DROP USER '{}'@'{}'",
+            escape_sql_str(user),
+            escape_sql_str(host)
+        );
+        match self {
+            Self::DemoSandbox { store, .. } => {
+                let mut guard = store
+                    .users
+                    .lock()
+                    .map_err(|_| anyhow!("Demo user store poisoned"))?;
+                guard.retain(|(u, _)| !(u.user == user && u.host == host));
+                Ok(())
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                conn.query_drop(sql).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn update_user_password(
+        &self,
+        user: &str,
+        host: &str,
+        new_password: &str,
+    ) -> Result<()> {
+        let sql = format!(
+            "ALTER USER '{}'@'{}' IDENTIFIED BY '{}'",
+            escape_sql_str(user),
+            escape_sql_str(host),
+            escape_sql_str(new_password)
+        );
+        match self {
+            Self::DemoSandbox { .. } => Ok(()),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                conn.query_drop(sql).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn apply_user_privileges(
+        &self,
+        user: &str,
+        host: &str,
+        grants: &[String],
+        revokes: &[String],
+    ) -> Result<()> {
+        let stmts = build_grant_revoke_sql(user, host, "*.*", grants, revokes);
+        match self {
+            Self::DemoSandbox { store, .. } => {
+                let mut guard = store
+                    .users
+                    .lock()
+                    .map_err(|_| anyhow!("Demo user store poisoned"))?;
+                if let Some((_, existing)) = guard
+                    .iter_mut()
+                    .find(|(u, _)| u.user == user && u.host == host)
+                {
+                    let mut set = parse_granted_privileges(existing);
+                    for g in grants {
+                        set.insert(g.to_ascii_uppercase());
+                    }
+                    for r in revokes {
+                        set.remove(&r.to_ascii_uppercase());
+                    }
+                    let mut list: Vec<String> = set.into_iter().collect();
+                    list.sort();
+                    *existing = if list.is_empty() {
+                        vec![format!("GRANT USAGE ON *.* TO `{user}`@`{host}`")]
+                    } else {
+                        vec![format!(
+                            "GRANT {} ON *.* TO `{user}`@`{host}`",
+                            list.join(", ")
+                        )]
+                    };
+                }
+                Ok(())
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                for stmt in stmts {
+                    conn.query_drop(stmt).await?;
+                }
+                conn.query_drop("FLUSH PRIVILEGES").await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn escape_sql_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "''")
+}
+
+pub fn build_create_user_sql(user: &str, host: &str, password: &str, auth_plugin: &str) -> String {
+    let u = escape_sql_str(user.trim());
+    let h = escape_sql_str(if host.trim().is_empty() {
+        "%"
+    } else {
+        host.trim()
+    });
+    let p = escape_sql_str(password);
+    let plugin = auth_plugin.trim();
+    if plugin.is_empty() {
+        format!("CREATE USER '{u}'@'{h}' IDENTIFIED BY '{p}'")
+    } else {
+        format!("CREATE USER '{u}'@'{h}' IDENTIFIED WITH {plugin} BY '{p}'")
+    }
+}
+
+pub fn build_grant_revoke_sql(
+    user: &str,
+    host: &str,
+    scope: &str,
+    grants: &[String],
+    revokes: &[String],
+) -> Vec<String> {
+    let u = escape_sql_str(user.trim());
+    let h = escape_sql_str(if host.trim().is_empty() {
+        "%"
+    } else {
+        host.trim()
+    });
+    let sc = if scope.trim().is_empty() {
+        "*.*"
+    } else {
+        scope.trim()
+    };
+    let mut stmts = Vec::new();
+    if !grants.is_empty() {
+        stmts.push(format!(
+            "GRANT {} ON {sc} TO '{u}'@'{h}'",
+            grants.join(", ")
+        ));
+    }
+    if !revokes.is_empty() {
+        stmts.push(format!(
+            "REVOKE {} ON {sc} FROM '{u}'@'{h}'",
+            revokes.join(", ")
+        ));
+    }
+    stmts
+}
+
+pub const ALL_PRIVILEGES: &[&str] = &[
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "INDEX",
+    "CREATE VIEW",
+    "SHOW VIEW",
+    "SUPER",
+    "PROCESS",
+    "RELOAD",
+    "REPLICATION CLIENT",
+    "SHOW DATABASES",
+];
+
+pub fn parse_granted_privileges(grants: &[String]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for line in grants {
+        let upper = line.to_ascii_uppercase();
+        if upper.contains("ALL PRIVILEGES") {
+            for p in ALL_PRIVILEGES {
+                out.insert((*p).to_string());
+            }
+            continue;
+        }
+        if let Some(after_grant) = upper.strip_prefix("GRANT ")
+            && let Some((privs_part, _)) = after_grant.split_once(" ON ")
+        {
+            for p in privs_part.split(',') {
+                let clean = p.trim();
+                if ALL_PRIVILEGES.contains(&clean) {
+                    out.insert(clean.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn generate_routine_call_sql(
@@ -1938,6 +2239,42 @@ mod tests {
         assert!(sql.contains("SET @p_counter = 1;"));
         assert!(sql.contains("CALL `sp_customer_summary`(42, @p_counter, @p_total);"));
         assert!(sql.contains("SELECT @p_counter AS `p_counter`, @p_total AS `p_total`;"));
+    }
+
+    #[test]
+    fn test_user_ddl_and_grant_parsing() {
+        let create = build_create_user_sql("alice", "%", "s3cr'et", "caching_sha2_password");
+        assert_eq!(
+            create,
+            "CREATE USER 'alice'@'%' IDENTIFIED WITH caching_sha2_password BY 's3cr''et'"
+        );
+        let stmts = build_grant_revoke_sql(
+            "alice",
+            "%",
+            "*.*",
+            &["SELECT".to_string(), "INSERT".to_string()],
+            &["DELETE".to_string()],
+        );
+        assert_eq!(stmts[0], "GRANT SELECT, INSERT ON *.* TO 'alice'@'%'");
+        assert_eq!(stmts[1], "REVOKE DELETE ON *.* FROM 'alice'@'%'");
+        let parsed = parse_granted_privileges(&[
+            "GRANT SELECT, INSERT, CREATE VIEW ON `shop`.* TO 'alice'@'%'".to_string(),
+        ]);
+        assert!(parsed.contains("SELECT"));
+        assert!(parsed.contains("CREATE VIEW"));
+        assert!(!parsed.contains("DELETE"));
+    }
+
+    #[tokio::test]
+    async fn test_demo_sandbox_user_store() {
+        let session = ActiveSession::DemoSandbox {
+            store: crate::demo::DemoStore::default(),
+        };
+        let users = session.list_users().await.unwrap();
+        assert_eq!(users.len(), 3);
+        assert!(users.iter().any(|u| u.user == "admin"));
+        assert!(users.iter().any(|u| u.user == "app_user"));
+        assert!(users.iter().any(|u| u.user == "read_only"));
     }
     #[tokio::test]
     async fn test_server_admin_methods() {
