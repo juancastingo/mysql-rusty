@@ -10,6 +10,32 @@ pub enum SslMode {
     #[default]
     Preferred,
     Required,
+    VerifyCa,
+    VerifyIdentity,
+}
+
+impl SslMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::Preferred => "Preferred",
+            Self::Required => "Required",
+            Self::VerifyCa => "Verify CA",
+            Self::VerifyIdentity => "Verify Identity",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Disabled => "Unencrypted plaintext connection.",
+            Self::Preferred => {
+                "Use TLS if supported by the server; otherwise fall back to plaintext."
+            }
+            Self::Required => "Require TLS encryption; optionally allow self-signed certificates.",
+            Self::VerifyCa => "Require TLS and verify certificate chain against the configured CA.",
+            Self::VerifyIdentity => "Require TLS, verify CA chain, and verify server hostname.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +104,12 @@ pub struct ConnectionProfile {
     pub ssl_mode: SslMode,
     #[serde(default = "default_true")]
     pub ssl_accept_invalid_certs: bool,
+    #[serde(default)]
+    pub ssl_ca_path: String,
+    #[serde(default)]
+    pub ssl_client_cert_path: String,
+    #[serde(default)]
+    pub ssl_client_key_path: String,
     pub ssh: SshTunnelConfig,
     pub is_demo: bool,
     #[serde(default)]
@@ -100,7 +132,10 @@ impl Default for ConnectionProfile {
             password: String::new(),
             default_database: String::new(),
             ssl_mode: SslMode::Preferred,
-            ssl_accept_invalid_certs: true,
+            ssl_accept_invalid_certs: false,
+            ssl_ca_path: String::new(),
+            ssl_client_cert_path: String::new(),
+            ssl_client_key_path: String::new(),
             ssh: SshTunnelConfig::default(),
             is_demo: false,
             environment: Environment::Development,
@@ -122,7 +157,10 @@ impl ConnectionProfile {
             password: String::new(),
             default_database: "ecommerce_prod".to_string(),
             ssl_mode: SslMode::Disabled,
-            ssl_accept_invalid_certs: true,
+            ssl_accept_invalid_certs: false,
+            ssl_ca_path: String::new(),
+            ssl_client_cert_path: String::new(),
+            ssl_client_key_path: String::new(),
             ssh: SshTunnelConfig::default(),
             is_demo: true,
             environment: Environment::Development,

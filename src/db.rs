@@ -479,13 +479,8 @@ impl ActiveSession {
                 let _: Option<u8> = conn.query_first("SELECT 1").await?;
                 pool
             }
-            SslMode::Required => {
-                let mut ssl_opts = SslOpts::default();
-                if profile.ssl_accept_invalid_certs {
-                    ssl_opts = ssl_opts
-                        .with_danger_accept_invalid_certs(true)
-                        .with_danger_skip_domain_validation(true);
-                }
+            SslMode::Required | SslMode::VerifyCa | SslMode::VerifyIdentity => {
+                let ssl_opts = build_ssl_opts(&profile)?;
                 let pool = Pool::new(base_builder.ssl_opts(Some(ssl_opts)));
                 let mut conn = pool
                     .get_conn()
@@ -496,12 +491,7 @@ impl ActiveSession {
                 pool
             }
             SslMode::Preferred => {
-                let mut ssl_opts = SslOpts::default();
-                if profile.ssl_accept_invalid_certs {
-                    ssl_opts = ssl_opts
-                        .with_danger_accept_invalid_certs(true)
-                        .with_danger_skip_domain_validation(true);
-                }
+                let ssl_opts = build_ssl_opts(&profile)?;
                 let ssl_pool = Pool::new(base_builder.clone().ssl_opts(Some(ssl_opts)));
                 match ssl_pool.get_conn().await {
                     Ok(mut conn) => {
@@ -1426,6 +1416,95 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn tls_status(&self) -> (Option<String>, Option<String>) {
+        match self {
+            Self::DemoSandbox { .. } => (None, None),
+            Self::RealMysql { pool, .. } => {
+                let Ok(mut conn) = pool.get_conn().await else {
+                    return (None, None);
+                };
+                let ver: Option<(String, String)> = conn
+                    .query_first("SHOW SESSION STATUS LIKE 'Ssl_version'")
+                    .await
+                    .ok()
+                    .flatten();
+                let cipher: Option<(String, String)> = conn
+                    .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+                    .await
+                    .ok()
+                    .flatten();
+                (
+                    ver.map(|(_, v)| v).filter(|v| !v.is_empty()),
+                    cipher.map(|(_, v)| v).filter(|v| !v.is_empty()),
+                )
+            }
+        }
+    }
+}
+
+fn build_ssl_opts(profile: &ConnectionProfile) -> Result<SslOpts> {
+    let mut ssl_opts = SslOpts::default();
+
+    let ca_raw = profile.ssl_ca_path.trim();
+    if !ca_raw.is_empty() {
+        let ca_path = std::path::PathBuf::from(expand_tilde(ca_raw));
+        if !ca_path.exists() {
+            return Err(anyhow::anyhow!("CA file not found: {}", ca_path.display()));
+        }
+        ssl_opts = ssl_opts.with_root_certs(vec![ca_path.into()]);
+    }
+
+    let cert_raw = profile.ssl_client_cert_path.trim();
+    let key_raw = profile.ssl_client_key_path.trim();
+    if !cert_raw.is_empty() || !key_raw.is_empty() {
+        if cert_raw.is_empty() || key_raw.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Both client certificate and client key paths must be provided"
+            ));
+        }
+        let cert_path = std::path::PathBuf::from(expand_tilde(cert_raw));
+        if !cert_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Client certificate file not found: {}",
+                cert_path.display()
+            ));
+        }
+        let key_path = std::path::PathBuf::from(expand_tilde(key_raw));
+        if !key_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Client key file not found: {}",
+                key_path.display()
+            ));
+        }
+        ssl_opts = ssl_opts.with_client_identity(Some(mysql_async::ClientIdentity::new(
+            cert_path.into(),
+            key_path.into(),
+        )));
+    }
+
+    match profile.ssl_mode {
+        SslMode::Required | SslMode::Preferred => {
+            if profile.ssl_accept_invalid_certs {
+                ssl_opts = ssl_opts
+                    .with_danger_accept_invalid_certs(true)
+                    .with_danger_skip_domain_validation(true);
+            }
+        }
+        SslMode::VerifyCa => {
+            ssl_opts = ssl_opts
+                .with_danger_accept_invalid_certs(false)
+                .with_danger_skip_domain_validation(true);
+        }
+        SslMode::VerifyIdentity => {
+            ssl_opts = ssl_opts
+                .with_danger_accept_invalid_certs(false)
+                .with_danger_skip_domain_validation(false);
+        }
+        SslMode::Disabled => {}
+    }
+
+    Ok(ssl_opts)
 }
 
 fn supports_query_sample_text(version: &str) -> bool {

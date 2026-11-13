@@ -76,32 +76,102 @@ impl MysqlRustyApp {
                         ui.end_row();
 
                         ui.label("SSL Mode:");
-                        egui::ComboBox::from_id_salt("ssl_mode_combo")
-                            .selected_text(format!("{:?}", self.editing_connection.ssl_mode))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.editing_connection.ssl_mode,
-                                    SslMode::Disabled,
-                                    "Disabled",
-                                );
-                                ui.selectable_value(
-                                    &mut self.editing_connection.ssl_mode,
-                                    SslMode::Preferred,
-                                    "Preferred",
-                                );
-                                ui.selectable_value(
-                                    &mut self.editing_connection.ssl_mode,
-                                    SslMode::Required,
-                                    "Required",
-                                );
-                            });
+                        ui.vertical(|ui| {
+                            egui::ComboBox::from_id_salt("ssl_mode_combo")
+                                .selected_text(self.editing_connection.ssl_mode.label())
+                                .show_ui(ui, |ui| {
+                                    for mode in [
+                                        SslMode::Disabled,
+                                        SslMode::Preferred,
+                                        SslMode::Required,
+                                        SslMode::VerifyCa,
+                                        SslMode::VerifyIdentity,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut self.editing_connection.ssl_mode,
+                                            mode.clone(),
+                                            mode.label(),
+                                        );
+                                    }
+                                });
+                            ui.label(
+                                RichText::new(self.editing_connection.ssl_mode.description())
+                                    .small()
+                                    .weak(),
+                            );
+                        });
                         ui.end_row();
 
-                        if self.editing_connection.ssl_mode != SslMode::Disabled {
+                        if matches!(
+                            self.editing_connection.ssl_mode,
+                            SslMode::Required | SslMode::VerifyCa | SslMode::VerifyIdentity
+                        ) {
+                            ui.label("CA Certificate:");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut self.editing_connection.ssl_ca_path,
+                                    )
+                                    .hint_text("/path/to/ca.pem")
+                                    .desired_width(210.0),
+                                );
+                                if ui.button("Browse...").clicked()
+                                    && let Some(p) = rfd::FileDialog::new()
+                                        .add_filter("PEM", &["pem", "crt", "key"])
+                                        .pick_file()
+                                {
+                                    self.editing_connection.ssl_ca_path =
+                                        p.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Client Certificate:");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut self.editing_connection.ssl_client_cert_path,
+                                    )
+                                    .hint_text("/path/to/client-cert.pem")
+                                    .desired_width(210.0),
+                                );
+                                if ui.button("Browse...").clicked()
+                                    && let Some(p) = rfd::FileDialog::new()
+                                        .add_filter("PEM", &["pem", "crt", "key"])
+                                        .pick_file()
+                                {
+                                    self.editing_connection.ssl_client_cert_path =
+                                        p.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Client Key:");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut self.editing_connection.ssl_client_key_path,
+                                    )
+                                    .hint_text("/path/to/client-key.pem")
+                                    .desired_width(210.0),
+                                );
+                                if ui.button("Browse...").clicked()
+                                    && let Some(p) = rfd::FileDialog::new()
+                                        .add_filter("PEM", &["pem", "crt", "key"])
+                                        .pick_file()
+                                {
+                                    self.editing_connection.ssl_client_key_path =
+                                        p.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+                        }
+
+                        if self.editing_connection.ssl_mode == SslMode::Required {
                             ui.label("Trust Certificates:");
                             ui.checkbox(
                                 &mut self.editing_connection.ssl_accept_invalid_certs,
-                                "Allow Self-Signed / Unknown CA",
+                                "Accept invalid certificates",
                             )
                             .on_hover_text("Accept self-signed or internal CA SSL certificates (prevents UnknownIssuer error).");
                             ui.end_row();
@@ -236,13 +306,19 @@ impl MysqlRustyApp {
                         self.rt.spawn(async move {
                             let res = match ActiveSession::connect(test_prof).await {
                                 Ok(session) => {
+                                    let (ssl_ver, ssl_cipher) = session.tls_status().await;
+                                    let tls_line = match (ssl_ver, ssl_cipher) {
+                                        (Some(ver), Some(c)) => format!("\n• TLS: {ver} ({c})"),
+                                        (Some(ver), None) => format!("\n• TLS: {ver}"),
+                                        _ => "\n• TLS: Disabled / Plaintext".to_string(),
+                                    };
                                     match session.execute_query("", "SELECT VERSION(), CURRENT_USER();", None, None).await {
                                         Ok(qr) => {
                                             let v = qr.rows.first().and_then(|r| r.first()).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
                                             let u = qr.rows.first().and_then(|r| r.get(1)).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
-                                            Ok(format!("Connection successful!\n• MySQL Version: {v}\n• Authenticated User: {u}"))
+                                            Ok(format!("Connection successful!\n• MySQL Version: {v}\n• Authenticated User: {u}{tls_line}"))
                                         }
-                                        Err(_) => Ok("Connection successful (handshake & auth succeeded)!".to_string()),
+                                        Err(_) => Ok(format!("Connection successful (handshake & auth succeeded)!{tls_line}")),
                                     }
                                 }
                                 Err(e) => Err(format!("{e:#}")),
