@@ -346,6 +346,7 @@ pub struct MysqlRustyApp {
     show_command_palette: bool,
     command_palette_query: String,
     command_palette_selected: usize,
+    pending_delete_connection: Option<(String, String)>,
 
     // Copilot Authentication
     pub copilot_device_code_data: Option<crate::ai::CopilotDeviceCodeResponse>,
@@ -454,6 +455,7 @@ impl MysqlRustyApp {
             show_command_palette: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            pending_delete_connection: None,
             copilot_device_code_data: None,
             copilot_auth_status: String::new(),
             is_copilot_authenticating: false,
@@ -1535,6 +1537,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_cell_inspector_modal(&ctx);
         self.render_csv_import_modal(&ctx);
         self.render_command_palette_modal(&ctx);
+        self.render_delete_connection_confirm_modal(&ctx);
     }
 }
 
@@ -2268,8 +2271,14 @@ impl MysqlRustyApp {
             self.show_connection_modal = true;
         }
         if let Some(id) = to_delete {
-            self.config.connections.retain(|c| c.id != id);
-            let _ = self.config.save();
+            let name = self
+                .config
+                .connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "this connection".to_string());
+            self.pending_delete_connection = Some((id, name));
         }
     }
 
@@ -2962,8 +2971,14 @@ impl MysqlRustyApp {
             self.show_connection_modal = true;
         }
         if let Some(id) = to_delete {
-            self.config.connections.retain(|c| c.id != id);
-            let _ = self.config.save();
+            let name = self
+                .config
+                .connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "this connection".to_string());
+            self.pending_delete_connection = Some((id, name));
         }
     }
 
@@ -4191,7 +4206,6 @@ impl MysqlRustyApp {
                                                 column_name: result.columns[col_idx].clone(),
                                                 pk_column: pk_name.clone(),
                                                 pk_value: pk_val,
-                                                old_value: old_val,
                                                 new_value: edit_buf,
                                             });
                                         }
@@ -6754,6 +6768,64 @@ impl MysqlRustyApp {
                     self.active_tab_idx = self.tabs.len() - 1;
                 }
             }
+        }
+    }
+
+    fn render_delete_connection_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some((conn_id, conn_name)) = self.pending_delete_connection.clone() else {
+            return;
+        };
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.pending_delete_connection = None;
+            return;
+        }
+
+        let mut open = true;
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        egui::Window::new("⚠ Confirm Delete Connection")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Are you sure you want to delete the connection \"{conn_name}\"?"
+                    ))
+                    .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("This action cannot be undone.")
+                        .small()
+                        .color(Color32::from_rgb(148, 163, 184)),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let del_btn = egui::Button::new(
+                        RichText::new("🗑 Delete").strong().color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(185, 28, 28));
+                    if ui.add(del_btn).clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+
+        if confirmed {
+            self.config.connections.retain(|c| c.id != conn_id);
+            let _ = self.config.save();
+            self.status_banner = format!("Deleted connection '{conn_name}'.");
+            self.pending_delete_connection = None;
+        } else if !open || cancelled {
+            self.pending_delete_connection = None;
         }
     }
 }
