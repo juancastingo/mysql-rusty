@@ -19,7 +19,7 @@ impl MysqlRustyApp {
                         .inner_margin(egui::Margin::symmetric(14, 4))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("WORKBENCH CONNECTIONS")
+                                RichText::new(rust_i18n::t!("dashboard.badge"))
                                     .size(11.0)
                                     .color(Color32::from_rgb(56, 189, 248))
                                     .strong(),
@@ -28,14 +28,14 @@ impl MysqlRustyApp {
 
                     ui.add_space(10.0);
                     ui.heading(
-                        RichText::new("MySQL & MariaDB Servers")
+                        RichText::new(rust_i18n::t!("dashboard.heading"))
                             .size(24.0)
                             .color(Color32::WHITE)
                             .strong(),
                     );
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Select a server connection to open the SQL workspace, or configure a new remote profile.")
+                        RichText::new(rust_i18n::t!("dashboard.subtitle"))
                             .size(13.5)
                             .color(Color32::from_rgb(148, 163, 184)),
                     );
@@ -85,7 +85,9 @@ impl MysqlRustyApp {
                         );
                         ui.add_space(10.0);
                         if ui.button("Restore Sandbox Demo Profile").clicked() {
-                            self.config.connections.push(ConnectionProfile::demo_profile());
+                            self.config
+                                .connections
+                                .push(ConnectionProfile::demo_profile());
                             let _ = self.config.save();
                         }
                     });
@@ -111,8 +113,15 @@ impl MysqlRustyApp {
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             // Left color indicator bar
-                                            let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 48.0), egui::Sense::hover());
-                                            ui.painter().rect_filled(rect, egui::CornerRadius::same(2), card_accent);
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(4.0, 48.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                egui::CornerRadius::same(2),
+                                                card_accent,
+                                            );
                                             ui.add_space(10.0);
 
                                             ui.vertical(|ui| {
@@ -126,56 +135,90 @@ impl MysqlRustyApp {
                                                     if is_demo {
                                                         egui::Frame::new()
                                                             .fill(Color32::from_rgb(6, 78, 59))
-                                                            .corner_radius(egui::CornerRadius::same(4))
-                                                            .inner_margin(egui::Margin::symmetric(6, 2))
+                                                            .corner_radius(
+                                                                egui::CornerRadius::same(4),
+                                                            )
+                                                            .inner_margin(egui::Margin::symmetric(
+                                                                6, 2,
+                                                            ))
                                                             .show(ui, |ui| {
                                                                 ui.label(
                                                                     RichText::new("DEMO SANDBOX")
                                                                         .size(10.5)
-                                                                        .color(Color32::from_rgb(52, 211, 153))
+                                                                        .color(Color32::from_rgb(
+                                                                            52, 211, 153,
+                                                                        ))
                                                                         .strong(),
                                                                 );
-                                                             });
+                                                            });
                                                     }
                                                     if prof.ssh.enabled {
                                                         egui::Frame::new()
                                                             .fill(Color32::from_rgb(8, 51, 68))
-                                                            .corner_radius(egui::CornerRadius::same(4))
-                                                            .inner_margin(egui::Margin::symmetric(6, 2))
+                                                            .corner_radius(
+                                                                egui::CornerRadius::same(4),
+                                                            )
+                                                            .inner_margin(egui::Margin::symmetric(
+                                                                6, 2,
+                                                            ))
                                                             .show(ui, |ui| {
                                                                 ui.label(
                                                                     RichText::new("SSH TUNNEL")
                                                                         .size(10.5)
-                                                                        .color(Color32::from_rgb(56, 189, 248))
+                                                                        .color(Color32::from_rgb(
+                                                                            56, 189, 248,
+                                                                        ))
                                                                         .strong(),
                                                                 );
                                                             });
                                                     }
                                                     let (er, eg, eb) = prof.environment.color_rgb();
                                                     egui::Frame::new()
-                                                        .fill(Color32::from_rgb(er / 5, eg / 5, eb / 5))
-                                                        .stroke(Stroke::new(1.0, Color32::from_rgb(er, eg, eb)))
+                                                        .fill(Color32::from_rgb(
+                                                            er / 5,
+                                                            eg / 5,
+                                                            eb / 5,
+                                                        ))
+                                                        .stroke(Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(er, eg, eb),
+                                                        ))
                                                         .corner_radius(egui::CornerRadius::same(4))
                                                         .inner_margin(egui::Margin::symmetric(6, 2))
                                                         .show(ui, |ui| {
                                                             ui.label(
-                                                                RichText::new(prof.environment.label().to_uppercase())
-                                                                    .size(10.5)
-                                                                    .color(Color32::from_rgb(er, eg, eb))
-                                                                    .strong(),
+                                                                RichText::new(
+                                                                    prof.environment
+                                                                        .label()
+                                                                        .to_uppercase(),
+                                                                )
+                                                                .size(10.5)
+                                                                .color(Color32::from_rgb(
+                                                                    er, eg, eb,
+                                                                ))
+                                                                .strong(),
                                                             );
                                                         });
                                                     if prof.read_only {
                                                         egui::Frame::new()
                                                             .fill(Color32::from_rgb(67, 20, 7))
-                                                            .stroke(Stroke::new(1.0, Color32::from_rgb(251, 146, 60)))
-                                                            .corner_radius(egui::CornerRadius::same(4))
-                                                            .inner_margin(egui::Margin::symmetric(6, 2))
+                                                            .stroke(Stroke::new(
+                                                                1.0,
+                                                                Color32::from_rgb(251, 146, 60),
+                                                            ))
+                                                            .corner_radius(
+                                                                egui::CornerRadius::same(4),
+                                                            )
+                                                            .inner_margin(egui::Margin::symmetric(
+                                                                6, 2,
+                                                            ))
                                                             .show(ui, |ui| {
                                                                 ui.label(
                                                                     RichText::new("READ-ONLY")
                                                                         .size(10.5)
-                                                                        .color(Color32::from_rgb(251, 146, 60))
+                                                                        .color(Color32::from_rgb(
+                                                                            251, 146, 60,
+                                                                        ))
                                                                         .strong(),
                                                                 );
                                                             });
@@ -184,21 +227,31 @@ impl MysqlRustyApp {
                                                 ui.add_space(4.0);
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.label(
-                                                        RichText::new(format!("User: {}", prof.user))
-                                                            .size(12.5)
-                                                            .color(Color32::from_rgb(226, 232, 240)),
+                                                        RichText::new(format!(
+                                                            "User: {}",
+                                                            prof.user
+                                                        ))
+                                                        .size(12.5)
+                                                        .color(Color32::from_rgb(226, 232, 240)),
                                                     );
                                                     ui.label(RichText::new("•").weak());
                                                     ui.label(
-                                                        RichText::new(format!("Host: {}:{}", prof.host, prof.port))
-                                                            .size(12.5)
-                                                            .color(Color32::from_rgb(148, 163, 184)),
+                                                        RichText::new(format!(
+                                                            "Host: {}:{}",
+                                                            prof.host, prof.port
+                                                        ))
+                                                        .size(12.5)
+                                                        .color(Color32::from_rgb(148, 163, 184)),
                                                     );
                                                     ui.label(RichText::new("•").weak());
                                                     ui.label(
                                                         RichText::new(format!(
                                                             "DB: {}",
-                                                            if prof.default_database.is_empty() { "None" } else { &prof.default_database }
+                                                            if prof.default_database.is_empty() {
+                                                                "None"
+                                                            } else {
+                                                                &prof.default_database
+                                                            }
                                                         ))
                                                         .size(12.5)
                                                         .color(Color32::from_rgb(148, 163, 184)),
@@ -209,7 +262,9 @@ impl MysqlRustyApp {
                                                     ui.label(
                                                         RichText::new(format!(
                                                             "SSH Bastion: {}@{} (Port: {})",
-                                                            prof.ssh.ssh_user, prof.ssh.ssh_host, prof.ssh.ssh_port
+                                                            prof.ssh.ssh_user,
+                                                            prof.ssh.ssh_host,
+                                                            prof.ssh.ssh_port
                                                         ))
                                                         .size(11.5)
                                                         .color(Color32::from_rgb(56, 189, 248)),
@@ -217,29 +272,38 @@ impl MysqlRustyApp {
                                                 }
                                             });
 
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            RichText::new(" Connect ")
-                                                                .size(13.5)
-                                                                .color(Color32::WHITE)
-                                                                .strong(),
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new(" Connect ")
+                                                                    .size(13.5)
+                                                                    .color(Color32::WHITE)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(if is_demo {
+                                                                Color32::from_rgb(16, 185, 129)
+                                                            } else {
+                                                                Color32::from_rgb(2, 132, 199)
+                                                            })
+                                                            .corner_radius(
+                                                                egui::CornerRadius::same(6),
+                                                            ),
                                                         )
-                                                        .fill(if is_demo { Color32::from_rgb(16, 185, 129) } else { Color32::from_rgb(2, 132, 199) })
-                                                        .corner_radius(egui::CornerRadius::same(6)),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    to_connect = Some(prof.clone());
-                                                }
-                                                if ui.button("Edit").clicked() {
-                                                    to_edit = Some(prof.clone());
-                                                }
-                                                if ui.button("Delete").clicked() {
-                                                    to_delete = Some(prof.id.clone());
-                                                }
-                                            });
+                                                        .clicked()
+                                                    {
+                                                        to_connect = Some(prof.clone());
+                                                    }
+                                                    if ui.button("Edit").clicked() {
+                                                        to_edit = Some(prof.clone());
+                                                    }
+                                                    if ui.button("Delete").clicked() {
+                                                        to_delete = Some(prof.id.clone());
+                                                    }
+                                                },
+                                            );
                                         });
                                     });
                             });

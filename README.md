@@ -160,6 +160,9 @@ To capture verbose SQL/AI diagnostic logs:
 MYSQL_RUSTY_LOG=debug cargo run
 ```
 
+### Translations
+UI strings are localized via `rust-i18n` in [`locales/en.yml`](./locales/en.yml) and [`locales/es.yml`](./locales/es.yml). You can switch between **Follow System**, **English**, and **Español** under **AI & App Settings → Appearance → Language**. To add a new language, copy `locales/en.yml` to `locales/<lang>.yml`, translate the values, and register the locale in Settings.
+
 ---
 
 ## 🗺 Architecture & Plan

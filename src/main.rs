@@ -26,6 +26,29 @@ pub mod test_fixtures;
 mod theme;
 mod vim;
 
+rust_i18n::i18n!("locales", fallback = "en");
+
+pub fn resolve_locale(pref: &str) -> &'static str {
+    match pref {
+        "es" => "es",
+        "en" => "en",
+        _ => {
+            if sys_locale::get_locale()
+                .map(|l| l.to_ascii_lowercase().starts_with("es"))
+                .unwrap_or(false)
+            {
+                "es"
+            } else {
+                "en"
+            }
+        }
+    }
+}
+
+pub fn apply_locale(pref: &str) {
+    rust_i18n::set_locale(resolve_locale(pref));
+}
+
 use app::MysqlRustyApp;
 use config::AppConfig;
 use std::sync::Arc;
@@ -123,4 +146,50 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| Ok(Box::new(MysqlRustyApp::new(cc, rt.clone())))),
     )
+}
+
+#[cfg(test)]
+mod i18n_tests {
+    use std::collections::BTreeSet;
+
+    fn collect_keys(val: &serde_yaml::Value, prefix: &str, out: &mut BTreeSet<String>) {
+        if let serde_yaml::Value::Mapping(map) = val {
+            for (k, v) in map {
+                if let Some(ks) = k.as_str() {
+                    if ks == "_version" {
+                        continue;
+                    }
+                    let full = if prefix.is_empty() {
+                        ks.to_string()
+                    } else {
+                        format!("{prefix}.{ks}")
+                    };
+                    if v.is_mapping() {
+                        collect_keys(v, &full, out);
+                    } else {
+                        out.insert(full);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_locale_yaml_key_parity() {
+        let en: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../locales/en.yml")).expect("valid en.yml");
+        let es: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../locales/es.yml")).expect("valid es.yml");
+
+        let mut en_keys = BTreeSet::new();
+        let mut es_keys = BTreeSet::new();
+        collect_keys(&en, "", &mut en_keys);
+        collect_keys(&es, "", &mut es_keys);
+
+        assert!(!en_keys.is_empty());
+        assert_eq!(
+            en_keys, es_keys,
+            "en.yml and es.yml must have identical keys"
+        );
+    }
 }

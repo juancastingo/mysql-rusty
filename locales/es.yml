@@ -1,0 +1,57 @@
+_version: 2
+
+toolbar:
+  select_connection: "Seleccionar conexión..."
+  disconnect: "Desconectar"
+  servers_dashboard: "Panel de servidores"
+  new_btn: "+ Nueva"
+  db_label: "BD:"
+  none: "Ninguna"
+  data_diff: "Comparar datos"
+  sql_dump: "Volcado SQL"
+  run_selection: " ▶ Ejecutar selección (%{key}) "
+  run: " ▶ Ejecutar (%{key}) "
+  reconnect: " Reconectar "
+
+connections_bar:
+  home: "Inicio"
+  home_tooltip: "Panel de conexiones (mantiene las conexiones abiertas activas)"
+  new_conn_tooltip: "Abrir otra conexión desde Inicio"
+
+status_bar:
+  connection_lost: "Conexión perdida"
+  reconnect: "Reconectar"
+
+sidebar:
+  schema: "Esquema"
+  servers: "Servidores"
+  saved_queries: "Consultas guardadas"
+  history: "Historial"
+
+dashboard:
+  badge: "CONEXIONES DEL WORKBENCH"
+  heading: "Servidores de bases de datos"
+  subtitle: "Selecciona una conexión para abrir el espacio SQL o configura un nuevo perfil."
+
+conn_modal:
+  title: "Perfil de conexión a base de datos"
+  engine: "Motor:"
+
+safety_modal:
+  title: "Confirmación de seguridad y guardia de producción"
+  target_stmt: "Sentencia objetivo:"
+  proceed: "Continuar y ejecutar sentencia"
+  cancel: "Cancelar (Recomendado)"
+
+editor:
+  limit_label: "Límite:"
+
+settings:
+  appearance: "Apariencia"
+  language: "Idioma:"
+  lang_system: "Seguir sistema"
+  lang_en: "English"
+  lang_es: "Español"
+  theme: "Tema:"
+  ui_scale: "Escala de interfaz:"
+  editor_font_size: "Tamaño de fuente del editor:"

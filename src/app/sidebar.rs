@@ -11,22 +11,22 @@ impl MysqlRustyApp {
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::Schema,
-                        RichText::new("Schema").size(12.0),
+                        RichText::new(rust_i18n::t!("sidebar.schema")).size(12.0),
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::Connections,
-                        RichText::new("Servers").size(12.0),
+                        RichText::new(rust_i18n::t!("sidebar.servers")).size(12.0),
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::SavedQueries,
-                        RichText::new("Saved Queries").size(12.0),
+                        RichText::new(rust_i18n::t!("sidebar.saved_queries")).size(12.0),
                     );
                     ui.selectable_value(
                         &mut self.sidebar_tab,
                         SidebarTab::History,
-                        RichText::new("History").size(12.0),
+                        RichText::new(rust_i18n::t!("sidebar.history")).size(12.0),
                     );
                 });
                 ui.separator();

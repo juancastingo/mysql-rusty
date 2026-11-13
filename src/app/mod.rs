@@ -259,6 +259,7 @@ impl MysqlRustyApp {
         configure_modern_dark_theme(&cc.egui_ctx);
         let (tx, rx) = unbounded_channel();
         let mut config = AppConfig::load();
+        crate::apply_locale(&config.ui.language);
         let history_store = match crate::history::HistoryStore::open(&AppConfig::history_db_path())
         {
             Ok(store) => {

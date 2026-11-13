@@ -8,7 +8,7 @@ impl MysqlRustyApp {
         let mut open = self.show_safety_modal;
         let mut execute_confirmed = false;
 
-        egui::Window::new("Safety Confirmation & Production Guard")
+        egui::Window::new(rust_i18n::t!("safety_modal.title"))
             .open(&mut open)
             .resizable(false)
             .default_width(460.0)
@@ -27,7 +27,7 @@ impl MysqlRustyApp {
                     });
 
                 ui.add_space(8.0);
-                ui.label(RichText::new("Target Statement:").strong());
+                ui.label(RichText::new(rust_i18n::t!("safety_modal.target_stmt")).strong());
                 egui::ScrollArea::vertical()
                     .max_height(110.0)
                     .show(ui, |ui| {
@@ -39,7 +39,7 @@ impl MysqlRustyApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Proceed & Execute Statement")
+                                RichText::new(rust_i18n::t!("safety_modal.proceed"))
                                     .color(Color32::from_rgb(239, 68, 68))
                                     .strong(),
                             )
@@ -50,7 +50,7 @@ impl MysqlRustyApp {
                         execute_confirmed = true;
                     }
 
-                    if ui.button("Cancel (Recommended)").clicked() {
+                    if ui.button(rust_i18n::t!("safety_modal.cancel")).clicked() {
                         self.show_safety_modal = false;
                         self.pending_safe_sql.clear();
                     }

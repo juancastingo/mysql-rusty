@@ -43,6 +43,9 @@ deadpool-postgres = "0.14"
 tokio-postgres-rustls = "0.13"
 rustls = "0.23"
 webpki-roots = "1.0"
+rust-i18n = "3"
+sys-locale = "0.3"
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
+serde_yaml = "0.9"

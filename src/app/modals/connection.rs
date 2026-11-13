@@ -9,13 +9,13 @@ impl MysqlRustyApp {
         let mut save_and_connect = false;
         let mut save_only = false;
 
-        egui::Window::new("Database Connection Profile")
+        egui::Window::new(rust_i18n::t!("conn_modal.title"))
             .open(&mut open)
             .resizable(false)
             .default_width(480.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Engine:");
+                    ui.label(rust_i18n::t!("conn_modal.engine"));
                     egui::ComboBox::from_id_salt("conn_dialect_combo")
                         .selected_text(self.editing_connection.dialect.display_name())
                         .show_ui(ui, |ui| {

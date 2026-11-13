@@ -248,9 +248,46 @@ impl MysqlRustyApp {
                 );
 
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("Appearance").strong());
+                ui.label(RichText::new(rust_i18n::t!("settings.appearance")).strong());
                 ui.horizontal(|ui| {
-                    ui.label("Theme:");
+                    ui.label(rust_i18n::t!("settings.language"));
+                    let lang_label = match self.config.ui.language.as_str() {
+                        "en" => rust_i18n::t!("settings.lang_en"),
+                        "es" => rust_i18n::t!("settings.lang_es"),
+                        _ => rust_i18n::t!("settings.lang_system"),
+                    };
+                    let mut changed = false;
+                    egui::ComboBox::from_id_salt("settings_language_combo")
+                        .selected_text(lang_label)
+                        .show_ui(ui, |ui| {
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.config.ui.language,
+                                    "system".to_string(),
+                                    rust_i18n::t!("settings.lang_system"),
+                                )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.config.ui.language,
+                                    "en".to_string(),
+                                    rust_i18n::t!("settings.lang_en"),
+                                )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.config.ui.language,
+                                    "es".to_string(),
+                                    rust_i18n::t!("settings.lang_es"),
+                                )
+                                .changed();
+                        });
+                    if changed {
+                        crate::apply_locale(&self.config.ui.language);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(rust_i18n::t!("settings.theme"));
                     egui::ComboBox::from_id_salt("settings_theme_combo")
                         .selected_text(self.config.ui.theme.label())
                         .show_ui(ui, |ui| {

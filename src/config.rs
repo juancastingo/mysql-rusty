@@ -376,6 +376,10 @@ fn default_editor_font_size() -> f32 {
     14.0
 }
 
+fn default_language() -> String {
+    "system".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
     #[serde(default)]
@@ -386,6 +390,8 @@ pub struct UiSettings {
     pub ui_scale: f32,
     #[serde(default = "default_editor_font_size")]
     pub editor_font_size: f32,
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Default for UiSettings {
@@ -395,6 +401,7 @@ impl Default for UiSettings {
             theme: ThemePreference::Dark,
             ui_scale: default_ui_scale(),
             editor_font_size: default_editor_font_size(),
+            language: default_language(),
         }
     }
 }

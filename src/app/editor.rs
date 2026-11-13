@@ -183,7 +183,7 @@ impl MysqlRustyApp {
                 // Quick LIMIT Presets Bar
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new("Limit:")
+                        RichText::new(rust_i18n::t!("editor.limit_label"))
                             .size(12.0)
                             .strong()
                             .color(Color32::from_rgb(148, 163, 184)),

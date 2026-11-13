@@ -52,7 +52,7 @@ mysql-rusty/
 ```
 
 ### Golden Rules for Any Model Modifying This Repository
-1. **Language:** Keep 100% of code, comments, UI labels, error messages, and documentation in **English**.
+1. **Language:** Keep 100% of code, comments, error messages, and documentation in **English**; user-facing UI strings use `rust_i18n::t!(...)` backed by [`locales/en.yml`](./locales/en.yml) and [`locales/es.yml`](./locales/es.yml) with English as the canonical fallback.
 2. **Non-Blocking UI Thread:** Never run network I/O, database queries, or CLI commands synchronously inside `eframe::App::update`. Always spawn tasks on `self.rt` (`Arc<tokio::runtime::Runtime>`) and send results back over `self.tx` (`UnboundedSender<AsyncEvent>`).
 3. **Verification After Every Task:** Run `cargo check` and `cargo test` after every single change before moving to the next phase.
 

@@ -1,0 +1,57 @@
+_version: 2
+
+toolbar:
+  select_connection: "Select Connection..."
+  disconnect: "Disconnect"
+  servers_dashboard: "Servers Dashboard"
+  new_btn: "+ New"
+  db_label: "DB:"
+  none: "None"
+  data_diff: "Data Diff"
+  sql_dump: "SQL Dump"
+  run_selection: " ▶ Run Selection (%{key}) "
+  run: " ▶ Run (%{key}) "
+  reconnect: " Reconnect "
+
+connections_bar:
+  home: "Home"
+  home_tooltip: "Connections Dashboard (keep open connections running)"
+  new_conn_tooltip: "Open another connection from Home"
+
+status_bar:
+  connection_lost: "Connection lost"
+  reconnect: "Reconnect"
+
+sidebar:
+  schema: "Schema"
+  servers: "Servers"
+  saved_queries: "Saved Queries"
+  history: "History"
+
+dashboard:
+  badge: "WORKBENCH CONNECTIONS"
+  heading: "Database Servers"
+  subtitle: "Select a server connection to open the SQL workspace, or configure a new profile."
+
+conn_modal:
+  title: "Database Connection Profile"
+  engine: "Engine:"
+
+safety_modal:
+  title: "Safety Confirmation & Production Guard"
+  target_stmt: "Target Statement:"
+  proceed: "Proceed & Execute Statement"
+  cancel: "Cancel (Recommended)"
+
+editor:
+  limit_label: "Limit:"
+
+settings:
+  appearance: "Appearance"
+  language: "Language:"
+  lang_system: "Follow System"
+  lang_en: "English"
+  lang_es: "Español"
+  theme: "Theme:"
+  ui_scale: "UI Scale:"
+  editor_font_size: "Editor Font Size:"

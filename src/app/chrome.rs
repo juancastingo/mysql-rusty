@@ -9,11 +9,14 @@ impl MysqlRustyApp {
                     ui.add_space(4.0);
                     let is_home = self.active_workspace_idx.is_none();
                     let home_btn = egui::Button::new(
-                        RichText::new("Home").size(12.0).strong().color(if is_home {
-                            Color32::WHITE
-                        } else {
-                            Color32::from_rgb(148, 163, 184)
-                        }),
+                        RichText::new(rust_i18n::t!("connections_bar.home"))
+                            .size(12.0)
+                            .strong()
+                            .color(if is_home {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(148, 163, 184)
+                            }),
                     )
                     .fill(if is_home {
                         Color32::from_rgb(30, 58, 138)
@@ -24,7 +27,7 @@ impl MysqlRustyApp {
 
                     if ui
                         .add(home_btn)
-                        .on_hover_text("Connections Dashboard (keep open connections running)")
+                        .on_hover_text(rust_i18n::t!("connections_bar.home_tooltip"))
                         .clicked()
                     {
                         self.switch_to_workspace(None);
@@ -90,7 +93,7 @@ impl MysqlRustyApp {
 
                     if ui
                         .small_button("+")
-                        .on_hover_text("Open another connection from Home")
+                        .on_hover_text(rust_i18n::t!("connections_bar.new_conn_tooltip"))
                         .clicked()
                     {
                         self.switch_to_workspace(None);
@@ -124,13 +127,14 @@ impl MysqlRustyApp {
 
                     // Connection selector & status indicator
                     let is_connected = self.active_session.is_some();
+                    let select_conn_default = rust_i18n::t!("toolbar.select_connection");
                     let active_conn_name = self
                         .config
                         .connections
                         .iter()
                         .find(|c| Some(&c.id) == self.active_profile_id.as_ref())
                         .map(|c| c.name.as_str())
-                        .unwrap_or("Select Connection...");
+                        .unwrap_or(select_conn_default.as_ref());
 
                     let status_dot = if is_connected {
                         RichText::new("●").color(Color32::from_rgb(16, 185, 129))
@@ -154,21 +158,21 @@ impl MysqlRustyApp {
 
                     if is_connected {
                         if ui
-                            .button(RichText::new("Disconnect").small().color(Color32::from_rgb(248, 113, 113)))
+                            .button(RichText::new(rust_i18n::t!("toolbar.disconnect")).small().color(Color32::from_rgb(248, 113, 113)))
                             .on_hover_text("Disconnect from active database session")
                             .clicked()
                         {
                             self.disconnect();
                         }
                     } else if ui
-                        .button(RichText::new("Servers Dashboard").small())
+                        .button(RichText::new(rust_i18n::t!("toolbar.servers_dashboard")).small())
                         .on_hover_text("Open servers and connection profiles")
                         .clicked()
                     {
                         self.sidebar_tab = SidebarTab::Connections;
                     }
 
-                    if ui.button("+ New").on_hover_text("Add new MySQL connection profile").clicked() {
+                    if ui.button(rust_i18n::t!("toolbar.new_btn")).on_hover_text("Add new connection profile").clicked() {
                         self.editing_connection = ConnectionProfile::default();
                         self.show_connection_modal = true;
                     }
@@ -178,9 +182,10 @@ impl MysqlRustyApp {
                     ui.add_space(4.0);
 
                     // Database Selector
-                    ui.label(RichText::new("DB:").weak());
+                    ui.label(RichText::new(rust_i18n::t!("toolbar.db_label")).weak());
+                    let none_db = rust_i18n::t!("toolbar.none");
                     let current_db = if self.active_database.is_empty() {
-                        "None"
+                        none_db.as_ref()
                     } else {
                         &self.active_database
                     };
@@ -208,7 +213,7 @@ impl MysqlRustyApp {
 
                     if is_connected {
                         if ui
-                            .small_button("Data Diff")
+                            .small_button(rust_i18n::t!("toolbar.data_diff"))
                             .on_hover_text("Compare table rows across databases/tables")
                             .clicked()
                         {
@@ -219,7 +224,7 @@ impl MysqlRustyApp {
                             }
                         }
                         if ui
-                            .small_button("SQL Dump")
+                            .small_button(rust_i18n::t!("toolbar.sql_dump"))
                             .on_hover_text("Export or import .sql database dumps")
                             .clicked()
                         {
@@ -243,10 +248,11 @@ impl MysqlRustyApp {
                         .get(self.active_tab_idx)
                         .and_then(|t| t.selected_sql.as_ref())
                         .is_some();
+                    let run_key = self.keymap.label(crate::shortcuts::Action::RunQuery);
                     let run_label = if has_selection {
-                        " ▶ Run Selection (Ctrl+Enter) "
+                        rust_i18n::t!("toolbar.run_selection", key = run_key)
                     } else {
-                        " ▶ Run (Ctrl+Enter) "
+                        rust_i18n::t!("toolbar.run", key = run_key)
                     };
                     let is_running = self
                         .tabs
@@ -467,10 +473,10 @@ impl MysqlRustyApp {
                         ui.separator();
                         ui.colored_label(
                             Color32::from_rgb(248, 113, 113),
-                            "Connection lost",
+                            rust_i18n::t!("status_bar.connection_lost"),
                         )
                         .on_hover_text(err);
-                        if ui.small_button("Reconnect").clicked() {
+                        if ui.small_button(rust_i18n::t!("status_bar.reconnect")).clicked() {
                             self.auto_retry_attempted = false;
                             self.reconnect_active_session();
                         }
