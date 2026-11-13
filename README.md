@@ -121,6 +121,13 @@ EOF
 cargo test
 ```
 
+### Run Integration Tests (MySQL 8 / MariaDB)
+```bash
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root mysql:8.4
+MYSQL_RUSTY_IT_HOST=127.0.0.1 MYSQL_RUSTY_IT_USER=root MYSQL_RUSTY_IT_PASSWORD=root \
+  cargo test db_integration_tests -- --test-threads=1
+```
+
 ---
 
 ## 🗺 Architecture & Plan

@@ -3,6 +3,8 @@ mod app;
 mod config;
 mod data_diff;
 mod db;
+#[cfg(test)]
+mod db_integration_tests;
 mod demo;
 mod er_diagram;
 mod export;
