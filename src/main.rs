@@ -14,6 +14,7 @@ mod find;
 mod history;
 mod mcp;
 mod mock_gen;
+mod pg_db;
 mod schema_diff;
 mod sql_reader;
 mod sqlite_db;

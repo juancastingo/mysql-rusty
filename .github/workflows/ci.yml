@@ -79,3 +79,36 @@ jobs:
           MYSQL_RUSTY_IT_USER: root
           MYSQL_RUSTY_IT_PASSWORD: root
         run: cargo test --locked db_integration_tests -- --test-threads=1
+
+  integration-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: root
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libfontconfig1-dev libwayland-dev libx11-dev libgl1-mesa-dev libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run PostgreSQL integration tests
+        env:
+          MYSQL_RUSTY_IT_PG_URL: postgres://postgres:root@127.0.0.1:5432/postgres
+        run: cargo test --locked pg_db::tests -- --test-threads=1

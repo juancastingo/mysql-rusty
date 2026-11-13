@@ -167,13 +167,17 @@ impl MysqlRustyApp {
                 ui.label(format!("• Last Insert ID: `{last_id}`"));
             }
 
-            // Visual EXPLAIN Tree
+            // Visual EXPLAIN Tree (MySQL/MariaDB format)
+            let is_postgres = self
+                .active_session
+                .as_ref()
+                .is_some_and(|s| s.dialect() == crate::dialect::Dialect::Postgres);
             let is_explain = res.sql.trim().to_uppercase().starts_with("EXPLAIN")
                 || res
                     .columns
                     .iter()
                     .any(|c| c.eq_ignore_ascii_case("select_type"));
-            if is_explain && !res.rows.is_empty() {
+            if !is_postgres && is_explain && !res.rows.is_empty() {
                 ui.separator();
                 ui.heading(
                     RichText::new("Visual Execution Plan (EXPLAIN Tree)")

@@ -19,11 +19,34 @@ impl MysqlRustyApp {
                     egui::ComboBox::from_id_salt("conn_dialect_combo")
                         .selected_text(self.editing_connection.dialect.display_name())
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.editing_connection.dialect,
-                                crate::dialect::Dialect::MySql,
-                                crate::dialect::Dialect::MySql.display_name(),
-                            );
+                            if ui
+                                .selectable_value(
+                                    &mut self.editing_connection.dialect,
+                                    crate::dialect::Dialect::MySql,
+                                    crate::dialect::Dialect::MySql.display_name(),
+                                )
+                                .clicked()
+                                && self.editing_connection.port == 5432
+                            {
+                                self.editing_connection.port = 3306;
+                                if self.editing_connection.user == "postgres" {
+                                    self.editing_connection.user = "root".to_string();
+                                }
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.editing_connection.dialect,
+                                    crate::dialect::Dialect::Postgres,
+                                    crate::dialect::Dialect::Postgres.display_name(),
+                                )
+                                .clicked()
+                                && self.editing_connection.port == 3306
+                            {
+                                self.editing_connection.port = 5432;
+                                if self.editing_connection.user == "root" {
+                                    self.editing_connection.user = "postgres".to_string();
+                                }
+                            }
                             ui.selectable_value(
                                 &mut self.editing_connection.dialect,
                                 crate::dialect::Dialect::Sqlite,

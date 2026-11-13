@@ -352,6 +352,7 @@ pub enum ActiveSession {
         conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
         _path: std::path::PathBuf,
     },
+    Postgres(Arc<crate::pg_db::PgSessionState>),
 }
 
 impl ActiveSession {
@@ -359,6 +360,7 @@ impl ActiveSession {
         match self {
             Self::DemoSandbox { .. } | Self::RealMysql { .. } => crate::dialect::Dialect::MySql,
             Self::Sqlite { .. } => crate::dialect::Dialect::Sqlite,
+            Self::Postgres(_) => crate::dialect::Dialect::Postgres,
         }
     }
 
@@ -528,6 +530,13 @@ impl ActiveSession {
             ssh_guard = Some(Arc::new(Mutex::new(SshTunnelGuard { child })));
         }
 
+        if profile.dialect == crate::dialect::Dialect::Postgres {
+            let pg =
+                crate::pg_db::connect_postgres(&profile, &connect_host, connect_port, ssh_guard)
+                    .await?;
+            return Ok(Self::Postgres(Arc::new(pg)));
+        }
+
         let base_builder = OptsBuilder::default()
             .ip_or_hostname(&connect_host)
             .tcp_port(connect_port)
@@ -627,7 +636,7 @@ impl ActiveSession {
 
     pub async fn ping(&self) -> Result<()> {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => Ok(()),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => Ok(()),
             Self::RealMysql {
                 pool, _ssh_guard, ..
             } => {
@@ -648,7 +657,7 @@ impl ActiveSession {
                 let id = editor_conn_id.load(std::sync::atomic::Ordering::Relaxed);
                 if id == 0 { None } else { Some(id) }
             }
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => None,
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => None,
         }
     }
 
@@ -696,6 +705,7 @@ impl ActiveSession {
                     .await
                     .map_err(|e| anyhow!("SQLite task failed: {e}"))?
             }
+            Self::Postgres(pg) => crate::pg_db::list_databases(pg).await,
         }
     }
 
@@ -711,6 +721,7 @@ impl ActiveSession {
                 .await
                 .map_err(|e| anyhow!("SQLite task failed: {e}"))?
             }
+            Self::Postgres(pg) => crate::pg_db::introspect_database(pg, database).await,
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
 
@@ -959,6 +970,9 @@ impl ActiveSession {
                 .await
                 .map_err(|e| anyhow!("SQLite task failed: {e}"))?
             }
+            Self::Postgres(pg) => {
+                crate::pg_db::execute_query(pg, database, trimmed, max_rows).await
+            }
             Self::RealMysql {
                 pool,
                 editor_conn,
@@ -1117,6 +1131,7 @@ impl ActiveSession {
                 .await
                 .map_err(|e| anyhow!("SQLite task failed: {e}"))?
             }
+            Self::Postgres(pg) => crate::pg_db::apply_cell_edits(pg, database, table, edits).await,
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store.tables.lock().unwrap();
                 if let Some(tbl) = guard.get_mut(table) {
@@ -1183,7 +1198,8 @@ impl ActiveSession {
 
     pub async fn list_processes(&self) -> Result<QueryResult> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for this engine")),
+            Self::Postgres(pg) => crate::pg_db::list_processes(pg).await,
             Self::DemoSandbox { .. } => {
                 let columns = vec![
                     "Id".to_string(),
@@ -1284,7 +1300,8 @@ impl ActiveSession {
     pub async fn kill_query(&self, connection_id: u64) -> Result<()> {
         match self {
             Self::DemoSandbox { .. } => Ok(()),
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for this engine")),
+            Self::Postgres(pg) => crate::pg_db::kill_query(pg, connection_id).await,
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let kill_stmt = format!("KILL QUERY {connection_id}");
@@ -1296,7 +1313,8 @@ impl ActiveSession {
 
     pub async fn server_status_summary(&self) -> Result<HashMap<String, String>> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for this engine")),
+            Self::Postgres(pg) => crate::pg_db::server_status_summary(pg).await,
             Self::DemoSandbox { .. } => {
                 let mut map = HashMap::new();
                 map.insert("Uptime".to_string(), "86420".to_string());
@@ -1325,7 +1343,8 @@ impl ActiveSession {
 
     pub async fn list_server_variables(&self) -> Result<Vec<(String, String)>> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for this engine")),
+            Self::Postgres(pg) => crate::pg_db::list_server_variables(pg).await,
             Self::DemoSandbox { .. } => {
                 Ok(vec![
                     ("auto_increment_increment".into(), "1".into()),
@@ -1377,6 +1396,7 @@ impl ActiveSession {
         match self {
             Self::DemoSandbox { .. } => Ok("8.4.0-demo".to_string()),
             Self::Sqlite { .. } => Ok("SQLite".to_string()),
+            Self::Postgres(pg) => crate::pg_db::server_version(pg).await,
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let ver: Option<String> = conn.query_first("SELECT VERSION()").await?;
@@ -1387,7 +1407,9 @@ impl ActiveSession {
 
     pub async fn show_create(&self, kind: &str, db: &str, name: &str) -> Result<String> {
         match self {
-            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::DemoSandbox { .. } | Self::Postgres(_) => {
+                Err(anyhow::anyhow!("not supported for this engine"))
+            }
             Self::Sqlite { conn, .. } => {
                 let conn = Arc::clone(conn);
                 let kind = kind.to_string();
@@ -1419,7 +1441,7 @@ impl ActiveSession {
 
     pub async fn list_objects(&self, db: &str) -> Result<DbObjects> {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => {
                 Err(anyhow::anyhow!("not supported for this engine"))
             }
             Self::RealMysql { pool, .. } => {
@@ -1473,7 +1495,7 @@ impl ActiveSession {
         F: FnMut(&[String], Vec<Vec<CellValue>>) -> Result<()>,
     {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => {
                 Err(anyhow::anyhow!("not supported for this engine"))
             }
             Self::RealMysql { pool, .. } => {
@@ -1512,7 +1534,7 @@ impl ActiveSession {
 
     pub async fn open_pool_conn(&self, db: &str) -> Result<mysql_async::Conn> {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => {
                 Err(anyhow::anyhow!("not supported for this engine"))
             }
             Self::RealMysql { pool, .. } => {
@@ -1533,7 +1555,7 @@ impl ActiveSession {
     pub async fn performance_schema_enabled(&self) -> Result<bool> {
         match self {
             Self::DemoSandbox { .. } => Ok(true),
-            Self::Sqlite { .. } => Ok(false),
+            Self::Sqlite { .. } | Self::Postgres(_) => Ok(false),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let val: Option<u64> = conn.query_first("SELECT @@performance_schema").await?;
@@ -1548,7 +1570,7 @@ impl ActiveSession {
         schema_filter: Option<&str>,
     ) -> Result<QueryResult> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => Err(anyhow!("Not supported for this engine")),
             Self::DemoSandbox { .. } => Ok(QueryResult {
                 sql: "/* performance_schema digests (demo) */".to_string(),
                 database: schema_filter.unwrap_or("shop").to_string(),
@@ -1671,7 +1693,9 @@ impl ActiveSession {
     pub async fn reset_statement_digests(&self) -> Result<()> {
         match self {
             Self::DemoSandbox { .. } => Ok(()),
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 conn.query_drop(
@@ -1685,7 +1709,7 @@ impl ActiveSession {
 
     pub async fn tls_status(&self) -> (Option<String>, Option<String>) {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } => (None, None),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => (None, None),
             Self::RealMysql { pool, .. } => {
                 let Ok(mut conn) = pool.get_conn().await else {
                     return (None, None);
@@ -1710,6 +1734,7 @@ impl ActiveSession {
 
     pub async fn fetch_object_ddl(&self, db: &str, obj_type: &str, name: &str) -> Result<String> {
         match self {
+            Self::Postgres(_) => Err(anyhow!("DDL preview not yet supported for PostgreSQL")),
             Self::Sqlite { conn, .. } => {
                 let conn = Arc::clone(conn);
                 let kind = obj_type.to_string();
@@ -1755,7 +1780,9 @@ impl ActiveSession {
         routine_name: &str,
     ) -> Result<Vec<RoutineParamInfo>> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { .. } => {
                 if routine_name == "sp_customer_summary" {
                     Ok(vec![
@@ -1855,7 +1882,9 @@ impl ActiveSession {
 
     pub async fn list_users(&self) -> Result<Vec<UserInfo>> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { store, .. } => {
                 let guard = store
                     .users
@@ -1895,7 +1924,9 @@ impl ActiveSession {
 
     pub async fn fetch_user_grants(&self, user: &str, host: &str) -> Result<Vec<String>> {
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { store, .. } => {
                 let guard = store
                     .users
@@ -1929,7 +1960,9 @@ impl ActiveSession {
     ) -> Result<()> {
         let sql = build_create_user_sql(user, host, password, auth_plugin);
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users
@@ -1965,7 +1998,9 @@ impl ActiveSession {
             escape_sql_str(host)
         );
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users
@@ -1996,7 +2031,9 @@ impl ActiveSession {
         );
         match self {
             Self::DemoSandbox { .. } => Ok(()),
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 conn.query_drop(sql).await?;
@@ -2014,7 +2051,9 @@ impl ActiveSession {
     ) -> Result<()> {
         let stmts = build_grant_revoke_sql(user, host, "*.*", grants, revokes);
         match self {
-            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
+            Self::Sqlite { .. } | Self::Postgres(_) => {
+                Err(anyhow!("Not supported for this engine"))
+            }
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users

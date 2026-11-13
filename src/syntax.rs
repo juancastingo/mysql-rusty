@@ -1,6 +1,7 @@
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontFamily, FontId};
 
+// Superset of MySQL/MariaDB, PostgreSQL, and SQLite keywords so highlighting works uniformly.
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT",
     "FROM",
@@ -20,6 +21,12 @@ const SQL_KEYWORDS: &[&str] = &[
     "IS",
     "NULL",
     "LIKE",
+    "ILIKE",
+    "RETURNING",
+    "SERIAL",
+    "BIGSERIAL",
+    "JSONB",
+    "UUID",
     "BETWEEN",
     "EXISTS",
     "GROUP",
