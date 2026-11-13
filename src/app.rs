@@ -64,12 +64,22 @@ pub enum AsyncEvent {
     QueryKilled(Result<u64, String>),
     TestConnectionResult(Result<String, String>),
     ServerVariablesLoaded(Result<Vec<(String, String)>, String>),
+    CopilotDeviceCodeReady(Result<crate::ai::CopilotDeviceCodeResponse, String>),
+    CopilotPollFinished(Result<String, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultViewMode {
     Grid,
     Chart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MultiResultLayout {
+    #[default]
+    Tabs,
+    Stacked,
+    SideBySide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +162,7 @@ pub struct QueryTab {
     pub last_result: Option<QueryResult>,
     pub multi_results: Vec<QueryResult>,
     pub active_result_idx: usize,
+    pub multi_result_layout: MultiResultLayout,
     pub last_error: Option<String>,
     pub query_params: HashMap<String, String>,
     pub row_filter: String,
@@ -190,6 +201,7 @@ impl QueryTab {
             last_result: None,
             multi_results: Vec::new(),
             active_result_idx: 0,
+            multi_result_layout: MultiResultLayout::Tabs,
             last_error: None,
             query_params: HashMap::new(),
             row_filter: String::new(),
@@ -329,6 +341,11 @@ pub struct MysqlRustyApp {
     command_palette_query: String,
     command_palette_selected: usize,
 
+    // Copilot Authentication
+    pub copilot_device_code_data: Option<crate::ai::CopilotDeviceCodeResponse>,
+    pub copilot_auth_status: String,
+    pub is_copilot_authenticating: bool,
+
     // Scratchpad auto-save
     last_scratchpad_save: std::time::Instant,
 }
@@ -431,6 +448,9 @@ impl MysqlRustyApp {
             show_command_palette: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            copilot_device_code_data: None,
+            copilot_auth_status: String::new(),
+            is_copilot_authenticating: false,
             last_scratchpad_save: std::time::Instant::now(),
         }
     }
@@ -976,6 +996,14 @@ impl MysqlRustyApp {
         } else {
             tab.sql.clone()
         };
+
+        // Opción 1: Local Schema Native runs in 0ms without async network spawning
+        if self.config.ai.provider == AiProvider::LocalSchema {
+            let schema = self.schemas.get(&self.active_database);
+            tab.ghost_completion = compute_heuristic_ghost_completion(&sql_prefix, schema);
+            return;
+        }
+
         let ddl = self
             .schemas
             .get(&self.active_database)
@@ -1331,6 +1359,40 @@ impl MysqlRustyApp {
                         }
                         Err(e) => {
                             self.status_banner = format!("Failed to load server variables: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::CopilotDeviceCodeReady(res) => {
+                    self.is_copilot_authenticating = false;
+                    match res {
+                        Ok(data) => {
+                            self.copilot_auth_status = format!(
+                                "One-time code generated: {}. Enter this code at https://github.com/login/device",
+                                data.user_code
+                            );
+                            self.copilot_device_code_data = Some(data);
+                        }
+                        Err(e) => {
+                            self.copilot_auth_status = format!("Failed to get device code: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::CopilotPollFinished(res) => {
+                    self.is_copilot_authenticating = false;
+                    match res {
+                        Ok(token) => {
+                            self.config.ai.copilot_github_token = token;
+                            self.copilot_device_code_data = None;
+                            self.copilot_auth_status = "✅ Successfully connected to GitHub Copilot!".to_string();
+                            let _ = self.config.save();
+                            self.status_banner = "GitHub Copilot connected and saved.".to_string();
+                        }
+                        Err(e) => {
+                            if e == "authorization_pending" {
+                                self.copilot_auth_status = "Waiting for authorization in browser... Click Check again once approved.".to_string();
+                            } else {
+                                self.copilot_auth_status = format!("Authorization check error: {e}");
+                            }
                         }
                     }
                 }
@@ -3572,19 +3634,50 @@ impl MysqlRustyApp {
                             .strong()
                             .color(Color32::from_rgb(56, 189, 248)),
                     );
-                    for (r_idx, r_item) in tab.multi_results.iter().enumerate() {
-                        let is_sel = tab.active_result_idx == r_idx;
-                        let lbl = format!("Result {} ({} rows)", r_idx + 1, r_item.rows.len());
-                        if ui.selectable_label(is_sel, lbl).clicked() {
-                            tab.active_result_idx = r_idx;
-                            tab.last_result = Some(r_item.clone());
-                            tab.current_page = 0;
-                            tab.sort_column = None;
-                            result = r_item.clone();
+                    if tab.multi_result_layout == MultiResultLayout::Tabs {
+                        for (r_idx, r_item) in tab.multi_results.iter().enumerate() {
+                            let is_sel = tab.active_result_idx == r_idx;
+                            let lbl = format!("Result {} ({} rows)", r_idx + 1, r_item.rows.len());
+                            if ui.selectable_label(is_sel, lbl).clicked() {
+                                tab.active_result_idx = r_idx;
+                                tab.last_result = Some(r_item.clone());
+                                tab.current_page = 0;
+                                tab.sort_column = None;
+                                result = r_item.clone();
+                            }
                         }
+                    } else {
+                        ui.label(
+                            RichText::new(format!("Showing all {} results", tab.multi_results.len()))
+                                .small()
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
                     }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.selectable_value(
+                            &mut tab.multi_result_layout,
+                            MultiResultLayout::SideBySide,
+                            "◫ Side-by-Side",
+                        );
+                        ui.selectable_value(
+                            &mut tab.multi_result_layout,
+                            MultiResultLayout::Stacked,
+                            "⊞ Stacked",
+                        );
+                        ui.selectable_value(
+                            &mut tab.multi_result_layout,
+                            MultiResultLayout::Tabs,
+                            "📑 Tabs",
+                        );
+                    });
                 });
                 ui.separator();
+
+                if tab.multi_result_layout != MultiResultLayout::Tabs {
+                    Self::render_multi_results_split_view(ui, tab);
+                    return;
+                }
             }
 
             // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
@@ -4151,6 +4244,186 @@ impl MysqlRustyApp {
                     });
                 });
             }
+        }
+    }
+
+    fn render_multi_results_split_view(ui: &mut Ui, tab: &mut QueryTab) {
+        let mut focus_idx: Option<usize> = None;
+        let results_snapshot = tab.multi_results.clone();
+        let layout = tab.multi_result_layout;
+
+        egui::ScrollArea::vertical()
+            .id_salt("multi_results_split_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| match layout {
+                MultiResultLayout::Stacked => {
+                    for (idx, res) in results_snapshot.iter().enumerate() {
+                        if let Some(f) = Self::render_compact_result_card(ui, idx, res, 220.0) {
+                            focus_idx = Some(f);
+                        }
+                        ui.add_space(6.0);
+                    }
+                }
+                MultiResultLayout::SideBySide => {
+                    let cols_per_row = if results_snapshot.len() >= 3 && ui.available_width() >= 1100.0 {
+                        3
+                    } else {
+                        2
+                    };
+                    for chunk_start in (0..results_snapshot.len()).step_by(cols_per_row) {
+                        let chunk_end = (chunk_start + cols_per_row).min(results_snapshot.len());
+                        let count = chunk_end - chunk_start;
+                        ui.columns(count, |columns| {
+                            for offset in 0..count {
+                                let idx = chunk_start + offset;
+                                let res = &results_snapshot[idx];
+                                if let Some(f) = Self::render_compact_result_card(
+                                    &mut columns[offset],
+                                    idx,
+                                    res,
+                                    260.0,
+                                ) {
+                                    focus_idx = Some(f);
+                                }
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+                MultiResultLayout::Tabs => {}
+            });
+
+        if let Some(idx) = focus_idx {
+            if let Some(res) = tab.multi_results.get(idx).cloned() {
+                tab.active_result_idx = idx;
+                tab.last_result = Some(res);
+                tab.current_page = 0;
+                tab.sort_column = None;
+                tab.multi_result_layout = MultiResultLayout::Tabs;
+            }
+        }
+    }
+
+    fn render_compact_result_card(
+        ui: &mut Ui,
+        idx: usize,
+        res: &QueryResult,
+        max_table_height: f32,
+    ) -> Option<usize> {
+        let mut focus_clicked = false;
+        let frame = egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(15, 22, 34))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(38, 50, 72)))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(8));
+
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Result #{}", idx + 1))
+                        .strong()
+                        .color(Color32::from_rgb(56, 189, 248)),
+                );
+                ui.label(
+                    RichText::new(format!("{} rows • {} ms", res.rows.len(), res.duration_ms))
+                        .small()
+                        .color(Color32::from_rgb(148, 163, 184)),
+                );
+                let sql_preview: String = res.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                let short_sql = if sql_preview.len() > 42 {
+                    format!("{}...", &sql_preview[..42])
+                } else {
+                    sql_preview.clone()
+                };
+                if !short_sql.is_empty() {
+                    ui.label(RichText::new(short_sql).small().monospace().weak())
+                        .on_hover_text(&res.sql);
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("🔍 Tab").on_hover_text("Focus this result in single-tab view").clicked() {
+                        focus_clicked = true;
+                    }
+                    if ui.small_button("📋 CSV").on_hover_text("Copy this result as CSV").clicked() {
+                        if let Ok(csv_text) = to_csv_string(res) {
+                            ui.ctx().copy_text(csv_text);
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+
+            if res.columns.is_empty() {
+                ui.label(RichText::new(&res.status_message).small().color(Color32::from_rgb(52, 211, 153)));
+                return;
+            }
+
+            let num_cols = res.columns.len();
+            let col_width = (ui.available_width() / num_cols.max(1) as f32).clamp(90.0, 220.0);
+
+            ui.push_id(("multi_res_card", idx), |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt(("multi_res_hscroll", idx))
+                    .show(ui, |ui| {
+                        let table = TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .max_scroll_height(max_table_height)
+                            .columns(Column::initial(col_width).at_least(60.0), num_cols);
+
+                        table
+                            .header(22.0, |mut header| {
+                                for col_name in &res.columns {
+                                    header.col(|ui| {
+                                        ui.label(
+                                            RichText::new(col_name)
+                                                .small()
+                                                .strong()
+                                                .color(Color32::from_rgb(203, 213, 225)),
+                                        );
+                                    });
+                                }
+                            })
+                            .body(|body| {
+                                body.rows(20.0, res.rows.len(), |mut row| {
+                                    let r_idx = row.index();
+                                    let row_data = &res.rows[r_idx];
+                                    for c_idx in 0..num_cols {
+                                        row.col(|ui| {
+                                            let txt = row_data
+                                                .get(c_idx)
+                                                .map(|c| c.display_text())
+                                                .unwrap_or_default();
+                                            let is_null = row_data
+                                                .get(c_idx)
+                                                .map(|c| matches!(c, crate::db::CellValue::Null))
+                                                .unwrap_or(false);
+                                            let rich = if is_null {
+                                                RichText::new("NULL").small().italics().color(Color32::GRAY)
+                                            } else {
+                                                RichText::new(&txt).small()
+                                            };
+                                            if ui.add(egui::Label::new(rich).truncate().sense(egui::Sense::click()))
+                                                .on_hover_text("Click to copy value")
+                                                .clicked()
+                                            {
+                                                ui.ctx().copy_text(txt);
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                    });
+            });
+        });
+
+        if focus_clicked {
+            Some(idx)
+        } else {
+            None
         }
     }
 
@@ -5110,7 +5383,9 @@ impl MysqlRustyApp {
                     .width(340.0)
                     .show_ui(ui, |ui| {
                         let providers = [
+                            AiProvider::LocalSchema,
                             AiProvider::Ollama,
+                            AiProvider::GitHubCopilot,
                             AiProvider::OpenAiCompatible,
                             AiProvider::Anthropic,
                             AiProvider::Gemini,
@@ -5129,12 +5404,128 @@ impl MysqlRustyApp {
                 ui.separator();
 
                 match self.config.ai.provider {
+                    AiProvider::LocalSchema => {
+                        ui.colored_label(
+                            Color32::from_rgb(52, 211, 153),
+                            "⚡ Option 1: Local Schema Native (0ms Latency, 100% Offline)",
+                        );
+                        ui.label(
+                            "Runs instantly in Rust memory without network calls or cloud APIs. \
+                            Generates context-aware ghost continuations for SELECT, JOIN, WHERE, \
+                            ORDER BY, GROUP BY, INSERT, and UPDATE based on your database tables and foreign keys."
+                        );
+                        ui.small("Recommended for max typing speed, zero latency, and private offline schemas.");
+                    }
                     AiProvider::Ollama => {
+                        ui.colored_label(
+                            Color32::from_rgb(167, 139, 250),
+                            "🦙 Option 2: Ollama FIM (Fast Local Code LLM)",
+                        );
                         ui.label("Ollama Endpoint URL:");
                         ui.text_edit_singleline(&mut self.config.ai.ollama_endpoint);
-                        ui.label("Model Name (e.g. `qwen2.5-coder:1.5b` [ultra-fast], `0.5b`, `7b`):");
+                        ui.label("Model Name (e.g. `qwen2.5-coder:1.5b` [recommended], `0.5b`, `7b`):");
                         ui.text_edit_singleline(&mut self.config.ai.ollama_model);
-                        ui.small("Tip: `qwen2.5-coder:1.5b` responds in ~100-200ms with 0 cloud cost.");
+                        ui.checkbox(
+                            &mut self.config.ai.ollama_use_fim,
+                            "⚡ Enable native FIM (Fill-In-The-Middle) prompt mode for code models",
+                        );
+                        ui.small("Tip: `qwen2.5-coder:1.5b` with FIM responds in ~80-150ms on local hardware.");
+                    }
+                    AiProvider::GitHubCopilot => {
+                        ui.colored_label(
+                            Color32::from_rgb(56, 189, 248),
+                            "🤖 Option 3: GitHub Copilot (Official Subscription)",
+                        );
+
+                        let is_logged_in = !self.config.ai.copilot_github_token.trim().is_empty();
+                        if is_logged_in {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(Color32::from_rgb(34, 197, 94), "✅ Logged In & Ready");
+                                if ui.button("Disconnect").clicked() {
+                                    self.config.ai.copilot_github_token.clear();
+                                    self.config.ai.copilot_session_token.clear();
+                                    self.config.ai.copilot_token_expires_at = 0;
+                                    self.copilot_auth_status = "Disconnected from GitHub Copilot.".to_string();
+                                }
+                            });
+                            ui.label("Copilot Model Engine:");
+                            egui::ComboBox::from_id_salt("copilot_model_combo")
+                                .selected_text(&self.config.ai.copilot_model)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-4o".to_string(), "gpt-4o (Smartest)");
+                                    ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-3.5-turbo".to_string(), "gpt-3.5-turbo (Ultra-fast)");
+                                    ui.selectable_value(&mut self.config.ai.copilot_model, "claude-3.5-sonnet".to_string(), "claude-3.5-sonnet");
+                                });
+                        } else {
+                            ui.label("Log in using your GitHub account with active Copilot subscription:");
+                            if self.is_copilot_authenticating {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Connecting to GitHub...");
+                                });
+                            } else if let Some(dev) = &self.copilot_device_code_data {
+                                ui.group(|ui| {
+                                    ui.label(RichText::new("Step 1: Open verification page").strong());
+                                    if ui.button("🌐 Open https://github.com/login/device in Browser").clicked() {
+                                        ui.ctx().open_url(egui::OpenUrl::new_tab(&dev.verification_uri));
+                                    }
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new("Step 2: Enter this one-time code:").strong());
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(&dev.user_code)
+                                                .size(20.0)
+                                                .strong()
+                                                .color(Color32::from_rgb(251, 191, 36)),
+                                        );
+                                        if ui.button("📋 Copy Code").clicked() {
+                                            ui.ctx().copy_text(dev.user_code.clone());
+                                            self.status_banner = "Copied device code to clipboard!".to_string();
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new("Step 3: Click once approved in browser:").strong());
+                                    if ui.button("🔄 Check / Confirm Authorization").clicked() {
+                                        let device_code = dev.device_code.clone();
+                                        let tx = self.tx.clone();
+                                        self.is_copilot_authenticating = true;
+                                        self.rt.spawn(async move {
+                                            let res = crate::ai::poll_copilot_device_token(&device_code).await;
+                                            let outcome = match res {
+                                                Ok(Ok(token)) => Ok(token),
+                                                Ok(Err(err_msg)) => Err(err_msg),
+                                                Err(e) => Err(format!("{e:#}")),
+                                            };
+                                            let _ = tx.send(AsyncEvent::CopilotPollFinished(outcome));
+                                        });
+                                    }
+                                });
+                            } else {
+                                if ui.button("🔗 Connect with GitHub (Device Code)").clicked() {
+                                    self.is_copilot_authenticating = true;
+                                    let tx = self.tx.clone();
+                                    self.rt.spawn(async move {
+                                        let res = crate::ai::request_copilot_device_code()
+                                            .await
+                                            .map_err(|e| format!("{e:#}"));
+                                        let _ = tx.send(AsyncEvent::CopilotDeviceCodeReady(res));
+                                    });
+                                }
+                            }
+
+                            ui.collapsing("Or paste GitHub Token manually", |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.config.ai.copilot_github_token)
+                                        .password(true)
+                                        .hint_text("ghu_... or personal access token"),
+                                );
+                                ui.small("Accepts personal token or ghu_ OAuth token with Copilot access.");
+                            });
+
+                            if !self.copilot_auth_status.is_empty() {
+                                ui.colored_label(Color32::from_rgb(234, 179, 8), &self.copilot_auth_status);
+                            }
+                        }
                     }
                     AiProvider::OpenAiCompatible => {
                         ui.label("Base URL (OpenAI, Groq, OpenRouter, vLLM):");
