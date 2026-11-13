@@ -190,4 +190,70 @@ impl MysqlRustyApp {
             self.table_info_modal = Some((db_name, tbl, subtab));
         }
     }
+
+    pub(crate) fn render_routine_call_modal(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.routine_call_modal.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut execute_sql: Option<String> = None;
+
+        egui::Window::new(format!(
+            "Execute Procedure — `{}`.`{}`",
+            state.db, state.routine_name
+        ))
+        .open(&mut open)
+        .resizable(true)
+        .default_width(440.0)
+        .show(ctx, |ui| {
+            if state.params.is_empty() {
+                ui.label("This procedure takes no parameters.");
+            } else {
+                egui::Grid::new("routine_params_grid")
+                    .num_columns(3)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        for (idx, p) in state.params.iter().enumerate() {
+                            ui.label(
+                                RichText::new(format!("[{}] {}", p.mode, p.name))
+                                    .monospace()
+                                    .strong(),
+                            );
+                            ui.label(RichText::new(&p.data_type).small().weak());
+                            if p.mode.eq_ignore_ascii_case("OUT") {
+                                ui.label(RichText::new("(OUT variable)").small().weak());
+                            } else if let Some(buf) = state.arg_values.get_mut(idx) {
+                                ui.add(
+                                    egui::TextEdit::singleline(buf)
+                                        .hint_text("e.g. 42 or 'text' or NULL")
+                                        .desired_width(180.0),
+                                );
+                            }
+                            ui.end_row();
+                        }
+                    });
+            }
+            ui.separator();
+            let preview = crate::db::generate_routine_call_sql(
+                &state.routine_name,
+                &state.params,
+                &state.arg_values,
+            );
+            ui.label(RichText::new(&preview).monospace().small().weak());
+            ui.add_space(6.0);
+            if ui.button("Execute").clicked() {
+                execute_sql = Some(preview);
+            }
+        });
+
+        if let Some(sql) = execute_sql {
+            self.routine_call_modal = None;
+            let n = self.tabs.len() + 1;
+            self.tabs.push(QueryTab::new(format!("Call {n}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+            self.execute_current_tab_query(None);
+        } else if !open {
+            self.routine_call_modal = None;
+        }
+    }
 }

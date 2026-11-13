@@ -117,6 +117,7 @@ pub fn build_demo_schema(database: &str) -> DatabaseSchema {
                     indexes: vec![],
                 },
             ],
+            ..Default::default()
         };
     }
 
@@ -209,11 +210,28 @@ pub fn build_demo_schema(database: &str) -> DatabaseSchema {
                     indexes: vec![],
                 },
             ],
+            ..Default::default()
         };
     }
 
     DatabaseSchema {
         name: "ecommerce_prod".to_string(),
+        views: vec![crate::db::ViewInfo {
+            name: "v_high_value_orders".to_string(),
+            definer: "demo_admin@%".to_string(),
+            is_updatable: "NO".to_string(),
+            definition: Some(
+                "SELECT id, user_id, total_amount, status FROM orders WHERE total_amount >= 100"
+                    .to_string(),
+            ),
+        }],
+        procedures: vec![crate::db::RoutineInfo {
+            name: "sp_customer_summary".to_string(),
+            routine_type: "PROCEDURE".to_string(),
+            data_type: String::new(),
+            definer: "demo_admin@%".to_string(),
+            definition: "SELECT COALESCE(SUM(total_amount), 0) INTO p_total FROM orders WHERE user_id = p_user_id".to_string(),
+        }],
         tables: vec![
             TableSchema {
                 name: "users".to_string(),
@@ -541,6 +559,7 @@ pub fn build_demo_schema(database: &str) -> DatabaseSchema {
                 indexes: vec![],
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -1461,5 +1480,17 @@ mod tests {
         assert!(capped.truncated);
         assert_eq!(capped.rows.len(), 2);
         assert!(capped.status_message.contains("max_rows = 2"));
+    }
+
+    #[test]
+    fn test_demo_schema_includes_views_and_procedures() {
+        let schema = build_demo_schema("ecommerce_prod");
+        assert!(schema.views.iter().any(|v| v.name == "v_high_value_orders"));
+        assert!(
+            schema
+                .procedures
+                .iter()
+                .any(|p| p.name == "sp_customer_summary")
+        );
     }
 }

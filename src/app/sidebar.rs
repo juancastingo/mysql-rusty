@@ -158,6 +158,8 @@ impl MysqlRustyApp {
         let filter_lower = self.schema_filter.to_lowercase();
         let mut pending_sql_action: Option<(String, bool)> = None; // (sql, auto_run)
         let mut toggle_favorite_table: Option<String> = None;
+        let mut pending_ddl_fetch: Option<(String, String, String)> = None;
+        let mut pending_routine_call: Option<(String, String)> = None;
         let mut activate_db: Option<String> = None;
         let mut load_db_schema: Option<String> = None;
 
@@ -358,6 +360,161 @@ impl MysqlRustyApp {
                         }
                     });
                         }
+
+                        if !schema.views.is_empty() {
+                            ui.collapsing(format!("Views ({})", schema.views.len()), |ui| {
+                                for view in &schema.views {
+                                    if !filter_lower.is_empty()
+                                        && !view.name.to_lowercase().contains(&filter_lower)
+                                    {
+                                        continue;
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.label(&view.name);
+                                        if ui.small_button("SELECT").clicked() {
+                                            pending_sql_action = Some((
+                                                format!("SELECT * FROM `{}` LIMIT 100;", view.name),
+                                                true,
+                                            ));
+                                        }
+                                        if ui.small_button("DDL").clicked() {
+                                            pending_ddl_fetch = Some((
+                                                db_name.clone(),
+                                                "VIEW".to_string(),
+                                                view.name.clone(),
+                                            ));
+                                        }
+                                    });
+                                }
+                            });
+                        }
+
+                        if !schema.procedures.is_empty() {
+                            ui.collapsing(
+                                format!("Stored Procedures ({})", schema.procedures.len()),
+                                |ui| {
+                                    for proc_info in &schema.procedures {
+                                        if !filter_lower.is_empty()
+                                            && !proc_info
+                                                .name
+                                                .to_lowercase()
+                                                .contains(&filter_lower)
+                                        {
+                                            continue;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            ui.label(&proc_info.name);
+                                            if ui.small_button("Call").clicked() {
+                                                pending_routine_call =
+                                                    Some((db_name.clone(), proc_info.name.clone()));
+                                            }
+                                            if ui.small_button("DDL").clicked() {
+                                                pending_ddl_fetch = Some((
+                                                    db_name.clone(),
+                                                    "PROCEDURE".to_string(),
+                                                    proc_info.name.clone(),
+                                                ));
+                                            }
+                                        });
+                                    }
+                                },
+                            );
+                        }
+
+                        if !schema.functions.is_empty() {
+                            ui.collapsing(
+                                format!("Functions ({})", schema.functions.len()),
+                                |ui| {
+                                    for func_info in &schema.functions {
+                                        if !filter_lower.is_empty()
+                                            && !func_info
+                                                .name
+                                                .to_lowercase()
+                                                .contains(&filter_lower)
+                                        {
+                                            continue;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            ui.label(&func_info.name);
+                                            if !func_info.data_type.is_empty() {
+                                                ui.label(
+                                                    RichText::new(&func_info.data_type)
+                                                        .small()
+                                                        .weak(),
+                                                );
+                                            }
+                                            if ui.small_button("DDL").clicked() {
+                                                pending_ddl_fetch = Some((
+                                                    db_name.clone(),
+                                                    "FUNCTION".to_string(),
+                                                    func_info.name.clone(),
+                                                ));
+                                            }
+                                        });
+                                    }
+                                },
+                            );
+                        }
+
+                        if !schema.triggers.is_empty() {
+                            ui.collapsing(format!("Triggers ({})", schema.triggers.len()), |ui| {
+                                for trig in &schema.triggers {
+                                    if !filter_lower.is_empty()
+                                        && !trig.name.to_lowercase().contains(&filter_lower)
+                                        && !trig.table.to_lowercase().contains(&filter_lower)
+                                    {
+                                        continue;
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.label(&trig.name);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} {} ON {}",
+                                                trig.timing, trig.event, trig.table
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                        if ui.small_button("DDL").clicked() {
+                                            pending_ddl_fetch = Some((
+                                                db_name.clone(),
+                                                "TRIGGER".to_string(),
+                                                trig.name.clone(),
+                                            ));
+                                        }
+                                    });
+                                }
+                            });
+                        }
+
+                        if !schema.events.is_empty() {
+                            ui.collapsing(format!("Events ({})", schema.events.len()), |ui| {
+                                for ev in &schema.events {
+                                    if !filter_lower.is_empty()
+                                        && !ev.name.to_lowercase().contains(&filter_lower)
+                                    {
+                                        continue;
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.label(&ev.name);
+                                        let badge_color =
+                                            if ev.status.eq_ignore_ascii_case("ENABLED") {
+                                                Color32::from_rgb(52, 211, 153)
+                                            } else {
+                                                Color32::from_rgb(148, 163, 184)
+                                            };
+                                        ui.colored_label(badge_color, &ev.status);
+                                        if ui.small_button("DDL").clicked() {
+                                            pending_ddl_fetch = Some((
+                                                db_name.clone(),
+                                                "EVENT".to_string(),
+                                                ev.name.clone(),
+                                            ));
+                                        }
+                                    });
+                                }
+                            });
+                        }
                     });
 
                 if db_resp.header_response.clicked() && !is_active_db {
@@ -467,6 +624,37 @@ impl MysqlRustyApp {
             if run_immediately {
                 self.execute_current_tab_query(None);
             }
+        }
+
+        if let Some((db, obj_type, name)) = pending_ddl_fetch
+            && let Some(session) = self.active_session.clone()
+        {
+            let tx = self.tx.clone();
+            let title = format!("{obj_type}: {name}");
+            self.rt.spawn(async move {
+                let ddl = session
+                    .fetch_object_ddl(&db, &obj_type, &name)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::ObjectDdlLoaded { title, ddl });
+            });
+        }
+
+        if let Some((db, routine_name)) = pending_routine_call
+            && let Some(session) = self.active_session.clone()
+        {
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let params = session
+                    .fetch_routine_parameters(&db, &routine_name)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AsyncEvent::RoutineCallModalReady {
+                    db,
+                    routine_name,
+                    params,
+                });
+            });
         }
     }
 

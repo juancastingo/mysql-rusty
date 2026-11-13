@@ -222,6 +222,9 @@ pub struct MysqlRustyApp {
     slow_queries_limit: usize,
     slow_queries_confirm_reset: bool,
     slow_queries_error: Option<String>,
+
+    // Routine Call Modal (#35)
+    routine_call_modal: Option<RoutineCallModalState>,
 }
 
 impl MysqlRustyApp {
@@ -399,6 +402,7 @@ impl MysqlRustyApp {
             slow_queries_limit: 50,
             slow_queries_confirm_reset: false,
             slow_queries_error: None,
+            routine_call_modal: None,
         }
     }
 }
@@ -616,5 +620,6 @@ impl eframe::App for MysqlRustyApp {
         self.render_table_info_modal(&ctx);
         self.render_backup_modal(&ctx);
         self.render_restore_modal(&ctx);
+        self.render_routine_call_modal(&ctx);
     }
 }

@@ -709,6 +709,33 @@ impl MysqlRustyApp {
                         self.status_banner = format!("Reset failed: {e}");
                     }
                 },
+                AsyncEvent::ObjectDdlLoaded { title, ddl } => match ddl {
+                    Ok(sql) => {
+                        self.tabs.push(QueryTab::new(title, sql));
+                        self.active_tab_idx = self.tabs.len() - 1;
+                    }
+                    Err(e) => {
+                        self.status_banner = format!("Failed to load DDL: {e}");
+                    }
+                },
+                AsyncEvent::RoutineCallModalReady {
+                    db,
+                    routine_name,
+                    params,
+                } => match params {
+                    Ok(p) => {
+                        let arg_values = vec![String::new(); p.len()];
+                        self.routine_call_modal = Some(RoutineCallModalState {
+                            db,
+                            routine_name,
+                            params: p,
+                            arg_values,
+                        });
+                    }
+                    Err(e) => {
+                        self.status_banner = format!("Failed to load routine parameters: {e}");
+                    }
+                },
             }
         }
     }

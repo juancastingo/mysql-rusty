@@ -48,9 +48,62 @@ pub struct TableSchema {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ViewInfo {
+    pub name: String,
+    pub definer: String,
+    pub is_updatable: String,
+    pub definition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutineInfo {
+    pub name: String,
+    pub routine_type: String,
+    pub data_type: String,
+    pub definer: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub event: String,
+    pub table: String,
+    pub timing: String,
+    pub statement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EventInfo {
+    pub name: String,
+    pub status: String,
+    pub execute_at: Option<String>,
+    pub interval_value: Option<String>,
+    pub interval_field: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutineParamInfo {
+    pub ordinal: u64,
+    pub mode: String,
+    pub name: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DatabaseSchema {
     pub name: String,
     pub tables: Vec<TableSchema>,
+    #[serde(default)]
+    pub views: Vec<ViewInfo>,
+    #[serde(default)]
+    pub procedures: Vec<RoutineInfo>,
+    #[serde(default)]
+    pub functions: Vec<RoutineInfo>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerInfo>,
+    #[serde(default)]
+    pub events: Vec<EventInfo>,
 }
 
 impl DatabaseSchema {
@@ -704,9 +757,120 @@ impl ActiveSession {
                     });
                 }
 
+                type ViewRow = (String, Option<String>, Option<String>, Option<String>);
+                let view_rows: Vec<ViewRow> = conn
+                    .exec(
+                        "SELECT TABLE_NAME, DEFINER, IS_UPDATABLE, VIEW_DEFINITION
+                         FROM information_schema.VIEWS
+                         WHERE TABLE_SCHEMA = ?
+                         ORDER BY TABLE_NAME",
+                        (database,),
+                    )
+                    .await
+                    .unwrap_or_default();
+                let views = view_rows
+                    .into_iter()
+                    .map(|(name, definer, is_updatable, definition)| ViewInfo {
+                        name,
+                        definer: definer.unwrap_or_default(),
+                        is_updatable: is_updatable.unwrap_or_else(|| "NO".to_string()),
+                        definition,
+                    })
+                    .collect();
+
+                type RoutineRow = (
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                );
+                let routine_rows: Vec<RoutineRow> =
+                    conn.exec(
+                        "SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, DEFINER, ROUTINE_DEFINITION
+                         FROM information_schema.ROUTINES
+                         WHERE ROUTINE_SCHEMA = ?
+                         ORDER BY ROUTINE_NAME",
+                        (database,),
+                    )
+                    .await
+                    .unwrap_or_default();
+                let mut procedures = Vec::new();
+                let mut functions = Vec::new();
+                for (name, r_type, dtd, definer, defn) in routine_rows {
+                    let info = RoutineInfo {
+                        name,
+                        routine_type: r_type.clone(),
+                        data_type: dtd.unwrap_or_default(),
+                        definer: definer.unwrap_or_default(),
+                        definition: defn.unwrap_or_default(),
+                    };
+                    if r_type.eq_ignore_ascii_case("FUNCTION") {
+                        functions.push(info);
+                    } else {
+                        procedures.push(info);
+                    }
+                }
+
+                let trigger_rows: Vec<(String, String, String, String, Option<String>)> = conn
+                    .exec(
+                        "SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT
+                         FROM information_schema.TRIGGERS
+                         WHERE TRIGGER_SCHEMA = ?
+                         ORDER BY TRIGGER_NAME",
+                        (database,),
+                    )
+                    .await
+                    .unwrap_or_default();
+                let triggers = trigger_rows
+                    .into_iter()
+                    .map(|(name, event, table, timing, stmt)| TriggerInfo {
+                        name,
+                        event,
+                        table,
+                        timing,
+                        statement: stmt.unwrap_or_default(),
+                    })
+                    .collect();
+
+                type EventRow = (
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                );
+                let event_rows: Vec<EventRow> =
+                    conn.exec(
+                        "SELECT EVENT_NAME, STATUS, CAST(EXECUTE_AT AS CHAR), CAST(INTERVAL_VALUE AS CHAR), INTERVAL_FIELD
+                         FROM information_schema.EVENTS
+                         WHERE EVENT_SCHEMA = ?
+                         ORDER BY EVENT_NAME",
+                        (database,),
+                    )
+                    .await
+                    .unwrap_or_default();
+                let events = event_rows
+                    .into_iter()
+                    .map(
+                        |(name, status, execute_at, interval_value, interval_field)| EventInfo {
+                            name,
+                            status,
+                            execute_at,
+                            interval_value,
+                            interval_field,
+                        },
+                    )
+                    .collect();
+
                 Ok(DatabaseSchema {
                     name: database.to_string(),
                     tables,
+                    views,
+                    procedures,
+                    functions,
+                    triggers,
+                    events,
                 })
             }
         }
@@ -1441,6 +1605,139 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn fetch_object_ddl(&self, db: &str, obj_type: &str, name: &str) -> Result<String> {
+        match self {
+            Self::DemoSandbox { .. } => match obj_type.to_ascii_uppercase().as_str() {
+                "VIEW" => Ok(format!(
+                    "CREATE VIEW `{name}` AS\nSELECT o.id, o.user_id, o.total_amount, o.status\nFROM orders o\nWHERE o.total_amount >= 100;"
+                )),
+                "PROCEDURE" => Ok(format!(
+                    "CREATE PROCEDURE `{name}`(IN p_user_id INT, OUT p_total DECIMAL(10,2))\nBEGIN\n  SELECT COALESCE(SUM(total_amount), 0) INTO p_total\n  FROM orders WHERE user_id = p_user_id;\nEND;"
+                )),
+                _ => Ok(format!("-- Mock DDL for {obj_type} `{db}`.`{name}`")),
+            },
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let q_db = db.replace('`', "``");
+                let q_name = name.replace('`', "``");
+                let (sql, col_idx) = match obj_type.to_ascii_uppercase().as_str() {
+                    "TABLE" => (format!("SHOW CREATE TABLE `{q_db}`.`{q_name}`"), 1usize),
+                    "VIEW" => (format!("SHOW CREATE VIEW `{q_db}`.`{q_name}`"), 1usize),
+                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE `{q_db}`.`{q_name}`"), 2usize),
+                    "FUNCTION" => (format!("SHOW CREATE FUNCTION `{q_db}`.`{q_name}`"), 2usize),
+                    "TRIGGER" => (format!("SHOW CREATE TRIGGER `{q_db}`.`{q_name}`"), 2usize),
+                    "EVENT" => (format!("SHOW CREATE EVENT `{q_db}`.`{q_name}`"), 3usize),
+                    other => return Err(anyhow!("Unsupported object type: {other}")),
+                };
+                let row: Option<Row> = conn.query_first(sql).await?;
+                let row = row.ok_or_else(|| anyhow!("{obj_type} `{db}`.`{name}` not found"))?;
+                row.get::<String, _>(col_idx)
+                    .ok_or_else(|| anyhow!("Missing DDL in SHOW CREATE {obj_type}"))
+            }
+        }
+    }
+
+    pub async fn fetch_routine_parameters(
+        &self,
+        db: &str,
+        routine_name: &str,
+    ) -> Result<Vec<RoutineParamInfo>> {
+        match self {
+            Self::DemoSandbox { .. } => {
+                if routine_name == "sp_customer_summary" {
+                    Ok(vec![
+                        RoutineParamInfo {
+                            ordinal: 1,
+                            mode: "IN".to_string(),
+                            name: "p_user_id".to_string(),
+                            data_type: "INT".to_string(),
+                        },
+                        RoutineParamInfo {
+                            ordinal: 2,
+                            mode: "OUT".to_string(),
+                            name: "p_total".to_string(),
+                            data_type: "DECIMAL(10,2)".to_string(),
+                        },
+                    ])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                type ParamRow = (u64, Option<String>, Option<String>, Option<String>);
+                let rows: Vec<ParamRow> = conn
+                    .exec(
+                        "SELECT ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER
+                         FROM information_schema.PARAMETERS
+                         WHERE SPECIFIC_SCHEMA = ? AND SPECIFIC_NAME = ? AND ORDINAL_POSITION > 0
+                         ORDER BY ORDINAL_POSITION",
+                        (db, routine_name),
+                    )
+                    .await?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(ordinal, mode, name, data_type)| RoutineParamInfo {
+                        ordinal,
+                        mode: mode.unwrap_or_else(|| "IN".to_string()),
+                        name: name.unwrap_or_else(|| format!("arg_{ordinal}")),
+                        data_type: data_type.unwrap_or_else(|| "VARCHAR(255)".to_string()),
+                    })
+                    .collect())
+            }
+        }
+    }
+}
+
+pub fn generate_routine_call_sql(
+    routine_name: &str,
+    params: &[RoutineParamInfo],
+    inputs: &[String],
+) -> String {
+    let mut call_args = Vec::with_capacity(params.len());
+    let mut out_vars = Vec::new();
+    for (idx, p) in params.iter().enumerate() {
+        let mode = p.mode.to_ascii_uppercase();
+        if mode == "OUT" || mode == "INOUT" {
+            let var_name = format!("@{}", p.name.trim_start_matches('@'));
+            if mode == "INOUT" {
+                let val = inputs.get(idx).map(|s| s.trim()).unwrap_or("NULL");
+                let formatted = if val.is_empty() { "NULL" } else { val };
+                out_vars.push((var_name.clone(), Some(formatted.to_string())));
+            } else {
+                out_vars.push((var_name.clone(), None));
+            }
+            call_args.push(var_name);
+        } else {
+            let val = inputs.get(idx).map(|s| s.trim()).unwrap_or("NULL");
+            call_args.push(if val.is_empty() {
+                "NULL".to_string()
+            } else {
+                val.to_string()
+            });
+        }
+    }
+
+    let mut lines = Vec::new();
+    for (var, init) in &out_vars {
+        if let Some(v) = init {
+            lines.push(format!("SET {var} = {v};"));
+        }
+    }
+    lines.push(format!(
+        "CALL `{}`({});",
+        routine_name.replace('`', "``"),
+        call_args.join(", ")
+    ));
+    if !out_vars.is_empty() {
+        let selects: Vec<String> = out_vars
+            .iter()
+            .map(|(v, _)| format!("{v} AS `{}`", v.trim_start_matches('@')))
+            .collect();
+        lines.push(format!("SELECT {};", selects.join(", ")));
+    }
+    lines.join("\n")
 }
 
 fn build_ssl_opts(profile: &ConnectionProfile) -> Result<SslOpts> {
@@ -1609,6 +1906,38 @@ mod tests {
         );
         assert_eq!(tbl.as_deref(), Some("users"));
         assert_eq!(pk.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn test_generate_routine_call_sql_in_out_inout() {
+        let params = vec![
+            RoutineParamInfo {
+                ordinal: 1,
+                mode: "IN".to_string(),
+                name: "p_user_id".to_string(),
+                data_type: "INT".to_string(),
+            },
+            RoutineParamInfo {
+                ordinal: 2,
+                mode: "INOUT".to_string(),
+                name: "p_counter".to_string(),
+                data_type: "INT".to_string(),
+            },
+            RoutineParamInfo {
+                ordinal: 3,
+                mode: "OUT".to_string(),
+                name: "p_total".to_string(),
+                data_type: "DECIMAL(10,2)".to_string(),
+            },
+        ];
+        let sql = generate_routine_call_sql(
+            "sp_customer_summary",
+            &params,
+            &["42".to_string(), "1".to_string(), "".to_string()],
+        );
+        assert!(sql.contains("SET @p_counter = 1;"));
+        assert!(sql.contains("CALL `sp_customer_summary`(42, @p_counter, @p_total);"));
+        assert!(sql.contains("SELECT @p_counter AS `p_counter`, @p_total AS `p_total`;"));
     }
     #[tokio::test]
     async fn test_server_admin_methods() {

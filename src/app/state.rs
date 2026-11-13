@@ -64,6 +64,22 @@ pub enum AsyncEvent {
     RestoreProgress(crate::backup::RestoreProgress),
     SlowQueriesLoaded(Result<(bool, QueryResult), String>),
     SlowQueriesReset(Result<(), String>),
+    ObjectDdlLoaded {
+        title: String,
+        ddl: Result<String, String>,
+    },
+    RoutineCallModalReady {
+        db: String,
+        routine_name: String,
+        params: Result<Vec<crate::db::RoutineParamInfo>, String>,
+    },
+}
+
+pub struct RoutineCallModalState {
+    pub db: String,
+    pub routine_name: String,
+    pub params: Vec<crate::db::RoutineParamInfo>,
+    pub arg_values: Vec<String>,
 }
 
 pub struct RestoreModalState {

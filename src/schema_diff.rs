@@ -316,6 +316,7 @@ mod tests {
                     indexes: Vec::new(),
                 },
             ],
+            ..Default::default()
         };
 
         let target = DatabaseSchema {
@@ -329,6 +330,7 @@ mod tests {
                 foreign_keys: Vec::new(),
                 indexes: Vec::new(),
             }],
+            ..Default::default()
         };
 
         let report = diff_schemas(&source, &target);
@@ -373,6 +375,7 @@ mod tests {
         let schema = DatabaseSchema {
             name: "app".to_string(),
             tables: vec![users_table(), orders_table()],
+            ..Default::default()
         };
         let report = diff_schemas(&schema, &schema);
         assert!(
@@ -393,10 +396,12 @@ mod tests {
         let source = DatabaseSchema {
             name: "src".to_string(),
             tables: vec![users_table(), orders_table()],
+            ..Default::default()
         };
         let target = DatabaseSchema {
             name: "tgt".to_string(),
             tables: vec![users_table()],
+            ..Default::default()
         };
         let report = diff_schemas(&source, &target);
         insta::assert_snapshot!(report.migration_sql);
@@ -426,10 +431,12 @@ mod tests {
         let source = DatabaseSchema {
             name: "src".to_string(),
             tables: vec![src_users],
+            ..Default::default()
         };
         let target = DatabaseSchema {
             name: "tgt".to_string(),
             tables: vec![users_table()],
+            ..Default::default()
         };
         let report = diff_schemas(&source, &target);
         let content = report
