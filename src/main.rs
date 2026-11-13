@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod config;
+mod data_diff;
 mod db;
 mod er_diagram;
 mod export;
@@ -17,11 +18,18 @@ fn main() -> eframe::Result<()> {
         Runtime::new().expect("Failed to initialize asynchronous Tokio runtime for MySQL-Rusty"),
     );
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("MySQL-Rusty Workbench — Native Rust SQL Client & AI Copilot")
+        .with_inner_size([1420.0, 860.0])
+        .with_min_inner_size([960.0, 620.0])
+        .with_app_id("mysql-rusty");
+
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("MySQL-Rusty Workbench — Native Rust SQL Client & AI Copilot")
-            .with_inner_size([1420.0, 860.0])
-            .with_min_inner_size([960.0, 620.0]),
+        viewport,
         ..Default::default()
     };
 
@@ -132,6 +140,32 @@ mod tests {
             extract_sql_code_block(md).as_deref(),
             Some("SELECT id FROM users;")
         );
+    }
+
+    #[test]
+    fn test_three_autocomplete_options_and_heuristic() {
+        use crate::config::{AiConfig, AiProvider};
+        let schema = build_demo_schema("ecommerce_prod");
+
+        // 1. Local Schema heuristic tests
+        let select_ghost = compute_heuristic_ghost_completion("SELECT *", Some(&schema));
+        assert!(select_ghost.unwrap().contains("FROM users LIMIT 50;"));
+
+        let where_ghost = compute_heuristic_ghost_completion("SELECT * FROM users WHERE", Some(&schema));
+        assert!(where_ghost.unwrap().contains("id = 1 LIMIT 50;"));
+
+        let insert_ghost = compute_heuristic_ghost_completion("INSERT INTO users", Some(&schema));
+        assert!(insert_ghost.unwrap().contains("VALUES"));
+
+        // 2. AiConfig default provider is LocalSchema
+        let cfg = AiConfig::default();
+        assert_eq!(cfg.provider, AiProvider::LocalSchema);
+        assert!(cfg.ollama_use_fim);
+
+        // 3. Provider labels
+        assert!(AiProvider::LocalSchema.label().contains("0ms"));
+        assert!(AiProvider::Ollama.label().contains("FIM"));
+        assert!(AiProvider::GitHubCopilot.label().contains("GitHub Copilot"));
     }
 
     #[test]
@@ -452,7 +486,6 @@ mod tests {
             sql: "SELECT 1".to_string(),
             database: "test".to_string(),
             columns: vec!["id".to_string(), "status".to_string()],
-            column_types: vec!["INT".to_string(), "VARCHAR".to_string()],
             rows: vec![
                 vec![CellValue::Integer(1), CellValue::Text("active".to_string())],
                 vec![CellValue::Integer(2), CellValue::Null],
@@ -551,7 +584,7 @@ mod tests {
     fn test_productivity_sql_helpers() {
         use std::collections::HashMap;
         use crate::syntax::{
-            expand_sql_macro, extract_sql_parameters, split_sql_statements,
+            expand_sql_macro_with_cursor, extract_sql_parameters, split_sql_statements,
             substitute_sql_parameters,
         };
 
@@ -574,9 +607,15 @@ mod tests {
         assert!(substituted.contains("status = 'active'"));
         assert!(substituted.contains("'12:30:00'"));
 
-        assert_eq!(expand_sql_macro("sel*"), Some("SELECT * FROM  LIMIT 100;"));
-        assert_eq!(expand_sql_macro("cnt*"), Some("SELECT COUNT(*) AS total FROM ;"));
-        assert_eq!(expand_sql_macro("unknown"), None);
+        assert_eq!(
+            expand_sql_macro_with_cursor("sel*").map(|(s, _)| s),
+            Some("SELECT * FROM  LIMIT 100;")
+        );
+        assert_eq!(
+            expand_sql_macro_with_cursor("cnt*").map(|(s, _)| s),
+            Some("SELECT COUNT(*) AS total FROM ;")
+        );
+        assert_eq!(expand_sql_macro_with_cursor("unknown"), None);
     }
 
     #[test]
@@ -588,7 +627,6 @@ mod tests {
             sql: "SELECT id, name FROM users".to_string(),
             database: "demo".to_string(),
             columns: vec!["id".to_string(), "name".to_string()],
-            column_types: vec!["INT".to_string(), "VARCHAR".to_string()],
             rows: vec![
                 vec![CellValue::Text("1".to_string()), CellValue::Text("Alice".to_string())],
                 vec![CellValue::Text("2".to_string()), CellValue::Text("O'Brien".to_string())],
@@ -612,5 +650,102 @@ mod tests {
             format_column_as_js_array(&result, 1, &[0, 1]),
             "[\"Alice\", \"O'Brien\"]"
         );
+    }
+
+    #[test]
+    fn test_row_copy_dump_and_data_diff() {
+        use crate::data_diff::{compute_data_diff, generate_data_diff_sync_sql, RowDiffStatus};
+        use crate::db::{CellValue, ColumnInfo, QueryResult, TableSchema};
+        use crate::export::{
+            format_rows_as_json, format_rows_as_sql_insert, format_rows_as_sql_update,
+            generate_table_dump_sql,
+        };
+
+        let left = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "dev".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("Alice".to_string())],
+                vec![CellValue::Integer(2), CellValue::Text("Bob".to_string())],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: Some("users".to_string()),
+            primary_key_column: Some("id".to_string()),
+            status_message: "OK".to_string(),
+        };
+
+        let right = QueryResult {
+            sql: "SELECT id, name FROM users".to_string(),
+            database: "prod".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("Alice V2".to_string())],
+                vec![CellValue::Integer(3), CellValue::Text("Charlie".to_string())],
+            ],
+            affected_rows: 0,
+            last_insert_id: None,
+            duration_ms: 1,
+            editable_table: Some("users".to_string()),
+            primary_key_column: Some("id".to_string()),
+            status_message: "OK".to_string(),
+        };
+
+        let json_one = format_rows_as_json(&left, &[0]);
+        assert!(json_one.contains("\"name\": \"Alice\""));
+
+        let ins = format_rows_as_sql_insert("users", &left, &[0, 1]);
+        assert!(ins.contains("INSERT INTO `users` (`id`, `name`) VALUES"));
+        assert!(ins.contains("(1, 'Alice')"));
+
+        let upd = format_rows_as_sql_update("users", "id", &left, &[0]);
+        assert_eq!(upd, "UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;");
+
+        let schema = TableSchema {
+            name: "users".to_string(),
+            table_type: "BASE TABLE".to_string(),
+            engine: "InnoDB".to_string(),
+            approx_rows: 2,
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "INT".to_string(),
+                    is_nullable: false,
+                    default_value: None,
+                    extra: "auto_increment".to_string(),
+                    is_primary_key: true,
+                },
+                ColumnInfo {
+                    name: "name".to_string(),
+                    data_type: "VARCHAR(100)".to_string(),
+                    is_nullable: false,
+                    default_value: None,
+                    extra: String::new(),
+                    is_primary_key: false,
+                },
+            ],
+            foreign_keys: vec![],
+            indexes: vec![],
+        };
+        let dump = generate_table_dump_sql(&schema, Some(&left), true, true, 1);
+        assert!(dump.contains("DROP TABLE IF EXISTS `users`;"));
+        assert!(dump.contains("CREATE TABLE `users`"));
+        assert!(dump.contains("INSERT INTO `users`"));
+
+        let report = compute_data_diff(&left, &right, 0);
+        assert_eq!(report.modified_count, 1);
+        assert_eq!(report.left_only_count, 1);
+        assert_eq!(report.right_only_count, 1);
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.key_display == "1" && e.status == RowDiffStatus::Modified));
+
+        let sync = generate_data_diff_sync_sql("users", &report, 0);
+        assert!(sync.contains("UPDATE `users` SET `name` = 'Alice' WHERE `id` = 1;"));
+        assert!(sync.contains("INSERT INTO `users` (`id`, `name`) VALUES (2, 'Bob');"));
+        assert!(sync.contains("DELETE FROM `users` WHERE `id` = 3;"));
     }
 }

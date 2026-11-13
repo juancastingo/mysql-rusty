@@ -418,4 +418,206 @@ pub fn format_column_as_js_array(result: &QueryResult, col_idx: usize, row_indic
     format!("[{}]", vals.join(", "))
 }
 
+fn format_sql_cell_literal(cell: &CellValue) -> String {
+    if cell.is_null() {
+        return "NULL".to_string();
+    }
+    match cell {
+        CellValue::Integer(n) => n.to_string(),
+        CellValue::Float(f) => f.to_string(),
+        _ => {
+            let text = cell.display_text();
+            if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() {
+                text
+            } else {
+                format!("'{}'", text.replace('\'', "''"))
+            }
+        }
+    }
+}
+
+/// Formats selected rows as a pretty-printed JSON array of objects (or single object if 1 row).
+pub fn format_rows_as_json(result: &QueryResult, row_indices: &[usize]) -> String {
+    let mut items = Vec::new();
+    for &r_idx in row_indices {
+        let Some(row) = result.rows.get(r_idx) else {
+            continue;
+        };
+        let mut map = Map::new();
+        for (c_idx, col) in result.columns.iter().enumerate() {
+            let val = match row.get(c_idx) {
+                None | Some(CellValue::Null) => Value::Null,
+                Some(CellValue::Integer(n)) => Value::Number((*n).into()),
+                Some(cell) => Value::String(cell.display_text()),
+            };
+            map.insert(col.clone(), val);
+        }
+        items.push(Value::Object(map));
+    }
+    if items.len() == 1 {
+        serde_json::to_string_pretty(&items[0]).unwrap_or_else(|_| "{}".to_string())
+    } else {
+        serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+/// Formats selected rows as SQL INSERT statements.
+pub fn format_rows_as_sql_insert(
+    table: &str,
+    result: &QueryResult,
+    row_indices: &[usize],
+) -> String {
+    if result.columns.is_empty() || row_indices.is_empty() {
+        return String::new();
+    }
+    let cols_sql = result
+        .columns
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut value_tuples = Vec::new();
+    for &r_idx in row_indices {
+        let Some(row) = result.rows.get(r_idx) else {
+            continue;
+        };
+        let vals = (0..result.columns.len())
+            .map(|c_idx| {
+                row.get(c_idx)
+                    .map(format_sql_cell_literal)
+                    .unwrap_or_else(|| "NULL".to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        value_tuples.push(format!("({vals})"));
+    }
+    if value_tuples.is_empty() {
+        return String::new();
+    }
+    format!(
+        "INSERT INTO `{table}` ({cols_sql}) VALUES\n  {};",
+        value_tuples.join(",\n  ")
+    )
+}
+
+/// Formats selected rows as SQL UPDATE statements keyed by `pk_col`.
+pub fn format_rows_as_sql_update(
+    table: &str,
+    pk_col: &str,
+    result: &QueryResult,
+    row_indices: &[usize],
+) -> String {
+    let Some(pk_idx) = result.columns.iter().position(|c| c == pk_col) else {
+        return String::new();
+    };
+    let mut stmts = Vec::new();
+    for &r_idx in row_indices {
+        let Some(row) = result.rows.get(r_idx) else {
+            continue;
+        };
+        let pk_lit = row
+            .get(pk_idx)
+            .map(format_sql_cell_literal)
+            .unwrap_or_else(|| "NULL".to_string());
+        let sets = result
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(c_idx, _)| *c_idx != pk_idx)
+            .map(|(c_idx, col)| {
+                let lit = row
+                    .get(c_idx)
+                    .map(format_sql_cell_literal)
+                    .unwrap_or_else(|| "NULL".to_string());
+                format!("`{col}` = {lit}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !sets.is_empty() {
+            stmts.push(format!(
+                "UPDATE `{table}` SET {sets} WHERE `{pk_col}` = {pk_lit};"
+            ));
+        }
+    }
+    stmts.join("\n")
+}
+
+/// Generates a CREATE TABLE DDL string from `TableSchema`.
+pub fn format_table_create_ddl(schema: &TableSchema) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut pks: Vec<String> = Vec::new();
+    for col in &schema.columns {
+        let null_str = if col.is_nullable { "NULL" } else { "NOT NULL" };
+        let def_str = col
+            .default_value
+            .as_ref()
+            .map(|d| format!(" DEFAULT {d}"))
+            .unwrap_or_default();
+        let extra = if col.extra.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", col.extra)
+        };
+        lines.push(format!(
+            "  `{}` {} {}{}{}",
+            col.name, col.data_type, null_str, def_str, extra
+        ));
+        if col.is_primary_key {
+            pks.push(format!("`{}`", col.name));
+        }
+    }
+    if !pks.is_empty() {
+        lines.push(format!("  PRIMARY KEY ({})", pks.join(", ")));
+    }
+    for fk in &schema.foreign_keys {
+        lines.push(format!(
+            "  CONSTRAINT `{}` FOREIGN KEY (`{}`) REFERENCES `{}` (`{}`)",
+            fk.constraint_name, fk.column_name, fk.referenced_table, fk.referenced_column
+        ));
+    }
+    let engine = if schema.engine.is_empty() {
+        "InnoDB"
+    } else {
+        schema.engine.as_str()
+    };
+    format!(
+        "CREATE TABLE `{}` (\n{}\n) ENGINE={};",
+        schema.name,
+        lines.join(",\n"),
+        engine
+    )
+}
+
+/// Generates a full SQL dump (optional DROP + CREATE TABLE + batched INSERTs) for a table.
+pub fn generate_table_dump_sql(
+    schema: &TableSchema,
+    result: Option<&QueryResult>,
+    include_drop: bool,
+    include_data: bool,
+    batch_size: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("-- Dump for table `{}`\n", schema.name));
+    if include_drop {
+        out.push_str(&format!("DROP TABLE IF EXISTS `{}`;\n", schema.name));
+    }
+    out.push_str(&format_table_create_ddl(schema));
+    out.push('\n');
+
+    if include_data {
+        if let Some(res) = result {
+            if !res.rows.is_empty() && !res.columns.is_empty() {
+                let step = batch_size.max(1);
+                let indices: Vec<usize> = (0..res.rows.len()).collect();
+                for chunk in indices.chunks(step) {
+                    out.push('\n');
+                    out.push_str(&format_rows_as_sql_insert(&schema.name, res, chunk));
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
 
