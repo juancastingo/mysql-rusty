@@ -216,6 +216,7 @@ pub struct QueryTab {
     pub ai_plan_report: Option<crate::ai::QueryOptimizationReport>,
     pub ai_plan_error: Option<String>,
     pub vim_state: crate::vim::VimState,
+    pub undocked: bool,
 }
 
 impl QueryTab {
@@ -285,7 +286,12 @@ impl QueryTab {
             ai_plan_report: None,
             ai_plan_error: None,
             vim_state: crate::vim::VimState::default(),
+            undocked: false,
         }
+    }
+
+    pub fn viewport_id(&self) -> egui::ViewportId {
+        egui::ViewportId::from_hash_of(format!("query_tab_viewport_{}", self.id))
     }
 
     pub fn display_title(&self) -> String {
@@ -375,5 +381,21 @@ mod tests {
         assert_eq!(snip.title, "Orders by Month");
         assert_eq!(snip.database.as_deref(), Some("ecommerce"));
         assert_eq!(snip.description, "Aggregates revenue by month");
+    }
+
+    #[test]
+    fn test_query_tab_undocked_and_viewport_id_stability() {
+        use crate::app::QueryTab;
+
+        let mut tab = QueryTab::new("Detached", "SELECT 1;");
+        assert!(!tab.undocked);
+        let id1 = tab.viewport_id();
+        tab.undocked = true;
+        tab.title = "Renamed".to_string();
+        let id2 = tab.viewport_id();
+        assert_eq!(id1, id2, "viewport_id must remain stable across renames");
+
+        let other = QueryTab::new("Other", "SELECT 2;");
+        assert_ne!(id1, other.viewport_id());
     }
 }

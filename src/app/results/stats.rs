@@ -1,12 +1,30 @@
 use super::super::*;
 
 impl MysqlRustyApp {
-    pub(crate) fn render_er_relationships(&mut self, ui: &mut Ui) {
+    pub(crate) fn er_viewport_id() -> egui::ViewportId {
+        egui::ViewportId::from_hash_of("er_diagram_viewport")
+    }
+
+    pub(crate) fn render_er_relationships_inner(&mut self, ui: &mut Ui) {
         let Some(schema) = self.schemas.get(&self.active_database).cloned() else {
             ui.label(RichText::new("No active schema loaded.").weak());
             return;
         };
         self.er_canvas_state.show(ui, &schema);
+    }
+
+    pub(crate) fn render_er_relationships(&mut self, ui: &mut Ui) {
+        if self.er_undocked {
+            ui.vertical_centered(|ui| {
+                ui.add_space(24.0);
+                ui.label(RichText::new("ER Diagram is open in a detached window.").weak());
+                if ui.button("Redock ER Diagram").clicked() {
+                    self.er_undocked = false;
+                }
+            });
+            return;
+        }
+        self.render_er_relationships_inner(ui);
     }
 
     pub(crate) fn render_execution_stats(&mut self, ui: &mut Ui) {

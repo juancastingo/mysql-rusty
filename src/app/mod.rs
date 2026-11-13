@@ -255,6 +255,9 @@ pub struct MysqlRustyApp {
 
     // Onboarding Tour (#29)
     tour: crate::tour::TourState,
+
+    // Multi-viewport undocking (#41)
+    er_undocked: bool,
 }
 
 impl MysqlRustyApp {
@@ -392,6 +395,7 @@ impl MysqlRustyApp {
             rebinding_action: None,
             rebind_conflict_msg: None,
             tour,
+            er_undocked: false,
             last_poll_instant: None,
             last_questions_count: None,
 
@@ -669,6 +673,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_sql_dump_modal(&ctx);
         self.render_shortcuts_modal(&ctx);
         self.render_onboarding_overlay(&ctx);
+        self.render_detached_viewports(&ctx);
         self.render_table_action_modal(&ctx);
         self.render_table_info_modal(&ctx);
         self.render_backup_modal(&ctx);

@@ -93,6 +93,25 @@ impl MysqlRustyApp {
                                         }
                                     });
                                 }
+                                if ui
+                                    .button(
+                                        RichText::new(if self.tabs[idx].undocked {
+                                            "↙"
+                                        } else {
+                                            "↗"
+                                        })
+                                        .size(11.0)
+                                        .weak(),
+                                    )
+                                    .on_hover_text(if self.tabs[idx].undocked {
+                                        "Redock tab into main window"
+                                    } else {
+                                        "Undock tab into separate window"
+                                    })
+                                    .clicked()
+                                {
+                                    self.tabs[idx].undocked = !self.tabs[idx].undocked;
+                                }
                                 if self.tabs.len() > 1
                                     && ui.button(RichText::new("×").size(11.0).weak()).clicked() {
                                         close_idx = Some(idx);
@@ -1267,6 +1286,17 @@ impl MysqlRustyApp {
                     BottomTab::ErRelationships,
                     RichText::new("ER Diagram").size(12.5),
                 );
+                if ui
+                    .small_button(if self.er_undocked { "↙" } else { "↗" })
+                    .on_hover_text(if self.er_undocked {
+                        "Redock ER Diagram"
+                    } else {
+                        "Undock ER Diagram into separate window"
+                    })
+                    .clicked()
+                {
+                    self.er_undocked = !self.er_undocked;
+                }
                 ui.selectable_value(
                     &mut self.bottom_tab,
                     BottomTab::ExecutionPlanAndLog,
@@ -1303,5 +1333,163 @@ impl MysqlRustyApp {
                 BottomTab::ServerAdmin => self.render_server_admin(ui),
             }
         });
+    }
+
+    pub(crate) fn render_detached_viewports(&mut self, ctx: &egui::Context) {
+        let palette = self.effective_palette(ctx);
+        let editor_font_size = self.config.ui.editor_font_size.clamp(10.0, 28.0);
+        let undocked_indices: Vec<usize> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.undocked.then_some(i))
+            .collect();
+
+        for idx in undocked_indices {
+            let Some(tab) = self.tabs.get(idx) else {
+                continue;
+            };
+            let vid = tab.viewport_id();
+            let title = format!("{} — MySQL-Rusty", tab.display_title());
+            let mut redock = false;
+            let mut run_now = false;
+
+            ctx.show_viewport_immediate(
+                vid,
+                egui::ViewportBuilder::default()
+                    .with_title(title)
+                    .with_inner_size([920.0, 620.0]),
+                |ui, _class| {
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        redock = true;
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let Some(tab) = self.tabs.get_mut(idx) else {
+                            return;
+                        };
+                        ui.horizontal(|ui| {
+                            if ui.button("▶ Run").clicked() {
+                                run_now = true;
+                            }
+                            if ui.button("↙ Redock").clicked() {
+                                redock = true;
+                            }
+                            if tab.is_running {
+                                ui.spinner();
+                                ui.label("Running...");
+                            }
+                            if let Some(res) = &tab.last_result {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} rows ({} ms)",
+                                        res.rows.len(),
+                                        res.duration_ms
+                                    ))
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                        });
+                        ui.separator();
+
+                        let mut layouter =
+                            |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                                let mut job = crate::syntax::highlight_sql_with_palette(
+                                    buf.as_str(),
+                                    None,
+                                    None,
+                                    editor_font_size,
+                                    &palette,
+                                );
+                                job.wrap.max_width = wrap_width;
+                                ui.fonts_mut(|f| f.layout_job(job))
+                            };
+
+                        egui::ScrollArea::vertical()
+                            .id_salt(("detached_sql_scroll", &tab.id))
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                let resp = ui.add(
+                                    egui::TextEdit::multiline(&mut tab.sql)
+                                        .code_editor()
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(10)
+                                        .layouter(&mut layouter),
+                                );
+                                if resp.changed() {
+                                    tab.is_dirty = true;
+                                }
+                            });
+
+                        ui.separator();
+                        if let Some(err) = &tab.last_error {
+                            ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+                        } else if let Some(res) = &tab.last_result {
+                            egui::ScrollArea::both()
+                                .id_salt(("detached_res_scroll", &tab.id))
+                                .show(ui, |ui| {
+                                    egui::Grid::new(("detached_res_grid", &tab.id))
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            for col in &res.columns {
+                                                ui.label(RichText::new(col).strong());
+                                            }
+                                            ui.end_row();
+                                            for row in res.rows.iter().take(200) {
+                                                for cell in row {
+                                                    ui.label(cell.display_text());
+                                                }
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        } else {
+                            ui.label(RichText::new("No results yet.").weak());
+                        }
+                    });
+                },
+            );
+
+            if redock && let Some(tab) = self.tabs.get_mut(idx) {
+                tab.undocked = false;
+            }
+            if run_now {
+                self.active_tab_idx = idx;
+                self.execute_current_tab_query(None);
+            }
+        }
+
+        if self.er_undocked {
+            let mut redock_er = false;
+            ctx.show_viewport_immediate(
+                Self::er_viewport_id(),
+                egui::ViewportBuilder::default()
+                    .with_title("ER Diagram — MySQL-Rusty")
+                    .with_inner_size([1024.0, 720.0]),
+                |ui, _class| {
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        redock_er = true;
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading("ER Relationships");
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("↙ Redock").clicked() {
+                                        redock_er = true;
+                                    }
+                                },
+                            );
+                        });
+                        ui.separator();
+                        self.render_er_relationships_inner(ui);
+                    });
+                },
+            );
+            if redock_er {
+                self.er_undocked = false;
+            }
+        }
     }
 }
