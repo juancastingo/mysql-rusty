@@ -919,6 +919,128 @@ pub async fn request_chat_assistant(
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct Nl2SqlResult {
+    pub sql: String,
+    pub explanation: String,
+    pub assumptions: Vec<String>,
+}
+
+pub fn build_nl2sql_schema_context(schema: &DatabaseSchema, max_chars: usize) -> String {
+    let raw = schema.to_ai_ddl_context();
+    if raw.len() <= max_chars {
+        return raw;
+    }
+    let mut out = String::new();
+    for line in raw.lines() {
+        if out.len() + line.len() + 1 > max_chars {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+pub fn parse_nl2sql_response(raw: &str) -> Nl2SqlResult {
+    let extracted = extract_sql_code_block(raw).unwrap_or_else(|| raw.trim().to_string());
+    let sql = crate::syntax::format_sql_pretty(&extracted);
+    let mut assumptions = Vec::new();
+    let mut explanation_lines = Vec::new();
+    let mut in_fence = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(bullet) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            assumptions.push(bullet.trim().to_string());
+        } else {
+            explanation_lines.push(trimmed.to_string());
+        }
+    }
+
+    let explanation = if explanation_lines.is_empty() {
+        "Generated SQL query from your natural language prompt.".to_string()
+    } else {
+        explanation_lines.join(" ")
+    };
+
+    Nl2SqlResult {
+        sql,
+        explanation,
+        assumptions,
+    }
+}
+
+pub async fn generate_sql_from_natural_language(
+    prompt: &str,
+    schema: &DatabaseSchema,
+    config: &AiConfig,
+) -> Result<Nl2SqlResult> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Prompt is empty."));
+    }
+
+    if config.provider == AiProvider::LocalSchema {
+        let lower = trimmed.to_lowercase();
+        let matched_table = schema
+            .tables
+            .iter()
+            .find(|t| lower.contains(&t.name.to_lowercase()))
+            .or_else(|| schema.tables.first());
+        let sql = if let Some(tbl) = matched_table {
+            let cols: Vec<String> = tbl
+                .columns
+                .iter()
+                .take(6)
+                .map(|c| format!("`{}`", c.name))
+                .collect();
+            let select_cols = if cols.is_empty() {
+                "*".to_string()
+            } else {
+                cols.join(", ")
+            };
+            let limit = if lower.contains("top 5") { 5 } else { 25 };
+            format!(
+                "SELECT\n  {select_cols}\nFROM `{}`\nLIMIT {limit};",
+                tbl.name
+            )
+        } else {
+            "SELECT 1;".to_string()
+        };
+        return Ok(Nl2SqlResult {
+            sql,
+            explanation: format!(
+                "Synthesized locally from schema `{}` (configure Ollama/OpenAI/Anthropic/Gemini/CLI for full NL2SQL).",
+                schema.name
+            ),
+            assumptions: vec![format!(
+                "Target table: {}",
+                matched_table.map(|t| t.name.as_str()).unwrap_or("(none)")
+            )],
+        });
+    }
+
+    let schema_ctx = build_nl2sql_schema_context(schema, 6_000);
+    let system_prompt = "You are an expert MySQL/MariaDB SQL generator. \
+        Translate the user's natural language request (English or Spanish) into a single accurate MySQL 8.0 / MariaDB query \
+        grounded strictly in the provided schema. Output the SQL inside a ```sql ... ``` fenced block, \
+        followed by a 1-sentence explanation and bullet points (`- ...`) for any inferred tables, joins, or filters.";
+    let user_prompt = format!("Database Schema:\n{schema_ctx}\n\nRequest:\n{trimmed}");
+    let reply = call_provider(config, system_prompt, &user_prompt, false).await?;
+    Ok(parse_nl2sql_response(&reply))
+}
+
 async fn call_provider(
     config: &AiConfig,
     system_prompt: &str,
@@ -1615,5 +1737,22 @@ mod tests {
             " WHERE id = 1",
         );
         assert_eq!(cleaned, "users");
+    }
+
+    #[test]
+    fn test_nl2sql_response_parsing_and_schema_budget() {
+        let raw = "Here is the query:\n```sql\nselect id, email from users limit 5;\n```\nLists the first 5 users.\n- Uses `users` table\n- Applies LIMIT 5";
+        let parsed = parse_nl2sql_response(raw);
+        assert!(parsed.sql.to_uppercase().contains("SELECT"));
+        assert!(parsed.sql.contains("users"));
+        assert_eq!(parsed.assumptions.len(), 2);
+        assert!(parsed.explanation.contains("first 5 users"));
+
+        let schema = crate::demo::build_demo_schema("ecommerce_prod");
+        let ctx_full = build_nl2sql_schema_context(&schema, 10_000);
+        assert!(ctx_full.contains("TABLE `users`"));
+        assert!(ctx_full.contains("FK:"));
+        let ctx_capped = build_nl2sql_schema_context(&schema, 120);
+        assert!(ctx_capped.len() <= 120);
     }
 }

@@ -399,6 +399,18 @@ impl MysqlRustyApp {
                         self.trigger_inline_ai_completion();
                     }
 
+                    if ui
+                        .button("Prompt to SQL")
+                        .on_hover_text("Generate SQL from natural language (Ctrl+I)")
+                        .clicked()
+                        && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+                    {
+                        tab.nl2sql_open = !tab.nl2sql_open;
+                        if tab.nl2sql_open {
+                            tab.nl2sql_autofocus = true;
+                        }
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let copilot_text = if self.show_ai_panel {
                             RichText::new("AI Copilot").color(Color32::WHITE).strong()

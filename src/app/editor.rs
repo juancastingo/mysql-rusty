@@ -480,12 +480,17 @@ impl MysqlRustyApp {
                     tab.cursor_index = target_char_idx;
                 }
 
-                // #18 Find / Replace shortcuts (Ctrl+F / Ctrl+H / F3 / Esc)
+                // #18 Find / Replace shortcuts (Ctrl+F / Ctrl+H / F3 / Esc) & #37 NL2SQL (Ctrl+I)
                 let mut jump_to_match: Option<usize> = None;
                 ui.input_mut(|i| {
                     let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
                     let is_shift = i.modifiers.shift;
-                    if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::F) {
+                    if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::I) {
+                        tab.nl2sql_open = !tab.nl2sql_open;
+                        if tab.nl2sql_open {
+                            tab.nl2sql_autofocus = true;
+                        }
+                    } else if is_ctrl && i.consume_key(egui::Modifiers::NONE, Key::F) {
                         tab.find_open = true;
                         tab.find_autofocus = true;
                         if let Some(sel) = &tab.selected_sql {
@@ -522,6 +527,140 @@ impl MysqlRustyApp {
                         jump_to_match = Some(tab.find_current);
                     }
                 });
+
+                if tab.nl2sql_open {
+                    let mut trigger_generate = false;
+                    let mut close_nl2sql = false;
+                    let mut insert_sql: Option<(String, bool)> = None;
+
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(17, 24, 39))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(126, 34, 206)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Prompt to SQL")
+                                        .color(Color32::from_rgb(192, 132, 252))
+                                        .strong(),
+                                );
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut tab.nl2sql_prompt)
+                                        .hint_text("e.g., Get top 5 customers with highest total orders in the last 30 days")
+                                        .desired_width(ui.available_width() - 150.0),
+                                );
+                                if tab.nl2sql_autofocus {
+                                    resp.request_focus();
+                                    tab.nl2sql_autofocus = false;
+                                }
+                                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                    trigger_generate = true;
+                                }
+                                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                    close_nl2sql = true;
+                                }
+                                if tab.nl2sql_loading {
+                                    ui.spinner();
+                                } else if ui
+                                    .add_enabled(
+                                        !tab.nl2sql_prompt.trim().is_empty(),
+                                        egui::Button::new("Generate"),
+                                    )
+                                    .clicked()
+                                {
+                                    trigger_generate = true;
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    close_nl2sql = true;
+                                }
+                            });
+
+                            if let Some(err) = &tab.nl2sql_error {
+                                ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+                            }
+
+                            if let Some(res) = &tab.nl2sql_result {
+                                ui.separator();
+                                let job = highlight_sql(&res.sql, None, None, 13.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("nl2sql_preview_scroll")
+                                    .max_height(120.0)
+                                    .show(ui, |ui| {
+                                        ui.label(job);
+                                    });
+                                ui.label(RichText::new(&res.explanation).small().weak());
+                                for bullet in &res.assumptions {
+                                    ui.label(
+                                        RichText::new(format!("• {bullet}")).small().weak(),
+                                    );
+                                }
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button("Insert at Cursor").clicked() {
+                                        insert_sql = Some((res.sql.clone(), false));
+                                    }
+                                    if ui.button("Insert & Run").clicked() {
+                                        insert_sql = Some((res.sql.clone(), true));
+                                    }
+                                    if ui.button("Regenerate").clicked() {
+                                        trigger_generate = true;
+                                    }
+                                    if ui.button("Discard").clicked() {
+                                        close_nl2sql = true;
+                                    }
+                                });
+                            }
+                        });
+
+                    if close_nl2sql {
+                        tab.nl2sql_open = false;
+                        tab.nl2sql_result = None;
+                        tab.nl2sql_error = None;
+                        keep_editor_focus = true;
+                    } else if trigger_generate && !tab.nl2sql_prompt.trim().is_empty() {
+                        tab.nl2sql_loading = true;
+                        tab.nl2sql_error = None;
+                        let prompt = tab.nl2sql_prompt.clone();
+                        let schema = self
+                            .schemas
+                            .get(&self.active_database)
+                            .cloned()
+                            .unwrap_or_else(|| crate::db::DatabaseSchema {
+                                name: self.active_database.clone(),
+                                ..Default::default()
+                            });
+                        let ai_cfg = self.config.ai.clone();
+                        let tab_id = tab.id.clone();
+                        let tx = self.tx.clone();
+                        self.rt.spawn(async move {
+                            let res = crate::ai::generate_sql_from_natural_language(
+                                &prompt, &schema, &ai_cfg,
+                            )
+                            .await
+                            .map_err(|e| format!("{e:#}"));
+                            let _ = tx.send(AsyncEvent::Nl2SqlFinished { tab_id, result: res });
+                        });
+                    } else if let Some((sql_to_insert, and_run)) = insert_sql {
+                        let new_cursor = replace_at_cursor(&mut tab.sql, tab.cursor_index, 0, &sql_to_insert);
+                        tab.cursor_index = new_cursor;
+                        tab.is_dirty = true;
+                        tab.last_edit_instant = Some(std::time::Instant::now());
+                        tab.nl2sql_open = false;
+                        tab.nl2sql_result = None;
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                            let ccursor = egui::text::CCursor::new(new_cursor);
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                            state.store(ui.ctx(), editor_id);
+                        }
+                        keep_editor_focus = true;
+                        if and_run {
+                            editor_run_query = true;
+                        }
+                    }
+                }
 
                 if tab.find_open {
                     let mut recompute = false;

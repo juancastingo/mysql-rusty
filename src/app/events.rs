@@ -779,6 +779,20 @@ impl MysqlRustyApp {
                         self.status_banner = format!("User action failed: {e}");
                     }
                 },
+                AsyncEvent::Nl2SqlFinished { tab_id, result } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.nl2sql_loading = false;
+                        match result {
+                            Ok(res) => {
+                                tab.nl2sql_result = Some(res);
+                                tab.nl2sql_error = None;
+                            }
+                            Err(e) => {
+                                tab.nl2sql_error = Some(e);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

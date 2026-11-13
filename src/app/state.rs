@@ -80,6 +80,10 @@ pub enum AsyncEvent {
         grants: Result<Vec<String>, String>,
     },
     UserActionFinished(Result<String, String>),
+    Nl2SqlFinished {
+        tab_id: String,
+        result: Result<crate::ai::Nl2SqlResult, String>,
+    },
 }
 
 pub struct RoutineCallModalState {
@@ -194,6 +198,12 @@ pub struct QueryTab {
     pub find_current: usize,
     pub find_error: Option<String>,
     pub find_autofocus: bool,
+    pub nl2sql_open: bool,
+    pub nl2sql_autofocus: bool,
+    pub nl2sql_prompt: String,
+    pub nl2sql_loading: bool,
+    pub nl2sql_result: Option<crate::ai::Nl2SqlResult>,
+    pub nl2sql_error: Option<String>,
 }
 
 impl QueryTab {
@@ -253,6 +263,12 @@ impl QueryTab {
             find_current: 0,
             find_error: None,
             find_autofocus: false,
+            nl2sql_open: false,
+            nl2sql_autofocus: false,
+            nl2sql_prompt: String::new(),
+            nl2sql_loading: false,
+            nl2sql_result: None,
+            nl2sql_error: None,
         }
     }
 
