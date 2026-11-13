@@ -144,7 +144,9 @@ impl ConnectionProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AiProvider {
+    LocalSchema,
     Ollama,
+    GitHubCopilot,
     OpenAiCompatible,
     Anthropic,
     Gemini,
@@ -154,7 +156,9 @@ pub enum AiProvider {
 impl AiProvider {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ollama => "Ollama (Local)",
+            Self::LocalSchema => "⚡ Local Schema Native (0ms, 100% Offline)",
+            Self::Ollama => "🦙 Ollama FIM (Fast Local Code Model)",
+            Self::GitHubCopilot => "🤖 GitHub Copilot (Official Account)",
             Self::OpenAiCompatible => "OpenAI / Compatible (Groq, OpenRouter, vLLM)",
             Self::Anthropic => "Anthropic (Claude)",
             Self::Gemini => "Google Gemini API",
@@ -177,6 +181,18 @@ pub struct AiConfig {
     // Ollama
     pub ollama_endpoint: String,
     pub ollama_model: String,
+    #[serde(default = "default_true")]
+    pub ollama_use_fim: bool,
+
+    // GitHub Copilot
+    #[serde(default)]
+    pub copilot_github_token: String,
+    #[serde(default)]
+    pub copilot_session_token: String,
+    #[serde(default)]
+    pub copilot_token_expires_at: u64,
+    #[serde(default = "default_copilot_model")]
+    pub copilot_model: String,
 
     // OpenAI / Compatible
     pub openai_base_url: String,
@@ -196,6 +212,10 @@ pub struct AiConfig {
     pub cli_pass_via_stdin: bool,
 }
 
+fn default_copilot_model() -> String {
+    "gpt-4o".to_string()
+}
+
 fn default_debounce_ms() -> u64 {
     180
 }
@@ -207,13 +227,18 @@ fn default_max_tokens() -> u32 {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            provider: AiProvider::Ollama,
+            provider: AiProvider::LocalSchema,
             enable_inline_autocomplete: true,
             include_schema_context: true,
             autocomplete_debounce_ms: 180,
             autocomplete_max_tokens: 35,
             ollama_endpoint: "http://127.0.0.1:11434".to_string(),
             ollama_model: "qwen2.5-coder:1.5b".to_string(),
+            ollama_use_fim: true,
+            copilot_github_token: String::new(),
+            copilot_session_token: String::new(),
+            copilot_token_expires_at: 0,
+            copilot_model: "gpt-4o".to_string(),
             openai_base_url: "https://api.openai.com/v1".to_string(),
             openai_api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             openai_model: "gpt-4o-mini".to_string(),
@@ -250,14 +275,18 @@ pub struct SavedSnippet {
     pub created_at: String,
 }
 
-pub type SavedQuery = SavedSnippet;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedScratchpad {
     pub title: String,
     pub sql: String,
     #[serde(default)]
     pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashedConnection {
+    pub profile: ConnectionProfile,
+    pub deleted_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +297,8 @@ pub struct AppConfig {
     pub snippets: Vec<SavedSnippet>,
     #[serde(default)]
     pub scratchpads: Vec<SavedScratchpad>,
+    #[serde(default)]
+    pub trashed_connections: Vec<TrashedConnection>,
 }
 
 impl Default for AppConfig {
@@ -280,6 +311,7 @@ impl Default for AppConfig {
             ai: AiConfig::default(),
             history: Vec::new(),
             scratchpads: Vec::new(),
+            trashed_connections: Vec::new(),
             snippets: vec![
                 SavedSnippet {
                     id: Uuid::new_v4().to_string(),

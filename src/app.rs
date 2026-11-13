@@ -4,7 +4,7 @@ use crate::ai::{
 };
 use crate::config::{
     AiProvider, AppConfig, ConnectionProfile, Environment, QueryHistoryEntry, SavedScratchpad,
-    SavedSnippet, SslMode,
+    SavedSnippet, SslMode, TrashedConnection,
 };
 use crate::db::{ActiveSession, DatabaseSchema, PendingCellEdit, QueryResult};
 use crate::er_diagram::ErCanvasState;
@@ -347,6 +347,7 @@ pub struct MysqlRustyApp {
     command_palette_query: String,
     command_palette_selected: usize,
     pending_delete_connection: Option<(String, String)>,
+    show_connection_trash_modal: bool,
 
     // Copilot Authentication
     pub copilot_device_code_data: Option<crate::ai::CopilotDeviceCodeResponse>,
@@ -456,6 +457,7 @@ impl MysqlRustyApp {
             command_palette_query: String::new(),
             command_palette_selected: 0,
             pending_delete_connection: None,
+            show_connection_trash_modal: false,
             copilot_device_code_data: None,
             copilot_auth_status: String::new(),
             is_copilot_authenticating: false,
@@ -1538,6 +1540,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_csv_import_modal(&ctx);
         self.render_command_palette_modal(&ctx);
         self.render_delete_connection_confirm_modal(&ctx);
+        self.render_connection_trash_modal(&ctx);
     }
 }
 
@@ -2194,6 +2197,22 @@ impl MysqlRustyApp {
         let mut to_edit = None;
         let mut to_delete = None;
 
+        if !self.config.trashed_connections.is_empty() {
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button(format!(
+                        "🗑 Recycle Bin ({})",
+                        self.config.trashed_connections.len()
+                    ))
+                    .on_hover_text("View and restore deleted connections")
+                    .clicked()
+                {
+                    self.show_connection_trash_modal = true;
+                }
+            });
+            ui.add_space(4.0);
+        }
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for prof in profiles {
                 let is_active = Some(&prof.id) == self.active_profile_id.as_ref();
@@ -2782,6 +2801,19 @@ impl MysqlRustyApp {
                     {
                         self.editing_connection = ConnectionProfile::default();
                         self.show_connection_modal = true;
+                    }
+                    if !self.config.trashed_connections.is_empty() {
+                        ui.add_space(8.0);
+                        if ui
+                            .button(format!(
+                                "🗑 Recycle Bin ({})",
+                                self.config.trashed_connections.len()
+                            ))
+                            .on_hover_text("Restore or permanently delete trashed connections")
+                            .clicked()
+                        {
+                            self.show_connection_trash_modal = true;
+                        }
                     }
                 });
                 ui.add_space(20.0);
@@ -6785,29 +6817,29 @@ impl MysqlRustyApp {
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new("⚠ Confirm Delete Connection")
+        egui::Window::new("⚠ Move Connection to Recycle Bin")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .default_width(380.0)
+            .default_width(390.0)
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(format!(
-                        "Are you sure you want to delete the connection \"{conn_name}\"?"
+                        "Move connection \"{conn_name}\" to the Recycle Bin?"
                     ))
                     .strong(),
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("This action cannot be undone.")
+                    RichText::new("You can restore it later from the Recycle Bin.")
                         .small()
                         .color(Color32::from_rgb(148, 163, 184)),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     let del_btn = egui::Button::new(
-                        RichText::new("🗑 Delete").strong().color(Color32::WHITE),
+                        RichText::new("🗑 Move to Trash").strong().color(Color32::WHITE),
                     )
                     .fill(Color32::from_rgb(185, 28, 28));
                     if ui.add(del_btn).clicked() {
@@ -6820,12 +6852,147 @@ impl MysqlRustyApp {
             });
 
         if confirmed {
-            self.config.connections.retain(|c| c.id != conn_id);
-            let _ = self.config.save();
-            self.status_banner = format!("Deleted connection '{conn_name}'.");
+            if let Some(pos) = self.config.connections.iter().position(|c| c.id == conn_id) {
+                let profile = self.config.connections.remove(pos);
+                self.config.trashed_connections.insert(
+                    0,
+                    TrashedConnection {
+                        profile,
+                        deleted_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    },
+                );
+                let _ = self.config.save();
+                self.status_banner = format!("Moved connection '{conn_name}' to Recycle Bin.");
+            }
             self.pending_delete_connection = None;
         } else if !open || cancelled {
             self.pending_delete_connection = None;
+        }
+    }
+
+    fn render_connection_trash_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_connection_trash_modal {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_connection_trash_modal = false;
+            return;
+        }
+
+        let mut open = self.show_connection_trash_modal;
+        let mut restore_idx: Option<usize> = None;
+        let mut purge_idx: Option<usize> = None;
+        let mut empty_all = false;
+
+        egui::Window::new("🗑 Connection Recycle Bin")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                if self.config.trashed_connections.is_empty() {
+                    ui.label(
+                        RichText::new("Recycle Bin is empty.")
+                            .italics()
+                            .color(Color32::GRAY),
+                    );
+                    return;
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} deleted connection(s)",
+                            self.config.trashed_connections.len()
+                        ))
+                        .small()
+                        .color(Color32::from_rgb(148, 163, 184)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let empty_btn = egui::Button::new(
+                            RichText::new("Empty Trash").small().color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(153, 27, 27));
+                        if ui.add(empty_btn).clicked() {
+                            empty_all = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (idx, item) in self.config.trashed_connections.iter().enumerate() {
+                            egui::Frame::group(ui.style())
+                                .fill(Color32::from_rgb(17, 24, 39))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(&item.profile.name).strong());
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{}@{}:{}/{} • deleted {}",
+                                                    item.profile.user,
+                                                    item.profile.host,
+                                                    item.profile.port,
+                                                    item.profile.default_database,
+                                                    item.deleted_at
+                                                ))
+                                                .small()
+                                                .color(Color32::from_rgb(148, 163, 184)),
+                                            );
+                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.small_button("🗑 Delete Forever").clicked() {
+                                                    purge_idx = Some(idx);
+                                                }
+                                                let restore_btn = egui::Button::new(
+                                                    RichText::new("♻ Restore")
+                                                        .small()
+                                                        .strong()
+                                                        .color(Color32::WHITE),
+                                                )
+                                                .fill(Color32::from_rgb(16, 185, 129));
+                                                if ui.add(restore_btn).clicked() {
+                                                    restore_idx = Some(idx);
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+            });
+
+        self.show_connection_trash_modal = open;
+
+        if empty_all {
+            self.config.trashed_connections.clear();
+            let _ = self.config.save();
+            self.status_banner = "Emptied Connection Recycle Bin.".to_string();
+        } else if let Some(idx) = restore_idx {
+            if idx < self.config.trashed_connections.len() {
+                let item = self.config.trashed_connections.remove(idx);
+                let name = item.profile.name.clone();
+                self.config.connections.push(item.profile);
+                let _ = self.config.save();
+                self.status_banner = format!("Restored connection '{name}'.");
+            }
+        } else if let Some(idx) = purge_idx {
+            if idx < self.config.trashed_connections.len() {
+                let item = self.config.trashed_connections.remove(idx);
+                let _ = self.config.save();
+                self.status_banner =
+                    format!("Permanently deleted connection '{}'.", item.profile.name);
+            }
         }
     }
 }
