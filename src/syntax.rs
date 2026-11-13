@@ -24,9 +24,49 @@ const SQL_TYPES: &[&str] = &[
     "DATETIME", "TIMESTAMP", "TIME", "JSON", "ENUM", "BLOB",
 ];
 
+/// Converts a character index into a valid UTF-8 byte offset in `text`.
+pub fn char_idx_to_byte_idx(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
+}
+
+/// Splits `sql` at `cursor_char_idx` into `(prefix, suffix)` slices.
+pub fn split_sql_at_cursor(sql: &str, cursor_char_idx: usize) -> (&str, &str) {
+    let byte_idx = char_idx_to_byte_idx(sql, cursor_char_idx);
+    sql.split_at(byte_idx)
+}
+
+/// Replaces `replace_prefix_bytes` immediately before `cursor_char_idx` with `insertion`
+/// and returns the updated cursor character index.
+pub fn replace_at_cursor(
+    sql: &mut String,
+    cursor_char_idx: usize,
+    replace_prefix_bytes: usize,
+    insertion: &str,
+) -> usize {
+    let cursor_byte = char_idx_to_byte_idx(sql, cursor_char_idx);
+    let start_byte = cursor_byte
+        .saturating_sub(replace_prefix_bytes)
+        .min(cursor_byte);
+    // Ensure `start_byte` lies on a UTF-8 char boundary
+    let mut safe_start = start_byte;
+    while safe_start > 0 && !sql.is_char_boundary(safe_start) {
+        safe_start -= 1;
+    }
+    sql.replace_range(safe_start..cursor_byte, insertion);
+    sql[..safe_start].chars().count() + insertion.chars().count()
+}
+
 /// Builds a syntax-highlighted `LayoutJob` for SQL code, optionally appending an inline
-/// Copilot-style ghost completion right after the text.
-pub fn highlight_sql(text: &str, ghost_suffix: Option<&str>, font_size: f32) -> LayoutJob {
+/// Copilot-style ghost completion when the cursor is at the end of the buffer.
+pub fn highlight_sql(
+    text: &str,
+    ghost_suffix: Option<&str>,
+    cursor_char_idx: Option<usize>,
+    font_size: f32,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     let mono = FontId::new(font_size, FontFamily::Monospace);
 
@@ -175,15 +215,20 @@ pub fn highlight_sql(text: &str, ghost_suffix: Option<&str>, font_size: f32) -> 
         i = next_i;
     }
 
-    if let Some(ghost) = ghost_suffix {
-        if !ghost.is_empty() {
-            let ghost_fmt = TextFormat {
-                font_id: mono,
-                color: Color32::from_rgba_unmultiplied(125, 211, 252, 130),
-                italics: true,
-                ..Default::default()
-            };
-            job.append(ghost, 0.0, ghost_fmt);
+    let cursor_at_end = cursor_char_idx
+        .map(|idx| idx >= text.chars().count())
+        .unwrap_or(true);
+    if cursor_at_end {
+        if let Some(ghost) = ghost_suffix {
+            if !ghost.is_empty() {
+                let ghost_fmt = TextFormat {
+                    font_id: mono,
+                    color: Color32::from_rgba_unmultiplied(125, 211, 252, 130),
+                    italics: true,
+                    ..Default::default()
+                };
+                job.append(ghost, 0.0, ghost_fmt);
+            }
         }
     }
 
@@ -949,11 +994,6 @@ pub fn expand_sql_macro_with_cursor(token: &str) -> Option<(&'static str, usize)
         "grp*" => Some(("SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;", 7)), // after "SELECT "
         _ => None,
     }
-}
-
-/// Expands short SQL productivity macros (e.g. `sel*`, `cnt*`, `join*`) into full templates.
-pub fn expand_sql_macro(token: &str) -> Option<&'static str> {
-    expand_sql_macro_with_cursor(token).map(|(text, _)| text)
 }
 
 

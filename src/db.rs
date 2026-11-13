@@ -213,7 +213,6 @@ pub struct PendingCellEdit {
     pub column_name: String,
     pub pk_column: String,
     pub pk_value: String,
-    pub old_value: String,
     pub new_value: String,
 }
 
@@ -222,7 +221,6 @@ pub struct QueryResult {
     pub sql: String,
     pub database: String,
     pub columns: Vec<String>,
-    pub column_types: Vec<String>,
     pub rows: Vec<Vec<CellValue>>,
     pub affected_rows: u64,
     pub last_insert_id: Option<u64>,
@@ -267,12 +265,10 @@ impl Default for DemoStore {
 
 pub enum ActiveSession {
     RealMysql {
-        profile: ConnectionProfile,
         pool: Pool,
         _ssh_guard: Option<Arc<Mutex<SshTunnelGuard>>>,
     },
     DemoSandbox {
-        profile: ConnectionProfile,
         store: DemoStore,
     },
 }
@@ -281,7 +277,6 @@ impl ActiveSession {
     pub async fn connect(profile: ConnectionProfile) -> Result<Self> {
         if profile.is_demo {
             return Ok(Self::DemoSandbox {
-                profile,
                 store: DemoStore::default(),
             });
         }
@@ -489,7 +484,6 @@ impl ActiveSession {
         };
 
         Ok(Self::RealMysql {
-            profile,
             pool,
             _ssh_guard: ssh_guard,
         })
@@ -644,19 +638,10 @@ impl ActiveSession {
                 }
 
                 let mut result = conn.query_iter(trimmed).await?;
-                let columns_meta: Vec<(String, String)> = result
+                let columns: Vec<String> = result
                     .columns()
                     .as_ref()
-                    .map(|cols| {
-                        cols.iter()
-                            .map(|c| {
-                                (
-                                    c.name_str().into_owned(),
-                                    format!("{:?}", c.column_type()),
-                                )
-                            })
-                            .collect()
-                    })
+                    .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
                     .unwrap_or_default();
 
                 let raw_rows: Vec<Row> = result.collect().await?;
@@ -665,9 +650,6 @@ impl ActiveSession {
                 drop(result);
 
                 let duration_ms = start.elapsed().as_millis() as u64;
-                let columns: Vec<String> = columns_meta.iter().map(|(c, _)| c.clone()).collect();
-                let column_types: Vec<String> =
-                    columns_meta.iter().map(|(_, t)| t.clone()).collect();
 
                 let mut rows = Vec::with_capacity(raw_rows.len());
                 for mut row in raw_rows {
@@ -699,7 +681,6 @@ impl ActiveSession {
                     sql: trimmed.to_string(),
                     database: database.to_string(),
                     columns,
-                    column_types,
                     rows,
                     affected_rows: affected,
                     last_insert_id: last_id,
@@ -785,16 +766,6 @@ impl ActiveSession {
                     "State".to_string(),
                     "Info".to_string(),
                 ];
-                let column_types = vec![
-                    "BIGINT".to_string(),
-                    "VARCHAR".to_string(),
-                    "VARCHAR".to_string(),
-                    "VARCHAR".to_string(),
-                    "VARCHAR".to_string(),
-                    "INT".to_string(),
-                    "VARCHAR".to_string(),
-                    "TEXT".to_string(),
-                ];
                 let rows = vec![
                     vec![
                         CellValue::Integer(101),
@@ -831,7 +802,6 @@ impl ActiveSession {
                     sql: "SHOW FULL PROCESSLIST".to_string(),
                     database: "mysql".to_string(),
                     columns,
-                    column_types,
                     rows,
                     affected_rows: 0,
                     last_insert_id: None,
@@ -845,36 +815,29 @@ impl ActiveSession {
                 let start = Instant::now();
                 let mut conn = pool.get_conn().await?;
                 let mut result = conn.query_iter("SHOW FULL PROCESSLIST").await?;
-                let columns_meta: Vec<(String, String)> = result
+                let columns: Vec<String> = result
                     .columns()
                     .as_ref()
-                    .map(|cols| {
-                        cols.iter()
-                            .map(|c| (c.name_str().into_owned(), format!("{:?}", c.column_type())))
-                            .collect()
-                    })
+                    .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
                     .unwrap_or_default();
 
                 let raw_rows: Vec<Row> = result.collect().await?;
                 let mut rows = Vec::new();
                 for r in raw_rows {
                     let mut row_cells = Vec::new();
-                    for idx in 0..columns_meta.len() {
+                    for idx in 0..columns.len() {
                         let val: Value = r.get(idx).unwrap_or(Value::NULL);
                         row_cells.push(CellValue::from_mysql_value(val));
                     }
                     rows.push(row_cells);
                 }
 
-                let columns = columns_meta.iter().map(|(n, _)| n.clone()).collect();
-                let column_types = columns_meta.into_iter().map(|(_, t)| t).collect();
                 let duration_ms = start.elapsed().as_millis().max(1) as u64;
 
                 Ok(QueryResult {
                     sql: "SHOW FULL PROCESSLIST".to_string(),
                     database: "mysql".to_string(),
                     columns,
-                    column_types,
                     rows,
                     affected_rows: 0,
                     last_insert_id: None,
@@ -1618,14 +1581,6 @@ fn demo_users_table() -> QueryResult {
             "plan_tier".into(),
             "created_at".into(),
         ],
-        column_types: vec![
-            "BIGINT UNSIGNED".into(),
-            "VARCHAR(120)".into(),
-            "VARCHAR(180)".into(),
-            "CHAR(2)".into(),
-            "ENUM".into(),
-            "TIMESTAMP".into(),
-        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1689,14 +1644,6 @@ fn demo_products_table() -> QueryResult {
             "category".into(),
             "unit_price".into(),
             "stock".into(),
-        ],
-        column_types: vec![
-            "BIGINT UNSIGNED".into(),
-            "VARCHAR(40)".into(),
-            "VARCHAR(160)".into(),
-            "VARCHAR(60)".into(),
-            "DECIMAL(10,2)".into(),
-            "INT".into(),
         ],
         rows,
         affected_rows: 0,
@@ -1763,13 +1710,6 @@ fn demo_orders_table() -> QueryResult {
             "total_amount".into(),
             "created_at".into(),
         ],
-        column_types: vec![
-            "BIGINT UNSIGNED".into(),
-            "BIGINT UNSIGNED".into(),
-            "ENUM".into(),
-            "DECIMAL(12,2)".into(),
-            "TIMESTAMP".into(),
-        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1821,13 +1761,6 @@ fn demo_order_items_table() -> QueryResult {
             "quantity".into(),
             "unit_price".into(),
         ],
-        column_types: vec![
-            "BIGINT UNSIGNED".into(),
-            "BIGINT UNSIGNED".into(),
-            "BIGINT UNSIGNED".into(),
-            "INT UNSIGNED".into(),
-            "DECIMAL(10,2)".into(),
-        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1871,13 +1804,6 @@ fn demo_payments_table() -> QueryResult {
             "provider".into(),
             "amount".into(),
             "paid_at".into(),
-        ],
-        column_types: vec![
-            "BIGINT UNSIGNED".into(),
-            "BIGINT UNSIGNED".into(),
-            "VARCHAR(40)".into(),
-            "DECIMAL(12,2)".into(),
-            "TIMESTAMP".into(),
         ],
         rows,
         affected_rows: 0,
@@ -1925,12 +1851,6 @@ fn demo_events_daily_table() -> QueryResult {
             "active_users".into(),
             "conversion_rate".into(),
         ],
-        column_types: vec![
-            "DATE".into(),
-            "VARCHAR(64)".into(),
-            "INT UNSIGNED".into(),
-            "DECIMAL(5,2)".into(),
-        ],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1963,7 +1883,6 @@ fn demo_pageviews_summary_table() -> QueryResult {
         sql: "SELECT * FROM pageviews_summary".into(),
         database: "analytics_dw".into(),
         columns: vec!["path".into(), "views".into(), "avg_time_sec".into()],
-        column_types: vec!["VARCHAR(255)".into(), "BIGINT UNSIGNED".into(), "DECIMAL(6,2)".into()],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -1985,7 +1904,6 @@ fn demo_tables_table() -> QueryResult {
         sql: "SELECT * FROM information_schema.TABLES".into(),
         database: "information_schema".into(),
         columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "TABLE_TYPE".into(), "ENGINE".into()],
-        column_types: vec!["VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into()],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -2007,7 +1925,6 @@ fn demo_columns_table() -> QueryResult {
         sql: "SELECT * FROM information_schema.COLUMNS".into(),
         database: "information_schema".into(),
         columns: vec!["TABLE_SCHEMA".into(), "TABLE_NAME".into(), "COLUMN_NAME".into(), "DATA_TYPE".into()],
-        column_types: vec!["VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into(), "VARCHAR(64)".into()],
         rows,
         affected_rows: 0,
         last_insert_id: None,
@@ -2032,7 +1949,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec!["Database".into()],
-            column_types: vec!["VARCHAR".into()],
             rows: vec![
                 vec![CellValue::Text("ecommerce_prod".into())],
                 vec![CellValue::Text("analytics_dw".into())],
@@ -2062,7 +1978,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec![col],
-            column_types: vec!["VARCHAR".into()],
             rows,
             affected_rows: 0,
             last_insert_id: None,
@@ -2079,7 +1994,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: target.to_string(),
             columns: vec![],
-            column_types: vec![],
             rows: vec![],
             affected_rows: 0,
             last_insert_id: None,
@@ -2095,7 +2009,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec!["DATABASE()".into()],
-            column_types: vec!["VARCHAR".into()],
             rows: vec![vec![CellValue::Text(database.to_string())]],
             affected_rows: 0,
             last_insert_id: None,
@@ -2120,7 +2033,6 @@ fn execute_demo_query(
                 "rows".into(),
                 "Extra".into(),
             ],
-            column_types: vec!["INT".into(); 8],
             rows: vec![
                 vec![
                     CellValue::Integer(1),
@@ -2165,7 +2077,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec!["Table".into(), "Create Table".into()],
-            column_types: vec!["VARCHAR".into(), "TEXT".into()],
             rows: vec![vec![CellValue::Text(tbl.into()), CellValue::Text(ddl)]],
             affected_rows: 0,
             last_insert_id: None,
@@ -2190,7 +2101,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec![col_name.to_string()],
-            column_types: vec!["VARCHAR".to_string()],
             rows: vec![vec![val]],
             affected_rows: 0,
             last_insert_id: None,
@@ -2212,14 +2122,6 @@ fn execute_demo_query(
                 "country".into(),
                 "total_orders".into(),
                 "lifetime_value".into(),
-            ],
-            column_types: vec![
-                "BIGINT".into(),
-                "VARCHAR".into(),
-                "VARCHAR".into(),
-                "CHAR(2)".into(),
-                "BIGINT".into(),
-                "DECIMAL(12,2)".into(),
             ],
             rows: vec![
                 vec![
@@ -2279,7 +2181,6 @@ fn execute_demo_query(
                         sql: sql.to_string(),
                         database: database.to_string(),
                         columns: vec!["COUNT(*)".to_string()],
-                        column_types: vec!["BIGINT".to_string()],
                         rows: vec![vec![CellValue::Integer(total as i64)]],
                         affected_rows: 0,
                         last_insert_id: None,
@@ -2349,7 +2250,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec![],
-            column_types: vec![],
             rows: vec![],
             affected_rows: 1,
             last_insert_id: Some(101),
@@ -2365,7 +2265,6 @@ fn execute_demo_query(
             sql: sql.to_string(),
             database: database.to_string(),
             columns: vec![],
-            column_types: vec![],
             rows: vec![],
             affected_rows: 0,
             last_insert_id: None,

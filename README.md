@@ -17,7 +17,10 @@ A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for 
 - **Multi-Tab SQL Editor with 2-Tier Autocomplete:**
   - Custom SQL lexer and syntax highlighter (keywords, functions, types, strings, numbers, comments).
   - **Tier 1 (<1 ms):** Local schema-aware suggestions for tables, `alias.column` completions, Foreign Key `JOIN ... ON` clauses, and SQL keywords.
-  - **Tier 2 (AI Ghost Text):** Inline Copilot-style ghost completions rendered in muted italic cyan right after the cursor (`Tab` to accept, `Ctrl+Space` to trigger from LLM/CLI).
+  - **Tier 2 (AI Ghost Text):** 3 selectable engines in AI Settings:
+    - ⚡ **Option 1: Local Schema Native (0ms, 100% Offline):** Instant schema-driven SQL predictions for `SELECT`, `JOIN`, `WHERE`, `ORDER BY`, `INSERT`, `UPDATE` with zero latency.
+    - 🦙 **Option 2: Ollama FIM (~100ms):** Ultra-fast local Fill-In-The-Middle inference using `qwen2.5-coder:1.5b`.
+    - 🤖 **Option 3: GitHub Copilot:** Native Device Code OAuth flow to connect your official GitHub Copilot subscription.
   - **Quick SQL Macros (`Tab`):** Expand short abbreviations (`sel*`, `selw`, `cnt*`, `join*`, `ins*`, `upd*`, `del*`, `grp*`) directly in the editor.
   - **Parameterized Queries (`:param_name`):** Automatic dynamic parameter bar with safe value substitution before execution.
   - **Persistent Scratchpad Tabs:** Auto-saves open query tabs every 5 seconds and restores them on startup.

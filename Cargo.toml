@@ -15,7 +15,7 @@ eframe = { version = "0.37.0", default-features = false, features = [
     "clipboard",
     "links",
 ] }
-egui = "0.37.0"
+egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_extras = { version = "0.37.0", features = ["all_loaders"] }
 mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
 tokio = { version = "1.43", features = ["full"] }

@@ -169,6 +169,48 @@ mod tests {
     }
 
     #[test]
+    fn test_smart_autocomplete_alias_clause_cursor_and_fim() {
+        use crate::ai::clean_inline_completion_with_suffix;
+        use crate::syntax::{replace_at_cursor, split_sql_at_cursor};
+
+        let schema = build_demo_schema("ecommerce_prod");
+
+        // 1. Alias resolution from `FROM users AS usr`
+        let (_, alias_items) =
+            compute_local_completions("SELECT usr.em FROM users AS usr WHERE usr.em", Some(&schema), 10);
+        assert!(alias_items.iter().any(|i| i.label == "usr.email"));
+
+        // 2. Substring / word-boundary matching (`mail` matches `email`)
+        let (_, fuzzy_items) =
+            compute_local_completions("SELECT * FROM users WHERE mail", Some(&schema), 10);
+        assert!(fuzzy_items.iter().any(|i| i.label == "email"));
+
+        // 3. Clause awareness: after `FROM `, tables are suggested first
+        let (_, from_items) =
+            compute_local_completions("SELECT * FROM ", Some(&schema), 5);
+        assert!(!from_items.is_empty());
+        assert_eq!(from_items[0].kind, crate::ai::CompletionKind::Table);
+
+        // 4. Cursor-aware split & replacement in middle of query
+        let mut sql = "SELECT * FROM us WHERE id = 1".to_string();
+        let cursor_idx = "SELECT * FROM us".chars().count();
+        let (prefix, suffix) = split_sql_at_cursor(&sql, cursor_idx);
+        assert_eq!(prefix, "SELECT * FROM us");
+        assert_eq!(suffix, " WHERE id = 1");
+        let new_cursor = replace_at_cursor(&mut sql, cursor_idx, "us".len(), "users");
+        assert_eq!(sql, "SELECT * FROM users WHERE id = 1");
+        assert_eq!(new_cursor, "SELECT * FROM users".chars().count());
+
+        // 5. FIM suffix overlap trimming
+        let cleaned = clean_inline_completion_with_suffix(
+            "users WHERE id = 1",
+            "SELECT * FROM ",
+            " WHERE id = 1",
+        );
+        assert_eq!(cleaned, "users");
+    }
+
+    #[test]
     fn test_format_sql_pretty() {
         let formatted = format_sql_pretty("SELECT id, name FROM users WHERE id = 1 LIMIT 10");
         assert!(formatted.contains("FROM"));

@@ -157,8 +157,8 @@ impl AiProvider {
     pub fn label(&self) -> &'static str {
         match self {
             Self::LocalSchema => "⚡ Local Schema Native (0ms, 100% Offline)",
-            Self::Ollama => "🦙 Ollama FIM (Fast Local Code Model)",
-            Self::GitHubCopilot => "🤖 GitHub Copilot (Official Account)",
+            Self::Ollama => "💻 Ollama FIM (Fast Local Code Model)",
+            Self::GitHubCopilot => "✨ GitHub Copilot (Official Account)",
             Self::OpenAiCompatible => "OpenAI / Compatible (Groq, OpenRouter, vLLM)",
             Self::Anthropic => "Anthropic (Claude)",
             Self::Gemini => "Google Gemini API",

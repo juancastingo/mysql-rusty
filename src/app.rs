@@ -22,7 +22,8 @@ use crate::schema_diff::{diff_schemas, SchemaDiffReport};
 use crate::syntax::{
     apply_limit_to_sql, detect_current_limit, expand_sql_macro_with_cursor, extract_sql_parameters,
     extract_statement_at_cursor, format_sql_pretty, highlight_sql, is_potentially_destructive,
-    is_write_query, split_sql_statements, substitute_sql_parameters,
+    is_write_query, replace_at_cursor, split_sql_at_cursor, split_sql_statements,
+    substitute_sql_parameters,
 };
 use crate::table_designer::{TableDesignerAction, TableDraft};
 use chrono::Local;
@@ -178,6 +179,7 @@ pub struct QueryTab {
     pub last_edit_instant: Option<std::time::Instant>,
     pub ghost_completion: Option<String>,
     pub local_suggestions: Vec<CompletionItem>,
+    pub selected_suggestion_idx: usize,
     pub current_token_prefix: String,
     pub inline_req_id: u64,
     pub is_running: bool,
@@ -227,6 +229,7 @@ impl QueryTab {
             last_edit_instant: None,
             ghost_completion: None,
             local_suggestions: Vec::new(),
+            selected_suggestion_idx: 0,
             current_token_prefix: String::new(),
             inline_req_id: 0,
             is_running: false,
@@ -1212,12 +1215,9 @@ impl MysqlRustyApp {
         tab.inline_req_id += 1;
         let req_id = tab.inline_req_id;
         let tab_id = tab.id.clone();
-        let sql_prefix = if tab.cursor_index > 0 {
-            let chars: Vec<char> = tab.sql.chars().collect();
-            let end_idx = tab.cursor_index.min(chars.len());
-            chars[..end_idx].iter().collect::<String>()
-        } else {
-            tab.sql.clone()
+        let (sql_prefix, sql_suffix) = {
+            let (p, s) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
+            (p.to_string(), s.to_string())
         };
 
         // Opción 1: Local Schema Native runs in 0ms without async network spawning
@@ -1242,7 +1242,7 @@ impl MysqlRustyApp {
         );
 
         self.rt.spawn(async move {
-            let res = request_inline_completion(&ai_cfg, &sql_prefix, &ddl)
+            let res = request_inline_completion(&ai_cfg, &sql_prefix, &sql_suffix, &ddl)
                 .await
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AsyncEvent::InlineAiCompletion {
@@ -1548,8 +1548,9 @@ impl MysqlRustyApp {
                             Err(err) => {
                                 // Fallback to heuristic completion so the user still gets a smart suggestion
                                 let schema = self.schemas.get(&self.active_database);
+                                let (prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
                                 tab.ghost_completion =
-                                    compute_heuristic_ghost_completion(&tab.sql, schema);
+                                    compute_heuristic_ghost_completion(prefix, schema);
                                 self.status_banner = format!(
                                     "AI provider unreachable ({err}); using local schema heuristic."
                                 );
@@ -1874,8 +1875,8 @@ impl eframe::App for MysqlRustyApp {
             self.trigger_inline_ai_completion();
         }
 
-        // Debounced automatic inline AI completion
-        if self.config.ai.enable_inline_autocomplete && !self.is_inline_ai_loading {
+        // Debounced automatic inline AI completion (new edits supersede in-flight requests via inline_req_id)
+        if self.config.ai.enable_inline_autocomplete {
             if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
                 if let Some(instant) = tab.last_edit_instant {
                     let debounce = std::time::Duration::from_millis(
@@ -3970,77 +3971,107 @@ impl MysqlRustyApp {
                 let mut move_cursor_to_char: Option<usize> = None;
                 let mut keep_editor_focus = false;
 
-                // Accept suggestions via keyboard: Tab (macros / ghost / completion) or Alt+1..8
+                // Accept or dismiss suggestions via keyboard: Esc, Alt+Up/Down, Tab, Alt+1..8
                 let mut selected_suggestion: Option<CompletionItem> = None;
-                let has_any_tab_completion = {
-                    let last_word = tab
-                        .sql
-                        .split_whitespace()
-                        .last()
-                        .unwrap_or("")
-                        .trim();
-                    expand_sql_macro_with_cursor(last_word).is_some()
-                        || tab.ghost_completion.is_some()
-                        || !tab.local_suggestions.is_empty()
-                };
+                let has_suggestions_or_ghost =
+                    tab.ghost_completion.is_some() || !tab.local_suggestions.is_empty();
 
-                if has_any_tab_completion
-                    && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab))
+                if has_suggestions_or_ghost
+                    && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
                 {
-                    let last_word = tab
-                        .sql
-                        .split_whitespace()
-                        .last()
-                        .unwrap_or("")
-                        .trim();
-                    if let Some((expanded, cursor_offset)) = expand_sql_macro_with_cursor(last_word) {
-                        let trim_len = last_word.len();
-                        let new_len = tab.sql.len().saturating_sub(trim_len);
-                        tab.sql.truncate(new_len);
-                        let base_chars = tab.sql.chars().count();
-                        tab.sql.push_str(expanded);
-                        tab.is_dirty = true;
-                        move_cursor_to_char = Some(base_chars + cursor_offset);
-                        keep_editor_focus = true;
-                    } else if let Some(ghost) = tab.ghost_completion.take() {
-                        tab.sql.push_str(&ghost);
-                        tab.is_dirty = true;
-                        move_cursor_to_char = Some(tab.sql.chars().count());
-                        keep_editor_focus = true;
-                    } else if let Some(first) = tab.local_suggestions.first() {
-                        selected_suggestion = Some(first.clone());
-                    }
+                    tab.ghost_completion = None;
+                    tab.local_suggestions.clear();
+                    tab.selected_suggestion_idx = 0;
+                    keep_editor_focus = true;
+                } else if !tab.local_suggestions.is_empty()
+                    && ui.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowDown))
+                {
+                    tab.selected_suggestion_idx =
+                        (tab.selected_suggestion_idx + 1) % tab.local_suggestions.len();
+                    keep_editor_focus = true;
+                } else if !tab.local_suggestions.is_empty()
+                    && ui.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowUp))
+                {
+                    tab.selected_suggestion_idx = tab
+                        .selected_suggestion_idx
+                        .checked_sub(1)
+                        .unwrap_or(tab.local_suggestions.len() - 1);
+                    keep_editor_focus = true;
                 } else {
-                    for (idx, item) in tab.local_suggestions.iter().enumerate().take(8) {
-                        let num_key = match idx {
-                            0 => Key::Num1,
-                            1 => Key::Num2,
-                            2 => Key::Num3,
-                            3 => Key::Num4,
-                            4 => Key::Num5,
-                            5 => Key::Num6,
-                            6 => Key::Num7,
-                            7 => Key::Num8,
-                            _ => break,
-                        };
-                        if ui.input_mut(|i| i.consume_key(Modifiers::ALT, num_key)) {
-                            selected_suggestion = Some(item.clone());
-                            break;
+                    let last_word = {
+                        let (prefix_before_cursor, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
+                        prefix_before_cursor
+                            .split_whitespace()
+                            .last()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string()
+                    };
+                    let has_any_tab_completion = expand_sql_macro_with_cursor(&last_word).is_some()
+                        || tab.ghost_completion.is_some()
+                        || !tab.local_suggestions.is_empty();
+
+                    if has_any_tab_completion
+                        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab))
+                    {
+                        if let Some((expanded, cursor_offset)) =
+                            expand_sql_macro_with_cursor(&last_word)
+                        {
+                            let new_cursor = replace_at_cursor(
+                                &mut tab.sql,
+                                tab.cursor_index,
+                                last_word.len(),
+                                expanded,
+                            );
+                            let base_chars = new_cursor.saturating_sub(expanded.chars().count());
+                            tab.is_dirty = true;
+                            move_cursor_to_char = Some(base_chars + cursor_offset);
+                            keep_editor_focus = true;
+                        } else if let Some(ghost) = tab.ghost_completion.take() {
+                            let new_cursor =
+                                replace_at_cursor(&mut tab.sql, tab.cursor_index, 0, &ghost);
+                            tab.is_dirty = true;
+                            move_cursor_to_char = Some(new_cursor);
+                            keep_editor_focus = true;
+                        } else if !tab.local_suggestions.is_empty() {
+                            let idx = tab
+                                .selected_suggestion_idx
+                                .min(tab.local_suggestions.len() - 1);
+                            selected_suggestion = Some(tab.local_suggestions[idx].clone());
+                        }
+                    } else {
+                        for (idx, item) in tab.local_suggestions.iter().enumerate().take(8) {
+                            let num_key = match idx {
+                                0 => Key::Num1,
+                                1 => Key::Num2,
+                                2 => Key::Num3,
+                                3 => Key::Num4,
+                                4 => Key::Num5,
+                                5 => Key::Num6,
+                                6 => Key::Num7,
+                                7 => Key::Num8,
+                                _ => break,
+                            };
+                            if ui.input_mut(|i| i.consume_key(Modifiers::ALT, num_key)) {
+                                selected_suggestion = Some(item.clone());
+                                break;
+                            }
                         }
                     }
                 }
 
                 if let Some(item) = selected_suggestion {
-                    let prefix_len = tab.current_token_prefix.len();
-                    if prefix_len <= tab.sql.len() {
-                        let new_len = tab.sql.len() - prefix_len;
-                        tab.sql.truncate(new_len);
-                    }
-                    tab.sql.push_str(&item.insert_text);
+                    let new_cursor = replace_at_cursor(
+                        &mut tab.sql,
+                        tab.cursor_index,
+                        tab.current_token_prefix.len(),
+                        &item.insert_text,
+                    );
                     tab.local_suggestions.clear();
+                    tab.selected_suggestion_idx = 0;
                     tab.ghost_completion = None;
                     tab.is_dirty = true;
-                    move_cursor_to_char = Some(tab.sql.chars().count());
+                    move_cursor_to_char = Some(new_cursor);
                     keep_editor_focus = true;
                 }
 
@@ -4056,8 +4087,14 @@ impl MysqlRustyApp {
                 }
 
                 let ghost_clone = tab.ghost_completion.clone();
+                let cursor_idx_snapshot = tab.cursor_index;
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                    let mut job = highlight_sql(buf.as_str(), ghost_clone.as_deref(), 14.0);
+                    let mut job = highlight_sql(
+                        buf.as_str(),
+                        ghost_clone.as_deref(),
+                        Some(cursor_idx_snapshot),
+                        14.0,
+                    );
                     job.wrap.max_width = wrap_width;
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
@@ -4134,13 +4171,15 @@ impl MysqlRustyApp {
                     tab.is_dirty = true;
                     tab.selected_sql = None;
                     tab.last_edit_instant = Some(std::time::Instant::now());
+                    let (sql_prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
                     let (prefix, suggestions) =
-                        compute_local_completions(&tab.sql, schema.as_ref(), 8);
+                        compute_local_completions(sql_prefix, schema.as_ref(), 8);
                     tab.current_token_prefix = prefix;
                     tab.local_suggestions = suggestions;
+                    tab.selected_suggestion_idx = 0;
                     if enable_ghost {
                         tab.ghost_completion =
-                            compute_heuristic_ghost_completion(&tab.sql, schema.as_ref());
+                            compute_heuristic_ghost_completion(sql_prefix, schema.as_ref());
                     } else {
                         tab.ghost_completion = None;
                     }
@@ -4148,7 +4187,7 @@ impl MysqlRustyApp {
 
                 // Inline Autocomplete Bar (Schema tokens + Ghost completion accept button)
                 if !tab.local_suggestions.is_empty() || tab.ghost_completion.is_some() {
-                    let mut clicked_move_to_end = false;
+                    let mut clicked_new_cursor: Option<usize> = None;
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new("Suggestions:")
@@ -4162,20 +4201,26 @@ impl MysqlRustyApp {
                                     RichText::new(format!("[Tab] {preview}"))
                                         .color(Color32::from_rgb(125, 211, 252)),
                                 )
+                                .on_hover_text("Insert ghost completion at cursor (Tab)")
                                 .clicked()
                             {
-                                tab.sql.push_str(&ghost);
+                                let new_cursor =
+                                    replace_at_cursor(&mut tab.sql, tab.cursor_index, 0, &ghost);
                                 tab.ghost_completion = None;
                                 tab.is_dirty = true;
-                                clicked_move_to_end = true;
+                                clicked_new_cursor = Some(new_cursor);
                             }
                         }
 
                         let suggestions = tab.local_suggestions.clone();
                         let prefix_len = tab.current_token_prefix.len();
                         let has_ghost = tab.ghost_completion.is_some();
+                        let active_idx = tab
+                            .selected_suggestion_idx
+                            .min(suggestions.len().saturating_sub(1));
                         for (idx, item) in suggestions.into_iter().enumerate() {
-                            let badge = if idx == 0 && !has_ghost {
+                            let is_selected = idx == active_idx;
+                            let badge = if is_selected && !has_ghost {
                                 "[Tab]".to_string()
                             } else if idx < 8 {
                                 format!("[Alt+{}]", idx + 1)
@@ -4187,37 +4232,66 @@ impl MysqlRustyApp {
                             } else {
                                 format!("{badge} [{}] {}", item.kind.badge(), item.label)
                             };
+                            let text = if is_selected {
+                                RichText::new(label)
+                                    .strong()
+                                    .color(Color32::from_rgb(250, 204, 21))
+                            } else {
+                                RichText::new(label)
+                            };
                             if ui
-                                .small_button(label)
+                                .small_button(text)
                                 .on_hover_text(format!(
-                                    "{}\nShortcut: {}",
+                                    "{}\nShortcut: {} (Alt+↑/↓ to select, Esc to dismiss)",
                                     item.detail,
-                                    if idx == 0 && !has_ghost { "Tab or Alt+1" } else if idx < 8 { "Alt+1..8" } else { "Click" }
+                                    if is_selected && !has_ghost {
+                                        "Tab"
+                                    } else if idx < 8 {
+                                        "Alt+1..8"
+                                    } else {
+                                        "Click"
+                                    }
                                 ))
                                 .clicked()
                             {
-                                if prefix_len <= tab.sql.len() {
-                                    let new_len = tab.sql.len() - prefix_len;
-                                    tab.sql.truncate(new_len);
-                                }
-                                tab.sql.push_str(&item.insert_text);
+                                let new_cursor = replace_at_cursor(
+                                    &mut tab.sql,
+                                    tab.cursor_index,
+                                    prefix_len,
+                                    &item.insert_text,
+                                );
                                 tab.local_suggestions.clear();
+                                tab.selected_suggestion_idx = 0;
                                 tab.ghost_completion = None;
                                 tab.is_dirty = true;
-                                clicked_move_to_end = true;
+                                clicked_new_cursor = Some(new_cursor);
                             }
                         }
+
+                        if ui
+                            .small_button(
+                                RichText::new("[Esc] ✕")
+                                    .small()
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            )
+                            .on_hover_text("Dismiss suggestions (Esc)")
+                            .clicked()
+                        {
+                            tab.local_suggestions.clear();
+                            tab.selected_suggestion_idx = 0;
+                            tab.ghost_completion = None;
+                            editor_resp.request_focus();
+                        }
                     });
-                    if clicked_move_to_end {
-                        let end_char_idx = tab.sql.chars().count();
+                    if let Some(target_char_idx) = clicked_new_cursor {
                         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
-                            let ccursor = egui::text::CCursor::new(end_char_idx);
+                            let ccursor = egui::text::CCursor::new(target_char_idx);
                             state
                                 .cursor
                                 .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
                             state.store(ui.ctx(), editor_id);
                         }
-                        tab.cursor_index = end_char_idx;
+                        tab.cursor_index = target_char_idx;
                         editor_resp.request_focus();
                     }
                 }
