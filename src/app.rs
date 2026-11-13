@@ -15,7 +15,7 @@ use crate::export::{
 };
 use crate::schema_diff::{diff_schemas, SchemaDiffReport};
 use crate::syntax::{
-    apply_limit_to_sql, detect_current_limit, expand_sql_macro, extract_sql_parameters,
+    apply_limit_to_sql, detect_current_limit, expand_sql_macro_with_cursor, extract_sql_parameters,
     extract_statement_at_cursor, format_sql_pretty, highlight_sql, is_potentially_destructive,
     is_write_query, split_sql_statements, substitute_sql_parameters,
 };
@@ -3318,23 +3318,47 @@ impl MysqlRustyApp {
                     ui.add_space(2.0);
                 }
 
+                let editor_id = ui.make_persistent_id(("sql_editor", &tab.id));
+                let mut move_cursor_to_char: Option<usize> = None;
+                let mut keep_editor_focus = false;
+
                 // Accept suggestions via keyboard: Tab (macros / ghost / completion) or Alt+1..8
                 let mut selected_suggestion: Option<CompletionItem> = None;
-                if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+                let has_any_tab_completion = {
                     let last_word = tab
                         .sql
                         .split_whitespace()
                         .last()
                         .unwrap_or("")
                         .trim();
-                    if let Some(expanded) = expand_sql_macro(last_word) {
+                    expand_sql_macro_with_cursor(last_word).is_some()
+                        || tab.ghost_completion.is_some()
+                        || !tab.local_suggestions.is_empty()
+                };
+
+                if has_any_tab_completion
+                    && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab))
+                {
+                    let last_word = tab
+                        .sql
+                        .split_whitespace()
+                        .last()
+                        .unwrap_or("")
+                        .trim();
+                    if let Some((expanded, cursor_offset)) = expand_sql_macro_with_cursor(last_word) {
                         let trim_len = last_word.len();
                         let new_len = tab.sql.len().saturating_sub(trim_len);
                         tab.sql.truncate(new_len);
+                        let base_chars = tab.sql.chars().count();
                         tab.sql.push_str(expanded);
                         tab.is_dirty = true;
+                        move_cursor_to_char = Some(base_chars + cursor_offset);
+                        keep_editor_focus = true;
                     } else if let Some(ghost) = tab.ghost_completion.take() {
                         tab.sql.push_str(&ghost);
+                        tab.is_dirty = true;
+                        move_cursor_to_char = Some(tab.sql.chars().count());
+                        keep_editor_focus = true;
                     } else if let Some(first) = tab.local_suggestions.first() {
                         selected_suggestion = Some(first.clone());
                     }
@@ -3367,6 +3391,20 @@ impl MysqlRustyApp {
                     tab.sql.push_str(&item.insert_text);
                     tab.local_suggestions.clear();
                     tab.ghost_completion = None;
+                    tab.is_dirty = true;
+                    move_cursor_to_char = Some(tab.sql.chars().count());
+                    keep_editor_focus = true;
+                }
+
+                if let Some(target_char_idx) = move_cursor_to_char {
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                        let ccursor = egui::text::CCursor::new(target_char_idx);
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                        state.store(ui.ctx(), editor_id);
+                    }
+                    tab.cursor_index = target_char_idx;
                 }
 
                 let ghost_clone = tab.ghost_completion.clone();
@@ -3381,6 +3419,7 @@ impl MysqlRustyApp {
                     .max_height(195.0)
                     .show(ui, |ui| {
                         egui::TextEdit::multiline(&mut tab.sql)
+                            .id(editor_id)
                             .font(egui::TextStyle::Monospace)
                             .code_editor()
                             .desired_rows(8)
@@ -3389,6 +3428,10 @@ impl MysqlRustyApp {
                             .show(ui)
                     })
                     .inner;
+
+                if keep_editor_focus {
+                    output.response.request_focus();
+                }
 
                 if let Some(cursor_range) = output.state.cursor.char_range() {
                     let sorted = cursor_range.as_sorted_char_range();
@@ -3457,6 +3500,7 @@ impl MysqlRustyApp {
 
                 // Inline Autocomplete Bar (Schema tokens + Ghost completion accept button)
                 if !tab.local_suggestions.is_empty() || tab.ghost_completion.is_some() {
+                    let mut clicked_move_to_end = false;
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new("Suggestions:")
@@ -3474,6 +3518,8 @@ impl MysqlRustyApp {
                             {
                                 tab.sql.push_str(&ghost);
                                 tab.ghost_completion = None;
+                                tab.is_dirty = true;
+                                clicked_move_to_end = true;
                             }
                         }
 
@@ -3509,9 +3555,23 @@ impl MysqlRustyApp {
                                 tab.sql.push_str(&item.insert_text);
                                 tab.local_suggestions.clear();
                                 tab.ghost_completion = None;
+                                tab.is_dirty = true;
+                                clicked_move_to_end = true;
                             }
                         }
                     });
+                    if clicked_move_to_end {
+                        let end_char_idx = tab.sql.chars().count();
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                            let ccursor = egui::text::CCursor::new(end_char_idx);
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                            state.store(ui.ctx(), editor_id);
+                        }
+                        tab.cursor_index = end_char_idx;
+                        editor_resp.request_focus();
+                    }
                 }
 
                 if let Some(err) = &tab.last_error {

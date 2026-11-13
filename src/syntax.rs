@@ -935,19 +935,25 @@ pub fn substitute_sql_parameters(
     out
 }
 
-/// Expands short SQL productivity macros (e.g. `sel*`, `cnt*`, `join*`) into full templates.
-pub fn expand_sql_macro(token: &str) -> Option<&'static str> {
+/// Expands short SQL productivity macros (e.g. `sel*`, `cnt*`, `join*`) into full templates
+/// and returns `(expanded_text, cursor_char_offset)` indicating where the user should type next.
+pub fn expand_sql_macro_with_cursor(token: &str) -> Option<(&'static str, usize)> {
     match token.trim().to_lowercase().as_str() {
-        "sel*" => Some("SELECT * FROM  LIMIT 100;"),
-        "selw" => Some("SELECT * FROM  WHERE  LIMIT 100;"),
-        "cnt*" => Some("SELECT COUNT(*) AS total FROM ;"),
-        "join*" => Some("INNER JOIN  ON .id = ._id"),
-        "ins*" => Some("INSERT INTO  () VALUES ();"),
-        "upd*" => Some("UPDATE  SET  WHERE ;"),
-        "del*" => Some("DELETE FROM  WHERE ;"),
-        "grp*" => Some("SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;"),
+        "sel*" => Some(("SELECT * FROM  LIMIT 100;", 14)), // after "SELECT * FROM "
+        "selw" => Some(("SELECT * FROM  WHERE  LIMIT 100;", 14)), // after "SELECT * FROM "
+        "cnt*" => Some(("SELECT COUNT(*) AS total FROM ;", 30)), // before ";"
+        "join*" => Some(("INNER JOIN  ON .id = ._id", 11)), // after "INNER JOIN "
+        "ins*" => Some(("INSERT INTO  () VALUES ();", 12)), // after "INSERT INTO "
+        "upd*" => Some(("UPDATE  SET  WHERE ;", 7)), // after "UPDATE "
+        "del*" => Some(("DELETE FROM  WHERE ;", 12)), // after "DELETE FROM "
+        "grp*" => Some(("SELECT , COUNT(*) AS cnt FROM  GROUP BY  ORDER BY cnt DESC;", 7)), // after "SELECT "
         _ => None,
     }
+}
+
+/// Expands short SQL productivity macros (e.g. `sel*`, `cnt*`, `join*`) into full templates.
+pub fn expand_sql_macro(token: &str) -> Option<&'static str> {
+    expand_sql_macro_with_cursor(token).map(|(text, _)| text)
 }
 
 
