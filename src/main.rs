@@ -15,10 +15,69 @@ mod table_designer;
 pub mod test_fixtures;
 
 use app::MysqlRustyApp;
+use config::AppConfig;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+fn cleanup_old_logs(logs_dir: &std::path::Path, max_age_days: u64) {
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_days * 24 * 60 * 60);
+    if let Ok(entries) = std::fs::read_dir(logs_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && let Ok(meta) = entry.metadata()
+                && let Ok(modified) = meta.modified()
+                && modified < cutoff
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
+    let logs_dir = AppConfig::logs_dir();
+    cleanup_old_logs(&logs_dir, 7);
+
+    let file_appender = tracing_appender::rolling::daily(&logs_dir, "mysql-rusty.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = EnvFilter::try_from_env("MYSQL_RUSTY_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info,mysql_async=warn"));
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false);
+
+    let stderr_layer = if cfg!(debug_assertions) {
+        Some(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .with(stderr_layer)
+        .init();
+
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "Application panicked");
+        default_hook(info);
+    }));
+
+    tracing::info!(logs_dir = %logs_dir.display(), "Logging initialized");
+    guard
+}
 
 fn main() -> eframe::Result<()> {
+    let _log_guard = init_logging();
+
     let rt = Arc::new(
         Runtime::new().expect("Failed to initialize asynchronous Tokio runtime for MySQL-Rusty"),
     );

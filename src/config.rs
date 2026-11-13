@@ -341,12 +341,27 @@ impl AppConfig {
         dir
     }
 
+    pub fn logs_dir() -> PathBuf {
+        let dir = Self::config_dir().join("logs");
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
     pub fn load() -> Self {
         let path = Self::config_path();
-        let mut cfg = if let Ok(content) = fs::read_to_string(&path) {
-            serde_json::from_str::<Self>(&content).unwrap_or_default()
-        } else {
-            Self::default()
+        let mut cfg = match fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<Self>(&content) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    tracing::warn!(error = %err, "Failed to parse config.json, using defaults");
+                    Self::default()
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(err) => {
+                tracing::warn!(error = %err, "Failed to read config.json, using defaults");
+                Self::default()
+            }
         };
 
         // Hydrate secrets from OS keyring if available
@@ -417,22 +432,35 @@ impl AppConfig {
 pub const KEYRING_SERVICE: &str = "mysql-rusty";
 
 pub fn set_secret(key: &str, secret: &str) -> Result<()> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key) {
-        if secret.is_empty() {
-            let _ = entry.delete_credential();
-        } else {
-            let _ = entry.set_password(secret);
+    match keyring::Entry::new(KEYRING_SERVICE, key) {
+        Ok(entry) => {
+            if secret.is_empty() {
+                if let Err(err) = entry.delete_credential() {
+                    tracing::debug!(key, error = %err, "Keyring delete_credential failed");
+                }
+            } else if let Err(err) = entry.set_password(secret) {
+                tracing::warn!(key, error = %err, "Keyring set_password failed");
+            }
+        }
+        Err(err) => {
+            tracing::warn!(key, error = %err, "Keyring Entry::new failed");
         }
     }
     Ok(())
 }
 
 pub fn get_secret(key: &str) -> Option<String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, key)
-        && let Ok(pwd) = entry.get_password()
-        && !pwd.is_empty()
-    {
-        return Some(pwd);
+    match keyring::Entry::new(KEYRING_SERVICE, key) {
+        Ok(entry) => match entry.get_password() {
+            Ok(pwd) if !pwd.is_empty() => return Some(pwd),
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!(key, error = %err, "Keyring get_password returned no entry");
+            }
+        },
+        Err(err) => {
+            tracing::warn!(key, error = %err, "Keyring Entry::new failed");
+        }
     }
     None
 }

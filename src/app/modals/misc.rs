@@ -300,6 +300,7 @@ impl MysqlRustyApp {
             ToggleAiPanel,
             OpenTable(String),
             OpenSnippet { title: String, sql: String },
+            OpenLogsFolder,
         }
 
         struct PaletteEntry {
@@ -369,6 +370,12 @@ impl MysqlRustyApp {
                 label: "Toggle AI Assistant".to_string(),
                 detail: "Show or hide AI SQL assistant panel".to_string(),
                 action: PaletteAction::ToggleAiPanel,
+            },
+            PaletteEntry {
+                category: "Action",
+                label: "Open logs folder".to_string(),
+                detail: "Open application log directory in file manager".to_string(),
+                action: PaletteAction::OpenLogsFolder,
             },
         ];
 
@@ -546,6 +553,19 @@ impl MysqlRustyApp {
                 }
                 PaletteAction::OpenCsvImport => {
                     self.open_csv_import_dialog();
+                }
+                PaletteAction::OpenLogsFolder => {
+                    let dir = AppConfig::logs_dir();
+                    #[cfg(target_os = "linux")]
+                    let cmd = "xdg-open";
+                    #[cfg(target_os = "macos")]
+                    let cmd = "open";
+                    #[cfg(target_os = "windows")]
+                    let cmd = "explorer";
+                    if let Err(err) = std::process::Command::new(cmd).arg(&dir).spawn() {
+                        tracing::warn!(error = %err, dir = %dir.display(), "Failed to open logs folder");
+                        self.status_banner = format!("Logs folder: {}", dir.display());
+                    }
                 }
                 PaletteAction::NewTableDesigner => {
                     self.table_designer_draft = Some(TableDraft::new_empty("new_table"));

@@ -835,11 +835,30 @@ pub async fn request_inline_completion(
         )
     };
 
+    let started = std::time::Instant::now();
+    let prompt_len = user_prompt.len();
     match call_provider(config, system_prompt, &user_prompt, true).await {
-        Ok(raw) => Ok(clean_inline_completion_with_suffix(
-            &raw, sql_prefix, sql_suffix,
-        )),
-        Err(err) => Err(err),
+        Ok(raw) => {
+            tracing::debug!(
+                provider = ?config.provider,
+                prompt_len,
+                latency_ms = started.elapsed().as_millis() as u64,
+                "AI inline completion finished"
+            );
+            Ok(clean_inline_completion_with_suffix(
+                &raw, sql_prefix, sql_suffix,
+            ))
+        }
+        Err(err) => {
+            tracing::warn!(
+                provider = ?config.provider,
+                prompt_len,
+                latency_ms = started.elapsed().as_millis() as u64,
+                error = %err,
+                "AI inline completion failed"
+            );
+            Err(err)
+        }
     }
 }
 
@@ -868,7 +887,29 @@ pub async fn request_chat_assistant(
     full_prompt.push_str("User Request:\n");
     full_prompt.push_str(user_message);
 
-    let reply = call_provider(config, system_prompt, &full_prompt, false).await?;
+    let started = std::time::Instant::now();
+    let prompt_len = full_prompt.len();
+    let reply = match call_provider(config, system_prompt, &full_prompt, false).await {
+        Ok(r) => {
+            tracing::info!(
+                provider = ?config.provider,
+                prompt_len,
+                latency_ms = started.elapsed().as_millis() as u64,
+                "AI chat request finished"
+            );
+            r
+        }
+        Err(err) => {
+            tracing::warn!(
+                provider = ?config.provider,
+                prompt_len,
+                latency_ms = started.elapsed().as_millis() as u64,
+                error = %err,
+                "AI chat request failed"
+            );
+            return Err(err);
+        }
+    };
     let extracted_sql = extract_sql_code_block(&reply);
 
     Ok(ChatMessage {

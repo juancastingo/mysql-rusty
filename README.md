@@ -128,6 +128,13 @@ MYSQL_RUSTY_IT_HOST=127.0.0.1 MYSQL_RUSTY_IT_USER=root MYSQL_RUSTY_IT_PASSWORD=r
   cargo test db_integration_tests -- --test-threads=1
 ```
 
+### Reporting Bugs & Logs
+Daily rotating logs are written to `~/.config/mysql-rusty/logs/mysql-rusty.log.YYYY-MM-DD` (or your OS config directory). You can open this folder from the Command Palette (`Ctrl+K` → **Open logs folder**).
+To capture verbose SQL/AI diagnostic logs:
+```bash
+MYSQL_RUSTY_LOG=debug cargo run
+```
+
 ---
 
 ## 🗺 Architecture & Plan

@@ -259,10 +259,19 @@ pub enum ActiveSession {
 impl ActiveSession {
     pub async fn connect(profile: ConnectionProfile) -> Result<Self> {
         if profile.is_demo {
+            tracing::info!("Connecting to built-in DemoSandbox");
             return Ok(Self::DemoSandbox {
                 store: DemoStore::default(),
             });
         }
+
+        tracing::info!(
+            host = %profile.host,
+            port = profile.port,
+            ssl_mode = ?profile.ssl_mode,
+            ssh_enabled = profile.ssh.enabled,
+            "Connecting to MySQL/MariaDB server"
+        );
 
         let mut connect_host = profile.host.clone();
         let mut connect_port = profile.port;
@@ -323,8 +332,13 @@ impl ActiveSession {
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped());
 
+            tracing::info!(forward_spec = %forward_spec, ssh_port, "Spawning SSH tunnel");
             let mut child = cmd
                 .spawn()
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to spawn SSH tunnel subprocess");
+                    e
+                })
                 .context("Failed to start SSH tunnel subprocess (`ssh`)")?;
 
             // Wait for SSH tunnel to establish and bind to local port (up to 15 seconds)
@@ -341,6 +355,7 @@ impl ActiveSession {
                         let _ = err_pipe.read_to_string(&mut err_msg).await;
                     }
                     let clean_err = err_msg.trim();
+                    tracing::warn!(exit_status = %exit_status, error = %clean_err, "SSH tunnel exited prematurely");
                     return Err(anyhow!(
                         "SSH tunnel failed (exit code: {}):\n{}",
                         exit_status,
@@ -481,6 +496,7 @@ impl ActiveSession {
 
         let editor = pool.get_conn().await?;
         let editor_id = u64::from(editor.id());
+        tracing::info!(editor_conn_id = editor_id, host = %profile.host, port = profile.port, "Connected to MySQL/MariaDB");
 
         Ok(Self::RealMysql {
             pool,
@@ -668,6 +684,9 @@ impl ActiveSession {
             return Err(anyhow!("SQL query is empty."));
         }
 
+        let sql_preview: String = trimmed.chars().take(200).collect();
+        tracing::debug!(database, sql_preview = %sql_preview, "Executing SQL query");
+
         match self {
             Self::DemoSandbox { store, .. } => execute_demo_query(store, database, trimmed, schema),
             Self::RealMysql {
@@ -706,6 +725,7 @@ impl ActiveSession {
                 let mut result = match conn.query_iter(trimmed).await {
                     Ok(res) => res,
                     Err(err) => {
+                        tracing::warn!(database, error = %err, "SQL query execution failed");
                         if Self::is_connection_error(&err) {
                             *guard = None;
                             *editor_current_db.lock().await = None;
@@ -743,6 +763,13 @@ impl ActiveSession {
                 drop(result);
 
                 let duration_ms = start.elapsed().as_millis() as u64;
+                tracing::info!(
+                    database,
+                    duration_ms,
+                    row_count = raw_rows.len(),
+                    affected_rows = affected,
+                    "SQL query finished"
+                );
 
                 let mut rows = Vec::with_capacity(raw_rows.len());
                 for mut row in raw_rows {
