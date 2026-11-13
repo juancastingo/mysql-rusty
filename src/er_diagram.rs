@@ -1,7 +1,8 @@
 use crate::db::DatabaseSchema;
+use anyhow::{Context, Result, anyhow};
 use egui::epaint::CubicBezierShape;
 use egui::{Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -13,6 +14,7 @@ pub struct ErCanvasState {
     pub hovered_node: Option<String>,
     pub hovered_fk: Option<String>,
     pub last_db_name: String,
+    pub export_status: Option<String>,
 }
 
 impl Default for ErCanvasState {
@@ -25,8 +27,317 @@ impl Default for ErCanvasState {
             hovered_node: None,
             hovered_fk: None,
             last_db_name: String::new(),
+            export_status: None,
         }
     }
+}
+
+/// Sugiyama-style layered auto-layout:
+/// 1. Builds parent -> child FK edges, breaking cycles via DFS back-edge removal.
+/// 2. Assigns each table to its longest-path topological layer.
+/// 3. Orders nodes within each layer using a barycenter heuristic to reduce crossings.
+pub fn compute_auto_layout(schema: &DatabaseSchema) -> HashMap<String, Pos2> {
+    let mut positions = HashMap::new();
+    let n = schema.tables.len();
+    if n == 0 {
+        return positions;
+    }
+
+    let name_to_idx: HashMap<String, usize> = schema
+        .tables
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
+        .collect();
+
+    // Directed edges: parent -> child (referenced_table -> table)
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (child_idx, tbl) in schema.tables.iter().enumerate() {
+        for fk in &tbl.foreign_keys {
+            if let Some(&parent_idx) = name_to_idx.get(&fk.referenced_table.to_ascii_lowercase())
+                && parent_idx != child_idx
+                && !adj[parent_idx].contains(&child_idx)
+            {
+                adj[parent_idx].push(child_idx);
+            }
+        }
+    }
+
+    // DFS cycle-breaking: remove back-edges
+    let mut state = vec![0u8; n]; // 0 = unvisited, 1 = visiting, 2 = done
+    let mut dag_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    fn dfs_dag(u: usize, adj: &[Vec<usize>], state: &mut [u8], dag_adj: &mut [Vec<usize>]) {
+        state[u] = 1;
+        for &v in &adj[u] {
+            if state[v] == 0 {
+                dag_adj[u].push(v);
+                dfs_dag(v, adj, state, dag_adj);
+            } else if state[v] == 2 {
+                dag_adj[u].push(v);
+            }
+            // state[v] == 1 is a back-edge; skip to break cycle
+        }
+        state[u] = 2;
+    }
+    for i in 0..n {
+        if state[i] == 0 {
+            dfs_dag(i, &adj, &mut state, &mut dag_adj);
+        }
+    }
+
+    // Longest-path layer assignment in DAG (Kahn's topological order)
+    let mut indeg = vec![0usize; n];
+    for edges in &dag_adj {
+        for &v in edges {
+            indeg[v] += 1;
+        }
+    }
+    let mut queue: std::collections::VecDeque<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
+    let mut layer = vec![0usize; n];
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (u, edges) in dag_adj.iter().enumerate() {
+        for &v in edges {
+            preds[v].push(u);
+        }
+    }
+    while let Some(u) = queue.pop_front() {
+        for &v in &dag_adj[u] {
+            layer[v] = layer[v].max(layer[u] + 1);
+            indeg[v] -= 1;
+            if indeg[v] == 0 {
+                queue.push_back(v);
+            }
+        }
+    }
+
+    let max_layer = layer.iter().copied().max().unwrap_or(0);
+    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    for (idx, &l) in layer.iter().enumerate() {
+        layers[l].push(idx);
+    }
+
+    // Barycenter ordering within each layer based on predecessors in earlier layers
+    let mut order_in_layer: HashMap<usize, f32> = HashMap::new();
+    for (pos, &node) in layers[0].iter().enumerate() {
+        order_in_layer.insert(node, pos as f32);
+    }
+    for layer_nodes in layers.iter_mut().skip(1) {
+        layer_nodes.sort_by(|&a, &b| {
+            let bary = |node: usize| -> f32 {
+                let ps = &preds[node];
+                if ps.is_empty() {
+                    return 0.0;
+                }
+                let sum: f32 = ps
+                    .iter()
+                    .filter_map(|p| order_in_layer.get(p).copied())
+                    .sum();
+                sum / (ps.len() as f32)
+            };
+            bary(a)
+                .partial_cmp(&bary(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| schema.tables[a].name.cmp(&schema.tables[b].name))
+        });
+        for (pos, &node) in layer_nodes.iter().enumerate() {
+            order_in_layer.insert(node, pos as f32);
+        }
+    }
+
+    let x_spacing = 300.0;
+    let y_spacing = 240.0;
+    let start_x = 40.0;
+    let start_y = 40.0;
+
+    for (l_idx, nodes) in layers.iter().enumerate() {
+        for (slot_idx, &tbl_idx) in nodes.iter().enumerate() {
+            let pos = Pos2::new(
+                start_x + (l_idx as f32) * x_spacing,
+                start_y + (slot_idx as f32) * y_spacing,
+            );
+            positions.insert(schema.tables[tbl_idx].name.clone(), pos);
+        }
+    }
+    positions
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+pub fn export_er_to_svg(schema: &DatabaseSchema, positions: &HashMap<String, Pos2>) -> String {
+    let card_w = 220.0_f32;
+    let header_h = 30.0_f32;
+    let row_h = 18.0_f32;
+    let padding = 40.0_f32;
+
+    let mut rects: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for (idx, table) in schema.tables.iter().enumerate() {
+        let pos = positions.get(&table.name).copied().unwrap_or_else(|| {
+            Pos2::new(
+                40.0 + ((idx % 3) as f32) * 300.0,
+                40.0 + ((idx / 3) as f32) * 240.0,
+            )
+        });
+        let visible_cols = table.columns.len().min(12) as f32;
+        let extra_row = if table.columns.len() > 12 { 18.0 } else { 8.0 };
+        let h = header_h + visible_cols * row_h + extra_row;
+        rects.insert(table.name.clone(), (pos.x, pos.y, card_w, h));
+        min_x = min_x.min(pos.x);
+        min_y = min_y.min(pos.y);
+        max_x = max_x.max(pos.x + card_w);
+        max_y = max_y.max(pos.y + h);
+    }
+
+    if !min_x.is_finite() {
+        min_x = 0.0;
+        min_y = 0.0;
+        max_x = 400.0;
+        max_y = 200.0;
+    }
+
+    let vx = min_x - padding;
+    let vy = min_y - padding;
+    let vw = (max_x - min_x + padding * 2.0).max(200.0);
+    let vh = (max_y - min_y + padding * 2.0).max(160.0);
+
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{vw:.0}" height="{vh:.0}" viewBox="{vx:.1} {vy:.1} {vw:.1} {vh:.1}" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+  <defs>
+    <marker id="fk-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,1 L7,4 L0,7 Z" fill="#38bdf8" />
+    </marker>
+  </defs>
+  <rect x="{vx:.1}" y="{vy:.1}" width="{vw:.1}" height="{vh:.1}" fill="#0f172a" />
+"##
+    );
+
+    // Draw FK edges
+    for table in &schema.tables {
+        let Some(&(cx, cy, cw, ch)) = rects.get(&table.name) else {
+            continue;
+        };
+        for fk in &table.foreign_keys {
+            let Some(&(px, py, pw, ph)) = rects.get(&fk.referenced_table) else {
+                continue;
+            };
+            let start_x = if cx >= px + pw { cx } else { cx + cw };
+            let start_y = cy + ch * 0.5;
+            let end_x = if cx >= px + pw { px + pw } else { px };
+            let end_y = py + ph * 0.5;
+            let ctrl_dx = ((end_x - start_x).abs() * 0.5).max(40.0);
+            let c1x = if start_x < end_x {
+                start_x + ctrl_dx
+            } else {
+                start_x - ctrl_dx
+            };
+            let c2x = if start_x < end_x {
+                end_x - ctrl_dx
+            } else {
+                end_x + ctrl_dx
+            };
+            svg.push_str(&format!(
+                r##"  <path d="M{start_x:.1},{start_y:.1} C{c1x:.1},{start_y:.1} {c2x:.1},{end_y:.1} {end_x:.1},{end_y:.1}" fill="none" stroke="#38bdf8" stroke-width="1.6" stroke-opacity="0.75" marker-end="url(#fk-arrow)" />
+"##
+            ));
+        }
+    }
+
+    // Draw table cards
+    for table in &schema.tables {
+        let Some(&(x, y, w, h)) = rects.get(&table.name) else {
+            continue;
+        };
+        let fk_cols: HashSet<&str> = table
+            .foreign_keys
+            .iter()
+            .map(|f| f.column_name.as_str())
+            .collect();
+        let tname = xml_escape(&table.name);
+        svg.push_str(&format!(
+            r##"  <g>
+    <rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.2" />
+    <rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{header_h:.1}" rx="6" fill="#0f172a" />
+    <text x="{tx:.1}" y="{ty:.1}" fill="#38bdf8" font-size="12" font-weight="bold">{tname}</text>
+"##,
+            tx = x + 10.0,
+            ty = y + 20.0
+        ));
+
+        for (i, col) in table.columns.iter().take(12).enumerate() {
+            let cy = y + header_h + 14.0 + (i as f32) * row_h;
+            let badge = if col.is_primary_key {
+                "PK "
+            } else if fk_cols.contains(col.name.as_str()) {
+                "FK "
+            } else {
+                "   "
+            };
+            let badge_color = if col.is_primary_key {
+                "#facc15"
+            } else if fk_cols.contains(col.name.as_str()) {
+                "#38bdf8"
+            } else {
+                "#94a3b8"
+            };
+            let cname = xml_escape(&col.name);
+            let ctype = xml_escape(&col.data_type);
+            svg.push_str(&format!(
+                r##"    <text x="{lx:.1}" y="{cy:.1}" fill="{badge_color}" font-size="10">{badge}</text>
+    <text x="{nx:.1}" y="{cy:.1}" fill="#e2e8f0" font-size="10">{cname}</text>
+    <text x="{rx:.1}" y="{cy:.1}" fill="#94a3b8" font-size="10" text-anchor="end">{ctype}</text>
+"##,
+                lx = x + 8.0,
+                nx = x + 28.0,
+                rx = x + w - 8.0,
+            ));
+        }
+
+        if table.columns.len() > 12 {
+            let cy = y + header_h + 14.0 + 12.0 * row_h;
+            svg.push_str(&format!(
+                r##"    <text x="{mx:.1}" y="{cy:.1}" fill="#64748b" font-size="10" text-anchor="middle">+ {more} more columns</text>
+"##,
+                mx = x + w * 0.5,
+                more = table.columns.len() - 12
+            ));
+        }
+        svg.push_str("  </g>\n");
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
+pub fn export_er_to_png(
+    schema: &DatabaseSchema,
+    positions: &HashMap<String, Pos2>,
+) -> Result<Vec<u8>> {
+    let svg = export_er_to_svg(schema, positions);
+    let mut opts = resvg::usvg::Options::default();
+    opts.fontdb_mut().load_system_fonts();
+    let tree = resvg::usvg::Tree::from_str(&svg, &opts)
+        .map_err(|e| anyhow!("Failed to parse generated ER SVG: {e}"))?;
+    let size = tree.size().to_int_size();
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())
+        .ok_or_else(|| anyhow!("Failed to allocate PNG pixmap"))?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    pixmap
+        .encode_png()
+        .context("Failed to encode ER diagram as PNG")
 }
 
 #[allow(dead_code)]
@@ -36,19 +347,7 @@ impl ErCanvasState {
     }
 
     pub fn auto_layout(&mut self, schema: &DatabaseSchema) {
-        let cols_per_row = 3;
-        let x_spacing = 290.0;
-        let y_spacing = 240.0;
-        let start_x = 40.0;
-        let start_y = 30.0;
-
-        self.node_positions.clear();
-        for (i, table) in schema.tables.iter().enumerate() {
-            let col = (i % cols_per_row) as f32;
-            let row = (i / cols_per_row) as f32;
-            let pos = Pos2::new(start_x + col * x_spacing, start_y + row * y_spacing);
-            self.node_positions.insert(table.name.clone(), pos);
-        }
+        self.node_positions = compute_auto_layout(schema);
     }
 
     pub fn reset_zoom(&mut self) {
@@ -77,11 +376,36 @@ impl ErCanvasState {
             ui.separator();
 
             if ui
-                .button("Auto-Layout")
-                .on_hover_text("Rearrange table nodes into a clean grid")
+                .button("Auto-Arrange")
+                .on_hover_text("Arrange tables by foreign-key hierarchy")
                 .clicked()
             {
                 self.auto_layout(schema);
+            }
+            if ui.button("Export SVG").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_file_name(format!("{}_er.svg", schema.name))
+                    .add_filter("SVG", &["svg"])
+                    .save_file()
+            {
+                let svg = export_er_to_svg(schema, &self.node_positions);
+                self.export_status = match std::fs::write(&path, svg) {
+                    Ok(()) => Some(format!("Exported SVG to {}", path.display())),
+                    Err(e) => Some(format!("SVG export failed: {e}")),
+                };
+            }
+            if ui.button("Export PNG").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_file_name(format!("{}_er.png", schema.name))
+                    .add_filter("PNG", &["png"])
+                    .save_file()
+            {
+                self.export_status = match export_er_to_png(schema, &self.node_positions)
+                    .and_then(|bytes| std::fs::write(&path, bytes).map_err(Into::into))
+                {
+                    Ok(()) => Some(format!("Exported PNG to {}", path.display())),
+                    Err(e) => Some(format!("PNG export failed: {e}")),
+                };
             }
             if ui.button("Reset Zoom").clicked() {
                 self.reset_zoom();
@@ -400,5 +724,32 @@ impl ErCanvasState {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_er_auto_layout_and_svg_png_export() {
+        let schema = crate::demo::build_demo_schema("ecommerce_prod");
+        let positions = compute_auto_layout(&schema);
+        assert_eq!(positions.len(), schema.tables.len());
+
+        // Ensure no two tables overlap at identical coordinates
+        let unique_coords: HashSet<(i32, i32)> = positions
+            .values()
+            .map(|p| (p.x.round() as i32, p.y.round() as i32))
+            .collect();
+        assert_eq!(unique_coords.len(), schema.tables.len());
+
+        let svg = export_er_to_svg(&schema, &positions);
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains("users"));
+        assert!(svg.contains("orders"));
+
+        let png = export_er_to_png(&schema, &positions).unwrap();
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
     }
 }
