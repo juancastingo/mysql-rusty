@@ -112,6 +112,7 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 }
 
 fn main() -> eframe::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let _log_guard = init_logging();
 
     let args: Vec<String> = std::env::args().collect();
