@@ -163,6 +163,9 @@ pub struct QueryTab {
     pub multi_results: Vec<QueryResult>,
     pub active_result_idx: usize,
     pub multi_result_layout: MultiResultLayout,
+    pub multi_result_heights: HashMap<usize, f32>,
+    pub multi_result_collapsed: HashMap<usize, bool>,
+    pub multi_result_columns: Option<usize>,
     pub last_error: Option<String>,
     pub query_params: HashMap<String, String>,
     pub row_filter: String,
@@ -202,6 +205,9 @@ impl QueryTab {
             multi_results: Vec::new(),
             active_result_idx: 0,
             multi_result_layout: MultiResultLayout::Tabs,
+            multi_result_heights: HashMap::new(),
+            multi_result_collapsed: HashMap::new(),
+            multi_result_columns: None,
             last_error: None,
             query_params: HashMap::new(),
             row_filter: String::new(),
@@ -3712,6 +3718,39 @@ impl MysqlRustyApp {
                                 .small()
                                 .color(Color32::from_rgb(148, 163, 184)),
                         );
+                        if tab.multi_result_layout == MultiResultLayout::SideBySide {
+                            ui.separator();
+                            ui.label(RichText::new("Cols:").small().weak());
+                            let current_cols_label = match tab.multi_result_columns {
+                                None => "Auto".to_string(),
+                                Some(c) => format!("{c}"),
+                            };
+                            egui::ComboBox::from_id_salt("multi_res_cols_combo")
+                                .selected_text(current_cols_label)
+                                .width(58.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut tab.multi_result_columns, None, "Auto");
+                                    for c in [1usize, 2, 3, 4] {
+                                        ui.selectable_value(
+                                            &mut tab.multi_result_columns,
+                                            Some(c),
+                                            format!("{c}"),
+                                        );
+                                    }
+                                });
+                        }
+                        ui.separator();
+                        if ui.small_button("▾ Expand All").clicked() {
+                            tab.multi_result_collapsed.clear();
+                        }
+                        if ui.small_button("▸ Collapse All").clicked() {
+                            for i in 0..tab.multi_results.len() {
+                                tab.multi_result_collapsed.insert(i, true);
+                            }
+                        }
+                        if ui.small_button("↺ Reset Size").on_hover_text("Reset custom card heights").clicked() {
+                            tab.multi_result_heights.clear();
+                        }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4311,6 +4350,11 @@ impl MysqlRustyApp {
         let mut focus_idx: Option<usize> = None;
         let results_snapshot = tab.multi_results.clone();
         let layout = tab.multi_result_layout;
+        let default_height = match layout {
+            MultiResultLayout::Stacked => 220.0,
+            MultiResultLayout::SideBySide => 260.0,
+            MultiResultLayout::Tabs => 240.0,
+        };
 
         egui::ScrollArea::vertical()
             .id_salt("multi_results_split_scroll")
@@ -4318,18 +4362,30 @@ impl MysqlRustyApp {
             .show(ui, |ui| match layout {
                 MultiResultLayout::Stacked => {
                     for (idx, res) in results_snapshot.iter().enumerate() {
-                        if let Some(f) = Self::render_compact_result_card(ui, idx, res, 220.0) {
+                        let height = tab
+                            .multi_result_heights
+                            .entry(idx)
+                            .or_insert(default_height);
+                        let collapsed = tab
+                            .multi_result_collapsed
+                            .entry(idx)
+                            .or_insert(false);
+                        if let Some(f) =
+                            Self::render_compact_result_card(ui, idx, res, height, collapsed)
+                        {
                             focus_idx = Some(f);
                         }
                         ui.add_space(6.0);
                     }
                 }
                 MultiResultLayout::SideBySide => {
-                    let cols_per_row = if results_snapshot.len() >= 3 && ui.available_width() >= 1100.0 {
-                        3
-                    } else {
-                        2
-                    };
+                    let cols_per_row = tab.multi_result_columns.unwrap_or_else(|| {
+                        if results_snapshot.len() >= 3 && ui.available_width() >= 1100.0 {
+                            3
+                        } else {
+                            2
+                        }
+                    }).max(1);
                     for chunk_start in (0..results_snapshot.len()).step_by(cols_per_row) {
                         let chunk_end = (chunk_start + cols_per_row).min(results_snapshot.len());
                         let count = chunk_end - chunk_start;
@@ -4337,11 +4393,20 @@ impl MysqlRustyApp {
                             for offset in 0..count {
                                 let idx = chunk_start + offset;
                                 let res = &results_snapshot[idx];
+                                let height = tab
+                                    .multi_result_heights
+                                    .entry(idx)
+                                    .or_insert(default_height);
+                                let collapsed = tab
+                                    .multi_result_collapsed
+                                    .entry(idx)
+                                    .or_insert(false);
                                 if let Some(f) = Self::render_compact_result_card(
                                     &mut columns[offset],
                                     idx,
                                     res,
-                                    260.0,
+                                    height,
+                                    collapsed,
                                 ) {
                                     focus_idx = Some(f);
                                 }
@@ -4368,7 +4433,8 @@ impl MysqlRustyApp {
         ui: &mut Ui,
         idx: usize,
         res: &QueryResult,
-        max_table_height: f32,
+        max_table_height: &mut f32,
+        collapsed: &mut bool,
     ) -> Option<usize> {
         let mut focus_clicked = false;
         let frame = egui::Frame::group(ui.style())
@@ -4380,6 +4446,14 @@ impl MysqlRustyApp {
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
+                let toggle_icon = if *collapsed { "▸" } else { "▾" };
+                if ui
+                    .small_button(toggle_icon)
+                    .on_hover_text(if *collapsed { "Expand result" } else { "Collapse result" })
+                    .clicked()
+                {
+                    *collapsed = !*collapsed;
+                }
                 ui.label(
                     RichText::new(format!("Result #{}", idx + 1))
                         .strong()
@@ -4391,8 +4465,8 @@ impl MysqlRustyApp {
                         .color(Color32::from_rgb(148, 163, 184)),
                 );
                 let sql_preview: String = res.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-                let short_sql = if sql_preview.len() > 42 {
-                    format!("{}...", &sql_preview[..42])
+                let short_sql = if sql_preview.len() > 36 {
+                    format!("{}...", &sql_preview[..36])
                 } else {
                     sql_preview.clone()
                 };
@@ -4405,6 +4479,20 @@ impl MysqlRustyApp {
                     if ui.small_button("🔍 Tab").on_hover_text("Focus this result in single-tab view").clicked() {
                         focus_clicked = true;
                     }
+                    if !*collapsed {
+                        let expand_label = if *max_table_height >= 420.0 { "🗕" } else { "⇕" };
+                        if ui
+                            .small_button(expand_label)
+                            .on_hover_text("Toggle taller / compact height (or drag bottom edge)")
+                            .clicked()
+                        {
+                            *max_table_height = if *max_table_height >= 420.0 {
+                                240.0
+                            } else {
+                                500.0
+                            };
+                        }
+                    }
                     if ui.small_button("📋 CSV").on_hover_text("Copy this result as CSV").clicked() {
                         if let Ok(csv_text) = to_csv_string(res) {
                             ui.ctx().copy_text(csv_text);
@@ -4412,6 +4500,10 @@ impl MysqlRustyApp {
                     }
                 });
             });
+
+            if *collapsed {
+                return;
+            }
 
             ui.separator();
 
@@ -4431,7 +4523,7 @@ impl MysqlRustyApp {
                             .striped(true)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .max_scroll_height(max_table_height)
+                            .max_scroll_height(*max_table_height)
                             .columns(Column::initial(col_width).at_least(60.0), num_cols);
 
                         table
@@ -4478,6 +4570,30 @@ impl MysqlRustyApp {
                             });
                     });
             });
+
+            // Vertical resize drag handle at the bottom edge of the card
+            let (handle_rect, handle_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 7.0),
+                egui::Sense::click_and_drag(),
+            );
+            let line_color = if handle_resp.hovered() || handle_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                Color32::from_rgb(56, 189, 248)
+            } else {
+                Color32::from_rgb(51, 65, 85)
+            };
+            let center_y = handle_rect.center().y;
+            let bar_half_w = 24.0_f32.min(handle_rect.width() * 0.25);
+            ui.painter().line_segment(
+                [
+                    egui::pos2(handle_rect.center().x - bar_half_w, center_y),
+                    egui::pos2(handle_rect.center().x + bar_half_w, center_y),
+                ],
+                Stroke::new(2.0, line_color),
+            );
+            if handle_resp.dragged() {
+                *max_table_height = (*max_table_height + handle_resp.drag_delta().y).clamp(80.0, 900.0);
+            }
         });
 
         if focus_clicked {
