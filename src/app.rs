@@ -2201,7 +2201,7 @@ impl MysqlRustyApp {
             ui.horizontal(|ui| {
                 if ui
                     .small_button(format!(
-                        "🗑 Recycle Bin ({})",
+                        "Recycle Bin ({})",
                         self.config.trashed_connections.len()
                     ))
                     .on_hover_text("View and restore deleted connections")
@@ -2806,7 +2806,7 @@ impl MysqlRustyApp {
                         ui.add_space(8.0);
                         if ui
                             .button(format!(
-                                "🗑 Recycle Bin ({})",
+                                "Recycle Bin ({})",
                                 self.config.trashed_connections.len()
                             ))
                             .on_hover_text("Restore or permanently delete trashed connections")
@@ -3804,17 +3804,17 @@ impl MysqlRustyApp {
                         ui.selectable_value(
                             &mut tab.multi_result_layout,
                             MultiResultLayout::SideBySide,
-                            "◫ Side-by-Side",
+                            "Side-by-Side",
                         );
                         ui.selectable_value(
                             &mut tab.multi_result_layout,
                             MultiResultLayout::Stacked,
-                            "⊞ Stacked",
+                            "Stacked",
                         );
                         ui.selectable_value(
                             &mut tab.multi_result_layout,
                             MultiResultLayout::Tabs,
-                            "📑 Tabs",
+                            "Tabs",
                         );
                     });
                 });
@@ -4526,7 +4526,7 @@ impl MysqlRustyApp {
                         focus_clicked = true;
                     }
                     if !*collapsed {
-                        let expand_label = if *max_table_height >= 420.0 { "🗕" } else { "⇕" };
+                        let expand_label = if *max_table_height >= 420.0 { "Compact" } else { "Expand" };
                         if ui
                             .small_button(expand_label)
                             .on_hover_text("Toggle taller / compact height (or drag bottom edge)")
@@ -6839,7 +6839,7 @@ impl MysqlRustyApp {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     let del_btn = egui::Button::new(
-                        RichText::new("🗑 Move to Trash").strong().color(Color32::WHITE),
+                        RichText::new("Move to Trash").strong().color(Color32::WHITE),
                     )
                     .fill(Color32::from_rgb(185, 28, 28));
                     if ui.add(del_btn).clicked() {
@@ -6885,7 +6885,7 @@ impl MysqlRustyApp {
         let mut purge_idx: Option<usize> = None;
         let mut empty_all = false;
 
-        egui::Window::new("🗑 Connection Recycle Bin")
+        egui::Window::new("Connection Recycle Bin")
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -6950,11 +6950,11 @@ impl MysqlRustyApp {
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
-                                                if ui.small_button("🗑 Delete Forever").clicked() {
+                                                if ui.small_button("Delete Forever").clicked() {
                                                     purge_idx = Some(idx);
                                                 }
                                                 let restore_btn = egui::Button::new(
-                                                    RichText::new("♻ Restore")
+                                                    RichText::new("Restore")
                                                         .small()
                                                         .strong()
                                                         .color(Color32::WHITE),
