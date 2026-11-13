@@ -1,0 +1,193 @@
+use super::super::*;
+
+impl MysqlRustyApp {
+    pub(crate) fn render_table_designer_modal(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.table_designer_draft.take() else {
+            return;
+        };
+        let mut keep_open = true;
+        let mut action = TableDesignerAction::None;
+
+        egui::Window::new("Visual Table Designer")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([740.0, 580.0])
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                action = draft.render_editor(ui);
+            });
+
+        if !keep_open || action == TableDesignerAction::Close {
+            self.table_designer_draft = None;
+        } else {
+            match action {
+                TableDesignerAction::ApplyDdl(ddl) => {
+                    self.table_designer_draft = None;
+                    self.execute_sql_in_current_tab(ddl, None);
+                    self.reload_active_schema();
+                }
+                TableDesignerAction::OpenInQueryTab(ddl) => {
+                    self.table_designer_draft = None;
+                    let n = self.tabs.len() + 1;
+                    self.tabs.push(QueryTab::new(format!("DDL {n}"), ddl));
+                    self.active_tab_idx = self.tabs.len() - 1;
+                }
+                TableDesignerAction::None => {
+                    self.table_designer_draft = Some(draft);
+                }
+                TableDesignerAction::Close => {
+                    self.table_designer_draft = None;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn render_table_action_modal(&mut self, ctx: &egui::Context) {
+        let Some((db_name, table_name, mut new_name)) = self.table_action_modal.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut sql_to_run: Option<String> = None;
+        let mut close_now = false;
+
+        egui::Window::new(format!("Table Actions: `{table_name}`"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Duplicate Table").strong());
+                ui.horizontal(|ui| {
+                    ui.label("New name:");
+                    ui.text_edit_singleline(&mut new_name);
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Duplicate Structure Only").clicked() && !new_name.trim().is_empty() {
+                        sql_to_run = Some(format!(
+                            "CREATE TABLE `{db_name}`.`{}` LIKE `{db_name}`.`{table_name}`;",
+                            new_name.trim()
+                        ));
+                        close_now = true;
+                    }
+                    if ui.button("Duplicate Structure + Data").clicked() && !new_name.trim().is_empty() {
+                        let target = new_name.trim();
+                        sql_to_run = Some(format!(
+                            "CREATE TABLE `{db_name}`.`{target}` LIKE `{db_name}`.`{table_name}`;\nINSERT INTO `{db_name}`.`{target}` SELECT * FROM `{db_name}`.`{table_name}`;"
+                        ));
+                        close_now = true;
+                    }
+                });
+                ui.separator();
+                ui.label(RichText::new("Danger Zone").strong().color(Color32::from_rgb(248, 113, 113)));
+                if ui
+                    .button(RichText::new("Truncate Table").color(Color32::from_rgb(248, 113, 113)))
+                    .clicked()
+                {
+                    sql_to_run = Some(format!("TRUNCATE TABLE `{db_name}`.`{table_name}`;"));
+                    close_now = true;
+                }
+            });
+
+        if close_now || !open {
+            self.table_action_modal = None;
+        } else {
+            self.table_action_modal = Some((db_name, table_name.clone(), new_name));
+        }
+
+        if let Some(sql) = sql_to_run {
+            self.tabs
+                .push(QueryTab::new(format!("Action {table_name}"), sql));
+            self.active_tab_idx = self.tabs.len() - 1;
+            self.execute_current_tab_query(None);
+        }
+    }
+
+    pub(crate) fn render_table_info_modal(&mut self, ctx: &egui::Context) {
+        let Some((db_name, tbl, mut subtab)) = self.table_info_modal.clone() else {
+            return;
+        };
+        let mut open = true;
+
+        egui::Window::new(format!("Table Info: `{db_name}`.`{}`", tbl.name))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(580.0)
+            .default_height(400.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut subtab, 0, format!("Columns ({})", tbl.columns.len()));
+                    ui.selectable_value(
+                        &mut subtab,
+                        1,
+                        format!("Foreign Keys ({})", tbl.foreign_keys.len()),
+                    );
+                    ui.selectable_value(&mut subtab, 2, "DDL");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("~{} rows", tbl.approx_rows))
+                                .small()
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                    });
+                });
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| match subtab {
+                    0 => {
+                        for col in &tbl.columns {
+                            ui.horizontal(|ui| {
+                                let pk = if col.is_primary_key { "[PK] " } else { "" };
+                                ui.label(RichText::new(format!("{pk}{}", col.name)).strong());
+                                ui.label(
+                                    RichText::new(&col.data_type)
+                                        .color(Color32::from_rgb(56, 189, 248)),
+                                );
+                                if !col.is_nullable {
+                                    ui.label(RichText::new("NOT NULL").small().weak());
+                                }
+                                if let Some(def) = &col.default_value {
+                                    ui.label(
+                                        RichText::new(format!("DEFAULT {def}")).small().weak(),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    1 => {
+                        if tbl.foreign_keys.is_empty() {
+                            ui.label(RichText::new("No foreign keys defined.").weak());
+                        } else {
+                            for fk in &tbl.foreign_keys {
+                                ui.label(format!(
+                                    "{} -> {}.{}",
+                                    fk.column_name, fk.referenced_table, fk.referenced_column
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        let mut ddl = format_table_create_ddl(&tbl);
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Copy DDL").clicked() {
+                                ui.ctx().copy_text(ddl.clone());
+                            }
+                        });
+                        ui.add(
+                            egui::TextEdit::multiline(&mut ddl)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                });
+            });
+
+        if !open {
+            self.table_info_modal = None;
+        } else {
+            self.table_info_modal = Some((db_name, tbl, subtab));
+        }
+    }
+}
