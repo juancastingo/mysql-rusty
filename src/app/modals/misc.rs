@@ -301,6 +301,7 @@ impl MysqlRustyApp {
             OpenTable(String),
             OpenSnippet { title: String, sql: String },
             OpenLogsFolder,
+            OpenRunSqlFile,
         }
 
         struct PaletteEntry {
@@ -376,6 +377,12 @@ impl MysqlRustyApp {
                 label: "Open logs folder".to_string(),
                 detail: "Open application log directory in file manager".to_string(),
                 action: PaletteAction::OpenLogsFolder,
+            },
+            PaletteEntry {
+                category: "Action",
+                label: "Run SQL file...".to_string(),
+                detail: "Stream and execute a large .sql dump file".to_string(),
+                action: PaletteAction::OpenRunSqlFile,
             },
         ];
 
@@ -566,6 +573,22 @@ impl MysqlRustyApp {
                         tracing::warn!(error = %err, dir = %dir.display(), "Failed to open logs folder");
                         self.status_banner = format!("Logs folder: {}", dir.display());
                     }
+                }
+                PaletteAction::OpenRunSqlFile => {
+                    self.restore_modal = Some(RestoreModalState {
+                        file_path: None,
+                        database: self.active_database.clone(),
+                        policy: crate::backup::OnError::Stop,
+                        running: false,
+                        cancel: None,
+                        bytes_done: 0,
+                        bytes_total: 0,
+                        statements_ok: 0,
+                        statements_failed: 0,
+                        errors: Vec::new(),
+                        status: None,
+                        prod_confirm_input: String::new(),
+                    });
                 }
                 PaletteAction::NewTableDesigner => {
                     self.table_designer_draft = Some(TableDraft::new_empty("new_table"));

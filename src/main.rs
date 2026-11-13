@@ -11,6 +11,7 @@ mod er_diagram;
 mod export;
 mod history;
 mod schema_diff;
+mod sql_reader;
 mod syntax;
 mod table_designer;
 #[cfg(test)]

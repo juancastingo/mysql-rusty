@@ -914,4 +914,193 @@ impl MysqlRustyApp {
             self.backup_modal = None;
         }
     }
+
+    pub(crate) fn render_restore_modal(&mut self, ctx: &egui::Context) {
+        let active_profile = self
+            .active_profile_id
+            .as_ref()
+            .and_then(|id| self.config.connections.iter().find(|p| &p.id == id))
+            .cloned();
+        let is_read_only = active_profile.as_ref().is_some_and(|p| p.read_only);
+        let is_production = active_profile
+            .as_ref()
+            .is_some_and(|p| p.environment == Environment::Production);
+
+        let databases = self.databases.clone();
+        let Some(state) = self.restore_modal.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut start_restore = false;
+        let mut cancel_restore = false;
+
+        egui::Window::new("Run SQL File (Streaming Restore)")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                ui.add_enabled_ui(!state.running, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("SQL file:");
+                        let path_label = state
+                            .file_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(none selected)".to_string());
+                        ui.label(RichText::new(path_label).monospace().small());
+                        if ui.button("Browse...").clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .add_filter("SQL Files", &["sql"])
+                                .pick_file()
+                        {
+                            state.file_path = Some(p);
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Target database:");
+                        egui::ComboBox::from_id_salt("restore_target_db")
+                            .selected_text(if state.database.is_empty() {
+                                "(none)"
+                            } else {
+                                &state.database
+                            })
+                            .show_ui(ui, |ui| {
+                                for db in &databases {
+                                    ui.selectable_value(&mut state.database, db.clone(), db);
+                                }
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("On error:");
+                        ui.radio_value(&mut state.policy, crate::backup::OnError::Stop, "Stop");
+                        ui.radio_value(
+                            &mut state.policy,
+                            crate::backup::OnError::Continue,
+                            "Continue",
+                        );
+                    });
+                });
+
+                if is_read_only {
+                    ui.colored_label(
+                        Color32::from_rgb(248, 113, 113),
+                        "Refused: active connection is marked Read-Only.",
+                    );
+                } else if is_production && !state.running {
+                    ui.colored_label(
+                        Color32::from_rgb(251, 191, 36),
+                        format!(
+                            "Production environment: type '{}' to confirm execution:",
+                            state.database
+                        ),
+                    );
+                    ui.text_edit_singleline(&mut state.prod_confirm_input);
+                }
+
+                ui.separator();
+                let frac = if state.bytes_total > 0 {
+                    (state.bytes_done as f32 / state.bytes_total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if state.running || state.bytes_done > 0 {
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .text(format!(
+                                "{}/{} bytes | {} ok, {} failed",
+                                state.bytes_done,
+                                state.bytes_total,
+                                state.statements_ok,
+                                state.statements_failed
+                            ))
+                            .animate(state.running),
+                    );
+                }
+
+                if !state.errors.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("Errors (showing {}):", state.errors.len()))
+                            .color(Color32::from_rgb(248, 113, 113))
+                            .strong(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(150.0)
+                        .show(ui, |ui| {
+                            for err in &state.errors {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} -> {}",
+                                        err.statement_preview, err.message
+                                    ))
+                                    .monospace()
+                                    .small()
+                                    .color(Color32::from_rgb(248, 113, 113)),
+                                );
+                            }
+                        });
+                }
+
+                if let Some(status) = &state.status {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(status).small());
+                }
+
+                ui.add_space(6.0);
+                if state.running {
+                    if ui.button("Cancel").clicked() {
+                        cancel_restore = true;
+                    }
+                } else {
+                    let prod_ok = !is_production
+                        || (!state.database.is_empty()
+                            && state.prod_confirm_input == state.database);
+                    let can_start = !is_read_only && prod_ok && state.file_path.is_some();
+                    if ui
+                        .add_enabled(can_start, egui::Button::new("Start"))
+                        .clicked()
+                    {
+                        start_restore = true;
+                    }
+                }
+            });
+
+        if cancel_restore
+            && let Some(st) = self.restore_modal.as_ref()
+            && let Some(flag) = &st.cancel
+        {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if start_restore
+            && let Some(session) = self.active_session.clone()
+            && let Some(st) = self.restore_modal.as_mut()
+            && let Some(path) = st.file_path.clone()
+        {
+            let db = st.database.clone();
+            let policy = st.policy;
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            st.running = true;
+            st.cancel = Some(cancel.clone());
+            st.bytes_done = 0;
+            st.bytes_total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            st.statements_ok = 0;
+            st.statements_failed = 0;
+            st.errors.clear();
+            st.status = None;
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let _ = crate::backup::run_sql_file(session, db, path, policy, cancel, move |p| {
+                    let _ = tx.send(AsyncEvent::RestoreProgress(p));
+                })
+                .await;
+            });
+        }
+
+        if !open && self.restore_modal.as_ref().is_some_and(|m| !m.running) {
+            self.restore_modal = None;
+        }
+    }
 }

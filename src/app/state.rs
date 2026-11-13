@@ -61,6 +61,22 @@ pub enum AsyncEvent {
     HistoryLoaded(Vec<crate::history::HistoryRecord>),
     HistoryCleared,
     BackupProgress(crate::backup::BackupProgress),
+    RestoreProgress(crate::backup::RestoreProgress),
+}
+
+pub struct RestoreModalState {
+    pub file_path: Option<std::path::PathBuf>,
+    pub database: String,
+    pub policy: crate::backup::OnError,
+    pub running: bool,
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub statements_ok: u64,
+    pub statements_failed: u64,
+    pub errors: Vec<crate::backup::RestoreErrorEntry>,
+    pub status: Option<String>,
+    pub prod_confirm_input: String,
 }
 
 pub struct BackupModalState {

@@ -210,8 +210,9 @@ pub struct MysqlRustyApp {
     history_dirty: bool,
     history_confirm_clear: bool,
 
-    // Full Database Backup (#16)
+    // Full Database Backup (#16) & Streaming Restore (#17)
     backup_modal: Option<BackupModalState>,
+    restore_modal: Option<RestoreModalState>,
 }
 
 impl MysqlRustyApp {
@@ -381,6 +382,7 @@ impl MysqlRustyApp {
             history_dirty: true,
             history_confirm_clear: false,
             backup_modal: None,
+            restore_modal: None,
         }
     }
 }
@@ -597,5 +599,6 @@ impl eframe::App for MysqlRustyApp {
         self.render_table_action_modal(&ctx);
         self.render_table_info_modal(&ctx);
         self.render_backup_modal(&ctx);
+        self.render_restore_modal(&ctx);
     }
 }

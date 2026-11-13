@@ -618,6 +618,70 @@ impl MysqlRustyApp {
                         self.status_banner = msg;
                     }
                 },
+                AsyncEvent::RestoreProgress(p) => match p {
+                    crate::backup::RestoreProgress::Tick {
+                        bytes_done,
+                        bytes_total,
+                        statements_ok,
+                        statements_failed,
+                        last_error,
+                    } => {
+                        if let Some(m) = self.restore_modal.as_mut() {
+                            m.bytes_done = bytes_done;
+                            m.bytes_total = bytes_total;
+                            m.statements_ok = statements_ok;
+                            m.statements_failed = statements_failed;
+                            if let Some(err) = last_error
+                                && m.errors.len() < 100
+                            {
+                                m.errors.push(err);
+                            }
+                        }
+                    }
+                    crate::backup::RestoreProgress::Done {
+                        bytes_total,
+                        statements_ok,
+                        statements_failed,
+                    } => {
+                        let msg = format!(
+                            "SQL file finished: {statements_ok} succeeded, {statements_failed} failed."
+                        );
+                        if let Some(m) = self.restore_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.bytes_done = bytes_total;
+                            m.bytes_total = bytes_total;
+                            m.statements_ok = statements_ok;
+                            m.statements_failed = statements_failed;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                        self.reload_active_schema();
+                    }
+                    crate::backup::RestoreProgress::Failed(err) => {
+                        let msg = format!("Restore failed: {err}");
+                        if let Some(m) = self.restore_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                    }
+                    crate::backup::RestoreProgress::Cancelled {
+                        statements_ok,
+                        statements_failed,
+                    } => {
+                        let msg = format!(
+                            "Restore cancelled ({statements_ok} ok, {statements_failed} failed)."
+                        );
+                        if let Some(m) = self.restore_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                    }
+                },
             }
         }
     }

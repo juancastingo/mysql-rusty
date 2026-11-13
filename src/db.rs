@@ -1261,6 +1261,21 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn open_pool_conn(&self, db: &str) -> Result<mysql_async::Conn> {
+        match self {
+            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let db_trimmed = db.trim();
+                if !db_trimmed.is_empty() {
+                    let sql = format!("USE `{}`", db_trimmed.replace('`', "``"));
+                    conn.query_drop(sql).await?;
+                }
+                Ok(conn)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

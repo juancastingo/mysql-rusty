@@ -364,12 +364,33 @@ impl MysqlRustyApp {
                     activate_db = Some(db_name.clone());
                 }
                 let mut open_backup_for: Option<String> = None;
+                let mut open_restore_for: Option<String> = None;
                 db_resp.header_response.context_menu(|ui| {
                     if ui.button("Backup database...").clicked() {
                         open_backup_for = Some(db_name.clone());
                         ui.close();
                     }
+                    if ui.button("Run SQL file...").clicked() {
+                        open_restore_for = Some(db_name.clone());
+                        ui.close();
+                    }
                 });
+                if let Some(db) = open_restore_for {
+                    self.restore_modal = Some(RestoreModalState {
+                        file_path: None,
+                        database: db,
+                        policy: crate::backup::OnError::Stop,
+                        running: false,
+                        cancel: None,
+                        bytes_done: 0,
+                        bytes_total: 0,
+                        statements_ok: 0,
+                        statements_failed: 0,
+                        errors: Vec::new(),
+                        status: None,
+                        prod_confirm_input: String::new(),
+                    });
+                }
                 if let Some(db) = open_backup_for {
                     let all_tables: Vec<String> = self
                         .schemas

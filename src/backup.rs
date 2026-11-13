@@ -2,12 +2,15 @@ use crate::db::ActiveSession;
 #[cfg(test)]
 use crate::db::CellValue;
 use crate::export::sql_literal;
+use crate::sql_reader::SqlStatementReader;
 use anyhow::Result;
+use mysql_async::prelude::Queryable;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct BackupOptions {
@@ -252,6 +255,133 @@ async fn run_backup_inner(
     writer.write_all(format_backup_footer().as_bytes())?;
     writer.flush()?;
     Ok(true)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnError {
+    Stop,
+    Continue,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreErrorEntry {
+    pub statement_preview: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum RestoreProgress {
+    Tick {
+        bytes_done: u64,
+        bytes_total: u64,
+        statements_ok: u64,
+        statements_failed: u64,
+        last_error: Option<RestoreErrorEntry>,
+    },
+    Done {
+        bytes_total: u64,
+        statements_ok: u64,
+        statements_failed: u64,
+    },
+    Failed(String),
+    Cancelled {
+        statements_ok: u64,
+        statements_failed: u64,
+    },
+}
+
+pub async fn run_sql_file(
+    session: Arc<ActiveSession>,
+    database: String,
+    path: PathBuf,
+    policy: OnError,
+    cancel: Arc<AtomicBool>,
+    progress: impl Fn(RestoreProgress) + Send + 'static,
+) -> Result<()> {
+    let bytes_total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            let msg = format!("Failed to open {}: {e}", path.display());
+            progress(RestoreProgress::Failed(msg.clone()));
+            return Err(anyhow::anyhow!(msg));
+        }
+    };
+
+    let mut conn = match session.open_pool_conn(&database).await {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            progress(RestoreProgress::Failed(msg.clone()));
+            return Err(e);
+        }
+    };
+
+    let mut reader = SqlStatementReader::new(BufReader::with_capacity(64 * 1024, file));
+    let mut statements_ok = 0u64;
+    let mut statements_failed = 0u64;
+    let mut last_tick = Instant::now();
+
+    while let Some(item) = reader.next() {
+        if cancel.load(Ordering::Relaxed) {
+            progress(RestoreProgress::Cancelled {
+                statements_ok,
+                statements_failed,
+            });
+            return Ok(());
+        }
+
+        let stmt = match item {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("I/O error reading SQL file: {e}");
+                progress(RestoreProgress::Failed(msg.clone()));
+                return Err(anyhow::anyhow!(msg));
+            }
+        };
+
+        let mut latest_err: Option<RestoreErrorEntry> = None;
+        if let Err(e) = conn.query_drop(&stmt).await {
+            statements_failed += 1;
+            let preview: String = stmt.chars().take(120).collect();
+            let entry = RestoreErrorEntry {
+                statement_preview: preview,
+                message: format!("{e:#}"),
+            };
+            latest_err = Some(entry.clone());
+            if policy == OnError::Stop {
+                progress(RestoreProgress::Tick {
+                    bytes_done: reader.bytes_read(),
+                    bytes_total,
+                    statements_ok,
+                    statements_failed,
+                    last_error: Some(entry.clone()),
+                });
+                progress(RestoreProgress::Failed(entry.message.clone()));
+                return Err(anyhow::anyhow!(entry.message));
+            }
+        } else {
+            statements_ok += 1;
+        }
+
+        if latest_err.is_some() || last_tick.elapsed().as_millis() >= 200 {
+            last_tick = Instant::now();
+            progress(RestoreProgress::Tick {
+                bytes_done: reader.bytes_read(),
+                bytes_total,
+                statements_ok,
+                statements_failed,
+                last_error: latest_err,
+            });
+        }
+    }
+
+    progress(RestoreProgress::Done {
+        bytes_total,
+        statements_ok,
+        statements_failed,
+    });
+    Ok(())
 }
 
 #[cfg(test)]
