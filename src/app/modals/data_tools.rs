@@ -754,4 +754,164 @@ impl MysqlRustyApp {
             });
         }
     }
+
+    pub(crate) fn render_backup_modal(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.backup_modal.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut start_backup = false;
+        let mut cancel_backup = false;
+        let db = state.database.clone();
+
+        egui::Window::new(format!("Backup Database — `{db}`"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(480.0)
+            .show(ctx, |ui| {
+                ui.add_enabled_ui(!state.running, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Tables").strong());
+                        if ui.small_button("All").clicked() {
+                            state.selected_tables = state.all_tables.iter().cloned().collect();
+                        }
+                        if ui.small_button("None").clicked() {
+                            state.selected_tables.clear();
+                        }
+                    });
+                    if state.all_tables.is_empty() {
+                        ui.label(
+                            RichText::new(
+                                "All tables in database will be discovered at backup time.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(150.0)
+                            .show(ui, |ui| {
+                                for tbl in &state.all_tables {
+                                    let mut checked = state.selected_tables.contains(tbl);
+                                    if ui.checkbox(&mut checked, tbl).changed() {
+                                        if checked {
+                                            state.selected_tables.insert(tbl.clone());
+                                        } else {
+                                            state.selected_tables.remove(tbl);
+                                        }
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.separator();
+                    ui.checkbox(&mut state.include_data, "Include row data (INSERT batches)");
+                    ui.checkbox(&mut state.include_drop, "Include DROP IF EXISTS");
+                    ui.checkbox(&mut state.include_views, "Include views");
+                    ui.checkbox(
+                        &mut state.include_routines,
+                        "Include procedures & functions",
+                    );
+                    ui.checkbox(&mut state.include_triggers, "Include triggers");
+                    ui.horizontal(|ui| {
+                        ui.label("Batch rows:");
+                        ui.add(
+                            egui::DragValue::new(&mut state.batch_rows)
+                                .range(1..=5000)
+                                .speed(25),
+                        );
+                    });
+                });
+
+                ui.separator();
+                if state.running {
+                    let frac = if state.table_total > 0 {
+                        state.table_index as f32 / state.table_total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .text(format!(
+                                "Table {}/{}: {} ({} rows)",
+                                state.table_index,
+                                state.table_total,
+                                state.current_table,
+                                state.rows_done
+                            ))
+                            .animate(true),
+                    );
+                    ui.add_space(6.0);
+                    if ui.button("Cancel").clicked() {
+                        cancel_backup = true;
+                    }
+                } else {
+                    if let Some(status) = &state.status {
+                        ui.label(RichText::new(status).small());
+                        ui.add_space(4.0);
+                    }
+                    if ui.button("Start Backup...").clicked() {
+                        start_backup = true;
+                    }
+                }
+            });
+
+        if cancel_backup
+            && let Some(st) = self.backup_modal.as_ref()
+            && let Some(flag) = &st.cancel
+        {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if start_backup
+            && let Some(session) = self.active_session.clone()
+            && let Some(st) = self.backup_modal.as_mut()
+        {
+            let default_name = format!(
+                "{}_{}.sql",
+                st.database,
+                chrono::Local::now().format("%Y%m%d_%H%M")
+            );
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(&default_name)
+                .add_filter("SQL", &["sql"])
+                .save_file()
+            {
+                let tables: Vec<String> = st
+                    .all_tables
+                    .iter()
+                    .filter(|t| st.selected_tables.contains(*t))
+                    .cloned()
+                    .collect();
+                let opts = crate::backup::BackupOptions {
+                    database: st.database.clone(),
+                    tables,
+                    include_data: st.include_data,
+                    include_drop: st.include_drop,
+                    include_views: st.include_views,
+                    include_routines: st.include_routines,
+                    include_triggers: st.include_triggers,
+                    batch_rows: st.batch_rows,
+                };
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                st.running = true;
+                st.cancel = Some(cancel.clone());
+                st.status = None;
+                st.table_index = 0;
+                st.table_total = 0;
+                st.rows_done = 0;
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    let _ = crate::backup::run_backup(session, opts, path, cancel, move |p| {
+                        let _ = tx.send(AsyncEvent::BackupProgress(p));
+                    })
+                    .await;
+                });
+            }
+        }
+
+        if !open && self.backup_modal.as_ref().is_some_and(|m| !m.running) {
+            self.backup_modal = None;
+        }
+    }
 }

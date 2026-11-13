@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod backup;
 mod config;
 mod data_diff;
 mod db;

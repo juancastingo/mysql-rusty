@@ -575,6 +575,49 @@ impl MysqlRustyApp {
                     self.history_has_more = false;
                     self.status_banner = "Query history cleared.".to_string();
                 }
+                AsyncEvent::BackupProgress(p) => match p {
+                    crate::backup::BackupProgress::Table { name, index, total } => {
+                        if let Some(m) = self.backup_modal.as_mut() {
+                            m.current_table = name;
+                            m.table_index = index;
+                            m.table_total = total;
+                            m.rows_done = 0;
+                        }
+                    }
+                    crate::backup::BackupProgress::Rows { table, done } => {
+                        if let Some(m) = self.backup_modal.as_mut() {
+                            m.current_table = table;
+                            m.rows_done = done;
+                        }
+                    }
+                    crate::backup::BackupProgress::Done { path, bytes } => {
+                        let msg = format!("Backup saved to {} ({bytes} bytes).", path.display());
+                        if let Some(m) = self.backup_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                    }
+                    crate::backup::BackupProgress::Failed(err) => {
+                        let msg = format!("Backup failed: {err}");
+                        if let Some(m) = self.backup_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                    }
+                    crate::backup::BackupProgress::Cancelled => {
+                        let msg = "Backup cancelled and partial file removed.".to_string();
+                        if let Some(m) = self.backup_modal.as_mut() {
+                            m.running = false;
+                            m.cancel = None;
+                            m.status = Some(msg.clone());
+                        }
+                        self.status_banner = msg;
+                    }
+                },
             }
         }
     }

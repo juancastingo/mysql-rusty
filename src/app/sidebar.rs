@@ -363,6 +363,39 @@ impl MysqlRustyApp {
                 if db_resp.header_response.clicked() && !is_active_db {
                     activate_db = Some(db_name.clone());
                 }
+                let mut open_backup_for: Option<String> = None;
+                db_resp.header_response.context_menu(|ui| {
+                    if ui.button("Backup database...").clicked() {
+                        open_backup_for = Some(db_name.clone());
+                        ui.close();
+                    }
+                });
+                if let Some(db) = open_backup_for {
+                    let all_tables: Vec<String> = self
+                        .schemas
+                        .get(&db)
+                        .map(|s| s.tables.iter().map(|t| t.name.clone()).collect())
+                        .unwrap_or_default();
+                    let selected_tables = all_tables.iter().cloned().collect();
+                    self.backup_modal = Some(BackupModalState {
+                        database: db,
+                        all_tables,
+                        selected_tables,
+                        include_data: true,
+                        include_drop: true,
+                        include_views: true,
+                        include_routines: true,
+                        include_triggers: true,
+                        batch_rows: 500,
+                        running: false,
+                        cancel: None,
+                        current_table: String::new(),
+                        table_index: 0,
+                        table_total: 0,
+                        rows_done: 0,
+                        status: None,
+                    });
+                }
             }
         });
 

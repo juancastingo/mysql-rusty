@@ -209,6 +209,9 @@ pub struct MysqlRustyApp {
     history_last_input: Option<std::time::Instant>,
     history_dirty: bool,
     history_confirm_clear: bool,
+
+    // Full Database Backup (#16)
+    backup_modal: Option<BackupModalState>,
 }
 
 impl MysqlRustyApp {
@@ -377,6 +380,7 @@ impl MysqlRustyApp {
             history_last_input: None,
             history_dirty: true,
             history_confirm_clear: false,
+            backup_modal: None,
         }
     }
 }
@@ -592,5 +596,6 @@ impl eframe::App for MysqlRustyApp {
         self.render_sql_dump_modal(&ctx);
         self.render_table_action_modal(&ctx);
         self.render_table_info_modal(&ctx);
+        self.render_backup_modal(&ctx);
     }
 }

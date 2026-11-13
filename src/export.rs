@@ -40,6 +40,32 @@ pub fn to_json_string(result: &QueryResult) -> Result<String> {
     Ok(serde_json::to_string_pretty(&items)?)
 }
 
+pub(crate) fn sql_literal(c: &CellValue) -> String {
+    match c {
+        CellValue::Null => "NULL".to_string(),
+        CellValue::Integer(i) => i.to_string(),
+        CellValue::Float(f) => {
+            if f.is_finite() {
+                f.to_string()
+            } else {
+                "NULL".to_string()
+            }
+        }
+        CellValue::Text(s) => format!(
+            "'{}'",
+            s.replace('\\', "\\\\")
+                .replace('\'', "''")
+                .replace('\0', "\\0")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+        ),
+        CellValue::Bytes(b) => {
+            let hex: String = b.iter().map(|byte| format!("{byte:02X}")).collect();
+            format!("X'{hex}'")
+        }
+    }
+}
+
 pub fn to_sql_inserts(result: &QueryResult, target_table: &str) -> String {
     let tbl = if target_table.trim().is_empty() {
         "exported_table"

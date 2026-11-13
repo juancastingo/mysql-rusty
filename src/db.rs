@@ -1137,6 +1137,139 @@ impl ActiveSession {
             }
         }
     }
+
+    pub async fn server_version(&self) -> Result<String> {
+        match self {
+            Self::DemoSandbox { .. } => Ok("8.4.0-demo".to_string()),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let ver: Option<String> = conn.query_first("SELECT VERSION()").await?;
+                Ok(ver.unwrap_or_else(|| "unknown".to_string()))
+            }
+        }
+    }
+
+    pub async fn show_create(&self, kind: &str, db: &str, name: &str) -> Result<String> {
+        match self {
+            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let q_db = db.replace('`', "``");
+                let q_name = name.replace('`', "``");
+                let (sql, col_idx) = match kind.to_ascii_uppercase().as_str() {
+                    "TABLE" => (format!("SHOW CREATE TABLE `{q_db}`.`{q_name}`"), 1usize),
+                    "VIEW" => (format!("SHOW CREATE VIEW `{q_db}`.`{q_name}`"), 1usize),
+                    "PROCEDURE" => (format!("SHOW CREATE PROCEDURE `{q_db}`.`{q_name}`"), 2usize),
+                    "FUNCTION" => (format!("SHOW CREATE FUNCTION `{q_db}`.`{q_name}`"), 2usize),
+                    "TRIGGER" => (format!("SHOW CREATE TRIGGER `{q_db}`.`{q_name}`"), 2usize),
+                    other => return Err(anyhow::anyhow!("Unsupported object kind: {other}")),
+                };
+                let row: Option<mysql_async::Row> = conn.query_first(sql).await?;
+                let row = row.ok_or_else(|| anyhow::anyhow!("{kind} `{db}`.`{name}` not found"))?;
+                row.get::<String, _>(col_idx)
+                    .ok_or_else(|| anyhow::anyhow!("Missing DDL in SHOW CREATE {kind} output"))
+            }
+        }
+    }
+
+    pub async fn list_objects(&self, db: &str) -> Result<DbObjects> {
+        match self {
+            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let tbl_rows: Vec<(String, String)> = conn
+                    .exec(
+                        "SELECT table_name, table_type FROM information_schema.TABLES WHERE table_schema = ? ORDER BY table_name",
+                        (db,),
+                    )
+                    .await?;
+                let mut out = DbObjects::default();
+                for (name, kind) in tbl_rows {
+                    if kind.eq_ignore_ascii_case("VIEW") {
+                        out.views.push(name);
+                    } else {
+                        out.tables.push(name);
+                    }
+                }
+                let routine_rows: Vec<(String, String)> = conn
+                    .exec(
+                        "SELECT routine_name, routine_type FROM information_schema.ROUTINES WHERE routine_schema = ? ORDER BY routine_name",
+                        (db,),
+                    )
+                    .await?;
+                for (name, kind) in routine_rows {
+                    if kind.eq_ignore_ascii_case("FUNCTION") {
+                        out.functions.push(name);
+                    } else {
+                        out.procedures.push(name);
+                    }
+                }
+                out.triggers = conn
+                    .exec(
+                        "SELECT trigger_name FROM information_schema.TRIGGERS WHERE trigger_schema = ? ORDER BY trigger_name",
+                        (db,),
+                    )
+                    .await?;
+                Ok(out)
+            }
+        }
+    }
+
+    pub async fn stream_rows<F>(
+        &self,
+        db: &str,
+        table: &str,
+        batch: usize,
+        mut on_batch: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[String], Vec<Vec<CellValue>>) -> Result<()>,
+    {
+        match self {
+            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::RealMysql { pool, .. } => {
+                let mut conn = pool.get_conn().await?;
+                let sql = format!(
+                    "SELECT * FROM `{}`.`{}`",
+                    db.replace('`', "``"),
+                    table.replace('`', "``")
+                );
+                let mut result = conn.query_iter(sql).await?;
+                let columns: Vec<String> = result
+                    .columns()
+                    .as_ref()
+                    .map(|cols| cols.iter().map(|c| c.name_str().into_owned()).collect())
+                    .unwrap_or_default();
+                let batch_cap = batch.max(1);
+                let mut buf: Vec<Vec<CellValue>> = Vec::with_capacity(batch_cap);
+                while let Some(mut row) = result.next().await? {
+                    let mut cells = Vec::with_capacity(columns.len());
+                    for idx in 0..columns.len() {
+                        let val = row.take::<Value, _>(idx).unwrap_or(Value::NULL);
+                        cells.push(CellValue::from_mysql_value(val));
+                    }
+                    buf.push(cells);
+                    if buf.len() >= batch_cap {
+                        let chunk = std::mem::replace(&mut buf, Vec::with_capacity(batch_cap));
+                        on_batch(&columns, chunk)?;
+                    }
+                }
+                if !buf.is_empty() {
+                    on_batch(&columns, buf)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DbObjects {
+    pub tables: Vec<String>,
+    pub views: Vec<String>,
+    pub procedures: Vec<String>,
+    pub functions: Vec<String>,
+    pub triggers: Vec<String>,
 }
 
 fn expand_tilde(path: &str) -> String {

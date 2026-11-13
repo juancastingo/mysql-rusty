@@ -60,6 +60,26 @@ pub enum AsyncEvent {
     Reconnected(Result<(String, Arc<ActiveSession>), String>),
     HistoryLoaded(Vec<crate::history::HistoryRecord>),
     HistoryCleared,
+    BackupProgress(crate::backup::BackupProgress),
+}
+
+pub struct BackupModalState {
+    pub database: String,
+    pub all_tables: Vec<String>,
+    pub selected_tables: std::collections::HashSet<String>,
+    pub include_data: bool,
+    pub include_drop: bool,
+    pub include_views: bool,
+    pub include_routines: bool,
+    pub include_triggers: bool,
+    pub batch_rows: usize,
+    pub running: bool,
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub current_table: String,
+    pub table_index: usize,
+    pub table_total: usize,
+    pub rows_done: u64,
+    pub status: Option<String>,
 }
 
 pub struct CsvImportWizard {
