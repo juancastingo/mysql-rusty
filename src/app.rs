@@ -356,6 +356,26 @@ pub struct MysqlRustyApp {
 
     // Scratchpad auto-save
     last_scratchpad_save: std::time::Instant,
+
+    // Multi-connection workspaces (Workbench-style top tabs)
+    open_workspaces: Vec<OpenConnectionWorkspace>,
+    active_workspace_idx: Option<usize>,
+}
+
+#[derive(Clone)]
+struct OpenConnectionWorkspace {
+    profile_id: String,
+    title: String,
+    env_color: (u8, u8, u8),
+    session: Arc<ActiveSession>,
+    databases: Vec<String>,
+    active_database: String,
+    schemas: HashMap<String, DatabaseSchema>,
+    tabs: Vec<QueryTab>,
+    active_tab_idx: usize,
+    in_transaction: bool,
+    uncommitted_mutations: usize,
+    er_state: ErCanvasState,
 }
 
 impl MysqlRustyApp {
@@ -462,20 +482,132 @@ impl MysqlRustyApp {
             copilot_auth_status: String::new(),
             is_copilot_authenticating: false,
             last_scratchpad_save: std::time::Instant::now(),
+            open_workspaces: Vec::new(),
+            active_workspace_idx: None,
+        }
+    }
+
+    fn save_active_workspace_snapshot(&mut self) {
+        let Some(idx) = self.active_workspace_idx else {
+            return;
+        };
+        if self.active_session.is_none() {
+            return;
+        }
+        if let Some(ws) = self.open_workspaces.get_mut(idx) {
+            ws.databases = self.databases.clone();
+            ws.active_database = self.active_database.clone();
+            ws.schemas = self.schemas.clone();
+            ws.tabs = self.tabs.clone();
+            ws.active_tab_idx = self.active_tab_idx;
+            ws.in_transaction = self.in_transaction;
+            ws.uncommitted_mutations = self.uncommitted_mutations;
+            ws.er_state = self.er_canvas_state.clone();
+        }
+    }
+
+    fn switch_to_workspace(&mut self, target_idx: Option<usize>) {
+        if self.active_workspace_idx == target_idx {
+            return;
+        }
+        self.save_active_workspace_snapshot();
+        match target_idx {
+            None => {
+                self.active_workspace_idx = None;
+                self.active_session = None;
+                self.active_profile_id = None;
+                self.databases.clear();
+                self.schemas.clear();
+                self.active_database.clear();
+                self.in_transaction = false;
+                self.uncommitted_mutations = 0;
+                self.sidebar_tab = SidebarTab::Connections;
+            }
+            Some(idx) => {
+                if let Some(ws) = self.open_workspaces.get(idx).cloned() {
+                    self.active_workspace_idx = Some(idx);
+                    self.active_profile_id = Some(ws.profile_id);
+                    self.active_session = Some(ws.session);
+                    self.databases = ws.databases;
+                    self.active_database = ws.active_database;
+                    self.schemas = ws.schemas;
+                    self.tabs = if ws.tabs.is_empty() {
+                        vec![QueryTab::new("Query 1", "")]
+                    } else {
+                        ws.tabs
+                    };
+                    self.active_tab_idx = ws.active_tab_idx.min(self.tabs.len().saturating_sub(1));
+                    self.in_transaction = ws.in_transaction;
+                    self.uncommitted_mutations = ws.uncommitted_mutations;
+                    self.er_canvas_state = ws.er_state;
+                    self.sidebar_tab = SidebarTab::Schema;
+                    self.status_banner = format!("Switched to connection `{}`.", ws.title);
+                }
+            }
+        }
+    }
+
+    fn close_workspace(&mut self, idx: usize) {
+        if idx >= self.open_workspaces.len() {
+            return;
+        }
+        let closed_title = self.open_workspaces[idx].title.clone();
+        self.open_workspaces.remove(idx);
+
+        if self.open_workspaces.is_empty() {
+            self.active_workspace_idx = None;
+            self.active_session = None;
+            self.active_profile_id = None;
+            self.databases.clear();
+            self.schemas.clear();
+            self.active_database.clear();
+            self.in_transaction = false;
+            self.uncommitted_mutations = 0;
+            self.sidebar_tab = SidebarTab::Connections;
+            self.status_banner = format!("Disconnected from `{closed_title}`.");
+            return;
+        }
+
+        match self.active_workspace_idx {
+            Some(cur) if cur == idx => {
+                let next_idx = idx.min(self.open_workspaces.len() - 1);
+                self.active_workspace_idx = None; // prevent saving removed ws
+                self.switch_to_workspace(Some(next_idx));
+                self.status_banner = format!("Closed `{closed_title}`.");
+            }
+            Some(cur) if idx < cur => {
+                self.active_workspace_idx = Some(cur - 1);
+                self.status_banner = format!("Closed `{closed_title}`.");
+            }
+            _ => {
+                self.status_banner = format!("Closed `{closed_title}`.");
+            }
         }
     }
 
     fn disconnect(&mut self) {
-        self.active_session = None;
-        self.active_profile_id = None;
-        self.databases.clear();
-        self.schemas.clear();
-        self.active_database.clear();
-        self.sidebar_tab = SidebarTab::Connections;
-        self.status_banner = "Disconnected. Select a connection to begin.".to_string();
+        if let Some(idx) = self.active_workspace_idx {
+            self.close_workspace(idx);
+        } else {
+            self.active_session = None;
+            self.active_profile_id = None;
+            self.databases.clear();
+            self.schemas.clear();
+            self.active_database.clear();
+            self.sidebar_tab = SidebarTab::Connections;
+            self.status_banner = "Disconnected. Select a connection to begin.".to_string();
+        }
     }
 
     fn connect_to_profile(&mut self, profile: ConnectionProfile) {
+        if let Some(existing_idx) = self
+            .open_workspaces
+            .iter()
+            .position(|ws| ws.profile_id == profile.id)
+        {
+            self.switch_to_workspace(Some(existing_idx));
+            return;
+        }
         self.status_banner = format!("Connecting to `{}` ({})...", profile.name, profile.host);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
@@ -1116,36 +1248,90 @@ impl MysqlRustyApp {
                     databases,
                     initial_schema,
                 } => {
+                    self.save_active_workspace_snapshot();
+
+                    let (conn_title, env_color) = self
+                        .config
+                        .connections
+                        .iter()
+                        .find(|c| c.id == profile_id)
+                        .map(|c| (c.name.clone(), c.environment.color_rgb()))
+                        .unwrap_or_else(|| ("Connection".to_string(), (56, 189, 248)));
+
+                    let mut schemas_map = HashMap::new();
+                    let active_db = if let Some(schema) = initial_schema {
+                        let name = schema.name.clone();
+                        schemas_map.insert(name.clone(), schema);
+                        name
+                    } else {
+                        databases.first().cloned().unwrap_or_default()
+                    };
+
+                    // Keep scratchpad tabs for the very first workspace; start fresh tab for extra connections
+                    let initial_tabs = if self.open_workspaces.is_empty() && !self.tabs.is_empty() {
+                        let mut tabs_clone = self.tabs.clone();
+                        if let Some(tab) = tabs_clone.first_mut() {
+                            if tab.sql.trim().is_empty() {
+                                if let Some(schema) = schemas_map.get(&active_db) {
+                                    if let Some(first_tbl) = schema.tables.first() {
+                                        tab.sql = format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name);
+                                    } else {
+                                        tab.sql = "SHOW TABLES;".to_string();
+                                    }
+                                } else {
+                                    tab.sql = "SHOW TABLES;".to_string();
+                                }
+                            }
+                        }
+                        tabs_clone
+                    } else {
+                        let starter_sql = if let Some(schema) = schemas_map.get(&active_db) {
+                            if let Some(first_tbl) = schema.tables.first() {
+                                format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name)
+                            } else {
+                                "SHOW TABLES;".to_string()
+                            }
+                        } else {
+                            "SHOW TABLES;".to_string()
+                        };
+                        vec![QueryTab::new("Query 1", starter_sql)]
+                    };
+
+                    let new_ws = OpenConnectionWorkspace {
+                        profile_id: profile_id.clone(),
+                        title: conn_title,
+                        env_color,
+                        session: session.clone(),
+                        databases: databases.clone(),
+                        active_database: active_db.clone(),
+                        schemas: schemas_map.clone(),
+                        tabs: initial_tabs.clone(),
+                        active_tab_idx: 0,
+                        in_transaction: false,
+                        uncommitted_mutations: 0,
+                        er_state: ErCanvasState::default(),
+                    };
+
+                    self.open_workspaces.push(new_ws);
+                    let new_idx = self.open_workspaces.len() - 1;
+                    self.active_workspace_idx = Some(new_idx);
                     self.active_profile_id = Some(profile_id);
                     self.active_session = Some(session);
                     self.databases = databases;
-                    if let Some(schema) = initial_schema {
-                        self.active_database = schema.name.clone();
-                        self.schemas.insert(schema.name.clone(), schema);
-                    } else if let Some(first) = self.databases.first() {
-                        self.active_database = first.clone();
-                    }
+                    self.active_database = active_db;
+                    self.schemas = schemas_map;
+                    self.tabs = initial_tabs;
+                    self.active_tab_idx = 0;
+                    self.in_transaction = false;
+                    self.uncommitted_mutations = 0;
+                    self.er_canvas_state = ErCanvasState::default();
+
                     self.status_banner = format!(
                         "Connected to database `{}` ({} schemas discovered)",
                         self.active_database,
                         self.databases.len()
                     );
                     self.sidebar_tab = SidebarTab::Schema;
-
-                    // Setup initial starter query if the active tab is empty
-                    if let Some(tab) = self.tabs.first_mut() {
-                        if tab.sql.trim().is_empty() {
-                            if let Some(schema) = self.schemas.get(&self.active_database) {
-                                if let Some(first_tbl) = schema.tables.first() {
-                                    tab.sql = format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name);
-                                } else {
-                                    tab.sql = "SHOW TABLES;".to_string();
-                                }
-                            } else {
-                                tab.sql = "SHOW TABLES;".to_string();
-                            }
-                        }
-                    }
 
                     // Run default query automatically on first connect
                     if self
@@ -1520,6 +1706,7 @@ impl eframe::App for MysqlRustyApp {
             }
         }
 
+        self.render_open_connections_bar(ui);
         self.render_top_toolbar(ui);
         self.render_bottom_status_bar(ui);
         self.render_left_sidebar(ui);
@@ -1545,6 +1732,114 @@ impl eframe::App for MysqlRustyApp {
 }
 
 impl MysqlRustyApp {
+    fn render_open_connections_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("open_connections_tab_bar")
+            .exact_size(30.0)
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(4.0);
+                    let is_home = self.active_workspace_idx.is_none();
+                    let home_btn = egui::Button::new(
+                        RichText::new("Home")
+                            .size(12.0)
+                            .strong()
+                            .color(if is_home {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(148, 163, 184)
+                            }),
+                    )
+                    .fill(if is_home {
+                        Color32::from_rgb(30, 58, 138)
+                    } else {
+                        Color32::from_rgb(20, 27, 42)
+                    })
+                    .corner_radius(egui::CornerRadius::same(4));
+
+                    if ui
+                        .add(home_btn)
+                        .on_hover_text("Connections Dashboard (keep open connections running)")
+                        .clicked()
+                    {
+                        self.switch_to_workspace(None);
+                    }
+
+                    let mut switch_target: Option<usize> = None;
+                    let mut close_target: Option<usize> = None;
+
+                    for (idx, ws) in self.open_workspaces.iter().enumerate() {
+                        let is_active = self.active_workspace_idx == Some(idx);
+                        let bg = if is_active {
+                            Color32::from_rgb(15, 39, 68)
+                        } else {
+                            Color32::from_rgb(19, 25, 38)
+                        };
+                        let border = if is_active {
+                            Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
+                        } else {
+                            Stroke::new(1.0, Color32::from_rgb(33, 43, 63))
+                        };
+
+                        egui::Frame::new()
+                            .fill(bg)
+                            .stroke(border)
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(8, 2))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (r, g, b) = ws.env_color;
+                                    ui.label(
+                                        RichText::new("●")
+                                            .small()
+                                            .color(Color32::from_rgb(r, g, b)),
+                                    );
+                                    let label_text = RichText::new(&ws.title).size(12.0).color(
+                                        if is_active {
+                                            Color32::WHITE
+                                        } else {
+                                            Color32::from_rgb(203, 213, 225)
+                                        },
+                                    );
+                                    let label_text = if is_active {
+                                        label_text.strong()
+                                    } else {
+                                        label_text
+                                    };
+                                    if ui.selectable_label(false, label_text).clicked() {
+                                        switch_target = Some(idx);
+                                    }
+                                    if ui
+                                        .small_button(
+                                            RichText::new("×")
+                                                .small()
+                                                .color(Color32::from_rgb(248, 113, 113)),
+                                        )
+                                        .on_hover_text(format!("Close connection `{}`", ws.title))
+                                        .clicked()
+                                    {
+                                        close_target = Some(idx);
+                                    }
+                                });
+                            });
+                    }
+
+                    if ui
+                        .small_button("+")
+                        .on_hover_text("Open another connection from Home")
+                        .clicked()
+                    {
+                        self.switch_to_workspace(None);
+                    }
+
+                    if let Some(idx) = close_target {
+                        self.close_workspace(idx);
+                    } else if let Some(idx) = switch_target {
+                        self.switch_to_workspace(Some(idx));
+                    }
+                });
+            });
+    }
+
     fn render_top_toolbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("top_toolbar")
             .exact_size(48.0)
@@ -1986,20 +2281,13 @@ impl MysqlRustyApp {
         });
         ui.add_space(4.0);
 
-        let Some(schema) = self.schemas.get(&self.active_database).cloned() else {
-            ui.vertical_centered(|ui| {
-                ui.add_space(10.0);
-                ui.label(RichText::new(format!("Loading schema for `{}`...", self.active_database)).weak());
-                if ui.button("Load Schema").clicked() {
-                    self.reload_active_schema();
-                }
-            });
-            return;
-        };
-
+        let dbs_list = self.databases.clone();
+        let schemas_snapshot = self.schemas.clone();
         let filter_lower = self.schema_filter.to_lowercase();
         let mut pending_sql_action: Option<(String, bool)> = None; // (sql, auto_run)
         let mut toggle_favorite_table: Option<String> = None;
+        let mut activate_db: Option<String> = None;
+        let mut load_db_schema: Option<String> = None;
 
         let fav_tables: Vec<String> = self
             .config
@@ -2009,37 +2297,76 @@ impl MysqlRustyApp {
             .map(|c| c.favorite_tables.clone())
             .unwrap_or_default();
 
-        let mut sorted_tables: Vec<&crate::db::TableSchema> = schema.tables.iter().collect();
-        sorted_tables.sort_by(|a, b| {
-            let fa = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&a.name));
-            let fb = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&b.name));
-            fb.cmp(&fa).then_with(|| a.name.cmp(&b.name))
-        });
-
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for table in sorted_tables {
-                let matches_table = filter_lower.is_empty()
-                    || table.name.to_lowercase().contains(&filter_lower)
-                    || table
-                        .columns
-                        .iter()
-                        .any(|c| c.name.to_lowercase().contains(&filter_lower));
-
-                if !matches_table {
-                    continue;
-                }
-
-                let is_fav = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&table.name));
-                let star_prefix = if is_fav { "★ " } else { "" };
-                let header_label = format!("{star_prefix}{} (~{})", table.name, table.approx_rows);
-                let header_text = if is_fav {
-                    RichText::new(header_label).strong().color(Color32::from_rgb(250, 204, 21))
+            for db_name in &dbs_list {
+                let is_active_db = self.active_database == *db_name;
+                let db_header_text = if is_active_db {
+                    RichText::new(format!("{db_name} (active)"))
+                        .strong()
+                        .color(Color32::from_rgb(56, 189, 248))
                 } else {
-                    RichText::new(header_label).strong()
+                    RichText::new(db_name.as_str()).strong()
                 };
-                egui::CollapsingHeader::new(header_text)
-                    .default_open(true)
+
+                let db_resp = egui::CollapsingHeader::new(db_header_text)
+                    .id_salt(("sidebar_db_tree", db_name))
+                    .default_open(is_active_db)
                     .show(ui, |ui| {
+                        if !is_active_db {
+                            if ui
+                                .small_button("Set Active DB")
+                                .on_hover_text(format!("Switch active database to `{db_name}`"))
+                                .clicked()
+                            {
+                                activate_db = Some(db_name.clone());
+                            }
+                        }
+
+                        let Some(schema) = schemas_snapshot.get(db_name) else {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Schema not loaded").small().weak());
+                                if ui.small_button("Load").clicked() {
+                                    load_db_schema = Some(db_name.clone());
+                                }
+                            });
+                            return;
+                        };
+
+                        let mut sorted_tables: Vec<&crate::db::TableSchema> =
+                            schema.tables.iter().collect();
+                        sorted_tables.sort_by(|a, b| {
+                            let fa = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&a.name));
+                            let fb = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&b.name));
+                            fb.cmp(&fa).then_with(|| a.name.cmp(&b.name))
+                        });
+
+                        for table in sorted_tables {
+                            let matches_table = filter_lower.is_empty()
+                                || table.name.to_lowercase().contains(&filter_lower)
+                                || table
+                                    .columns
+                                    .iter()
+                                    .any(|c| c.name.to_lowercase().contains(&filter_lower));
+
+                            if !matches_table {
+                                continue;
+                            }
+
+                            let is_fav = fav_tables.iter().any(|f| f.eq_ignore_ascii_case(&table.name));
+                            let star_prefix = if is_fav { "★ " } else { "" };
+                            let header_label =
+                                format!("{star_prefix}{} (~{})", table.name, table.approx_rows);
+                            let header_text = if is_fav {
+                                RichText::new(header_label)
+                                    .strong()
+                                    .color(Color32::from_rgb(250, 204, 21))
+                            } else {
+                                RichText::new(header_label).strong()
+                            };
+                            egui::CollapsingHeader::new(header_text)
+                                .id_salt(("sidebar_tbl_tree", db_name, &table.name))
+                                .default_open(is_active_db)
+                                .show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             let pin_txt = if is_fav { "★ Unpin" } else { "☆ Pin" };
                             if ui
@@ -2051,13 +2378,13 @@ impl MysqlRustyApp {
                             }
                             if ui.small_button("SELECT *").clicked() {
                                 pending_sql_action = Some((
-                                    format!("SELECT * FROM `{}` LIMIT 100;", table.name),
+                                    format!("SELECT * FROM `{}`.`{}` LIMIT 100;", db_name, table.name),
                                     true,
                                 ));
                             }
                             if ui.small_button("DDL").clicked() {
                                 pending_sql_action = Some((
-                                    format!("SHOW CREATE TABLE `{}`;", table.name),
+                                    format!("SHOW CREATE TABLE `{}`.`{}`;", db_name, table.name),
                                     true,
                                 ));
                             }
@@ -2145,8 +2472,28 @@ impl MysqlRustyApp {
                             );
                         }
                     });
+                        }
+                    });
+
+                if db_resp.header_response.clicked() && !is_active_db {
+                    activate_db = Some(db_name.clone());
+                }
             }
         });
+
+        if let Some(db) = activate_db {
+            self.active_database = db;
+            self.reload_active_schema();
+        } else if let Some(db) = load_db_schema {
+            if let Some(session) = self.active_session.clone() {
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    if let Ok(schema) = session.introspect_database(&db).await {
+                        let _ = tx.send(AsyncEvent::SchemaLoaded(schema));
+                    }
+                });
+            }
+        }
 
         if let Some(tbl_name) = toggle_favorite_table {
             if let Some(prof) = self
@@ -3284,7 +3631,7 @@ impl MysqlRustyApp {
                     if in_tx {
                         ui.label(
                             RichText::new(format!(
-                                "⚠️ IN TX ({} edit{})",
+                                "⚠ IN TX ({} edit{})",
                                 uncommitted_muts,
                                 if uncommitted_muts == 1 { "" } else { "s" }
                             ))
@@ -5030,7 +5377,7 @@ impl MysqlRustyApp {
             ui.selectable_value(
                 &mut self.server_admin_subtab,
                 ServerAdminSubtab::ServerVariables,
-                "⚙️ Server Variables (SHOW VARIABLES)",
+                "⚙ Server Variables (SHOW VARIABLES)",
             );
         });
         ui.separator();
@@ -5641,7 +5988,7 @@ impl MysqlRustyApp {
                     AiProvider::Ollama => {
                         ui.colored_label(
                             Color32::from_rgb(167, 139, 250),
-                            "🦙 Option 2: Ollama FIM (Fast Local Code LLM)",
+                            "💻 Option 2: Ollama FIM (Fast Local Code LLM)",
                         );
                         ui.label("Ollama Endpoint URL:");
                         ui.text_edit_singleline(&mut self.config.ai.ollama_endpoint);
@@ -5656,7 +6003,7 @@ impl MysqlRustyApp {
                     AiProvider::GitHubCopilot => {
                         ui.colored_label(
                             Color32::from_rgb(56, 189, 248),
-                            "🤖 Option 3: GitHub Copilot (Official Subscription)",
+                            "✨ Option 3: GitHub Copilot (Official Subscription)",
                         );
 
                         let is_logged_in = !self.config.ai.copilot_github_token.trim().is_empty();
