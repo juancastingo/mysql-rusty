@@ -1261,16 +1261,23 @@ impl MysqlRustyApp {
                     BottomTab::ExecutionPlanAndLog,
                     RichText::new("Query Stats & DDL").size(12.5),
                 );
-                if ui
-                    .selectable_value(
-                        &mut self.bottom_tab,
-                        BottomTab::ServerAdmin,
-                        RichText::new("Server Monitor").size(12.5),
-                    )
-                    .clicked()
-                    && self.server_processes.is_none() && !self.is_server_admin_loading {
-                        self.refresh_server_admin();
-                    }
+                let is_sqlite = self
+                    .active_session
+                    .as_ref()
+                    .is_some_and(|s| s.dialect() == crate::dialect::Dialect::Sqlite);
+                if !is_sqlite
+                    && ui
+                        .selectable_value(
+                            &mut self.bottom_tab,
+                            BottomTab::ServerAdmin,
+                            RichText::new("Server Monitor").size(12.5),
+                        )
+                        .clicked()
+                    && self.server_processes.is_none()
+                    && !self.is_server_admin_loading
+                {
+                    self.refresh_server_admin();
+                }
             });
             ui.separator();
 

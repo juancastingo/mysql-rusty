@@ -9,11 +9,32 @@ impl MysqlRustyApp {
         let mut save_and_connect = false;
         let mut save_only = false;
 
-        egui::Window::new("MySQL / MariaDB Connection Profile")
+        egui::Window::new("Database Connection Profile")
             .open(&mut open)
             .resizable(false)
-            .default_width(460.0)
+            .default_width(480.0)
             .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Engine:");
+                    egui::ComboBox::from_id_salt("conn_dialect_combo")
+                        .selected_text(self.editing_connection.dialect.display_name())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.editing_connection.dialect,
+                                crate::dialect::Dialect::MySql,
+                                crate::dialect::Dialect::MySql.display_name(),
+                            );
+                            ui.selectable_value(
+                                &mut self.editing_connection.dialect,
+                                crate::dialect::Dialect::Sqlite,
+                                crate::dialect::Dialect::Sqlite.display_name(),
+                            );
+                        });
+                });
+                ui.separator();
+
+                let is_sqlite = self.editing_connection.dialect == crate::dialect::Dialect::Sqlite;
+
                 egui::Grid::new("conn_form_grid")
                     .num_columns(2)
                     .spacing([12.0, 8.0])
@@ -22,28 +43,53 @@ impl MysqlRustyApp {
                         ui.text_edit_singleline(&mut self.editing_connection.name);
                         ui.end_row();
 
-                        ui.label("Host / IP:");
-                        ui.text_edit_singleline(&mut self.editing_connection.host);
-                        ui.end_row();
+                        if is_sqlite {
+                            ui.label("SQLite File:");
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut self.editing_connection.sqlite_path);
+                                if ui.small_button("Browse...").clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("SQLite", &["sqlite", "sqlite3", "db"])
+                                        .pick_file()
+                                {
+                                    self.editing_connection.sqlite_path =
+                                        path.display().to_string();
+                                }
+                                if ui.small_button("New File...").clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
+                                        .set_file_name("database.sqlite3")
+                                        .add_filter("SQLite", &["sqlite", "sqlite3", "db"])
+                                        .save_file()
+                                {
+                                    self.editing_connection.sqlite_path =
+                                        path.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+                        } else {
+                            ui.label("Host / IP:");
+                            ui.text_edit_singleline(&mut self.editing_connection.host);
+                            ui.end_row();
 
-                        ui.label("Port:");
-                        ui.add(egui::DragValue::new(&mut self.editing_connection.port));
-                        ui.end_row();
+                            ui.label("Port:");
+                            ui.add(egui::DragValue::new(&mut self.editing_connection.port));
+                            ui.end_row();
 
-                        ui.label("Username:");
-                        ui.text_edit_singleline(&mut self.editing_connection.user);
-                        ui.end_row();
+                            ui.label("Username:");
+                            ui.text_edit_singleline(&mut self.editing_connection.user);
+                            ui.end_row();
 
-                        ui.label("Password:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.editing_connection.password)
-                                .password(true),
-                        );
-                        ui.end_row();
+                            ui.label("Password:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.editing_connection.password)
+                                    .password(true),
+                            );
+                            ui.end_row();
 
-                        ui.label("Default Database:");
-                        ui.text_edit_singleline(&mut self.editing_connection.default_database);
-                        ui.end_row();
+                            ui.label("Default Database:");
+                            ui.text_edit_singleline(&mut self.editing_connection.default_database);
+                            ui.end_row();
+                        }
 
                         ui.label("Environment Badge:");
                         egui::ComboBox::from_id_salt("env_badge_modal_combo")
@@ -75,7 +121,8 @@ impl MysqlRustyApp {
                         .on_hover_text("When checked, blocks all INSERT, UPDATE, DELETE, DROP, and ALTER queries.");
                         ui.end_row();
 
-                        ui.label("SSL Mode:");
+                        if !is_sqlite {
+                            ui.label("SSL Mode:");
                         ui.vertical(|ui| {
                             egui::ComboBox::from_id_salt("ssl_mode_combo")
                                 .selected_text(self.editing_connection.ssl_mode.label())
@@ -176,14 +223,16 @@ impl MysqlRustyApp {
                             .on_hover_text("Accept self-signed or internal CA SSL certificates (prevents UnknownIssuer error).");
                             ui.end_row();
                         }
+                        }
                     });
 
-                ui.separator();
-                ui.checkbox(
-                    &mut self.editing_connection.ssh.enabled,
-                    "Enable SSH Tunnel Port Forwarding (`ssh -N -L`)",
-                );
-                if self.editing_connection.ssh.enabled {
+                if !is_sqlite {
+                    ui.separator();
+                    ui.checkbox(
+                        &mut self.editing_connection.ssh.enabled,
+                        "Enable SSH Tunnel Port Forwarding (`ssh -N -L`)",
+                    );
+                    if self.editing_connection.ssh.enabled {
                     egui::Grid::new("ssh_form_grid")
                         .num_columns(2)
                         .spacing([12.0, 6.0])
@@ -214,6 +263,7 @@ impl MysqlRustyApp {
                             });
                             ui.end_row();
                         });
+                    }
                 }
 
                 // Test Connection Result feedback

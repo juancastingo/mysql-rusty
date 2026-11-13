@@ -120,6 +120,8 @@ pub struct ConnectionProfile {
     pub favorite_tables: Vec<String>,
     #[serde(default)]
     pub dialect: crate::dialect::Dialect,
+    #[serde(default)]
+    pub sqlite_path: String,
 }
 
 impl Default for ConnectionProfile {
@@ -144,6 +146,7 @@ impl Default for ConnectionProfile {
             read_only: false,
             favorite_tables: Vec::new(),
             dialect: crate::dialect::Dialect::MySql,
+            sqlite_path: String::new(),
         }
     }
 }
@@ -170,6 +173,7 @@ impl ConnectionProfile {
             read_only: false,
             favorite_tables: Vec::new(),
             dialect: crate::dialect::Dialect::MySql,
+            sqlite_path: String::new(),
         }
     }
 }

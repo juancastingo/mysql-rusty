@@ -348,13 +348,17 @@ pub enum ActiveSession {
     DemoSandbox {
         store: DemoStore,
     },
+    Sqlite {
+        conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        _path: std::path::PathBuf,
+    },
 }
 
 impl ActiveSession {
-    #[allow(dead_code)]
     pub fn dialect(&self) -> crate::dialect::Dialect {
         match self {
             Self::DemoSandbox { .. } | Self::RealMysql { .. } => crate::dialect::Dialect::MySql,
+            Self::Sqlite { .. } => crate::dialect::Dialect::Sqlite,
         }
     }
 
@@ -364,6 +368,25 @@ impl ActiveSession {
             return Ok(Self::DemoSandbox {
                 store: DemoStore::default(),
             });
+        }
+
+        if profile.dialect == crate::dialect::Dialect::Sqlite {
+            let raw_path = if !profile.sqlite_path.trim().is_empty() {
+                profile.sqlite_path.trim().to_string()
+            } else {
+                profile.host.trim().to_string()
+            };
+            if raw_path.is_empty() {
+                return Err(anyhow!("SQLite database file path is empty."));
+            }
+            let path = std::path::PathBuf::from(&raw_path);
+            let path_clone = path.clone();
+            let conn = tokio::task::spawn_blocking(move || {
+                crate::sqlite_db::open_sqlite_file(&path_clone)
+            })
+            .await
+            .map_err(|e| anyhow!("SQLite connect task failed: {e}"))??;
+            return Ok(Self::Sqlite { conn, _path: path });
         }
 
         tracing::info!(
@@ -604,7 +627,7 @@ impl ActiveSession {
 
     pub async fn ping(&self) -> Result<()> {
         match self {
-            Self::DemoSandbox { .. } => Ok(()),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => Ok(()),
             Self::RealMysql {
                 pool, _ssh_guard, ..
             } => {
@@ -625,7 +648,7 @@ impl ActiveSession {
                 let id = editor_conn_id.load(std::sync::atomic::Ordering::Relaxed);
                 if id == 0 { None } else { Some(id) }
             }
-            Self::DemoSandbox { .. } => None,
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => None,
         }
     }
 
@@ -667,12 +690,27 @@ impl ActiveSession {
                 let dbs: Vec<String> = conn.query("SHOW DATABASES").await?;
                 Ok(dbs)
             }
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                tokio::task::spawn_blocking(move || crate::sqlite_db::list_databases(&conn))
+                    .await
+                    .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
         }
     }
 
     pub async fn introspect_database(&self, database: &str) -> Result<DatabaseSchema> {
         match self {
             Self::DemoSandbox { .. } => Ok(build_demo_schema(database)),
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                let db = database.to_string();
+                tokio::task::spawn_blocking(move || {
+                    crate::sqlite_db::introspect_database(&conn, &db)
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
 
@@ -911,6 +949,16 @@ impl ActiveSession {
             Self::DemoSandbox { store, .. } => {
                 execute_demo_query(store, database, trimmed, schema, max_rows)
             }
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                let db = database.to_string();
+                let sql_owned = trimmed.to_string();
+                tokio::task::spawn_blocking(move || {
+                    crate::sqlite_db::execute_query(&conn, &db, &sql_owned, max_rows)
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
             Self::RealMysql {
                 pool,
                 editor_conn,
@@ -1059,6 +1107,16 @@ impl ActiveSession {
         }
 
         match self {
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                let tbl = table.to_string();
+                let edits_owned = edits.to_vec();
+                tokio::task::spawn_blocking(move || {
+                    crate::sqlite_db::apply_cell_edits(&conn, &tbl, &edits_owned)
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store.tables.lock().unwrap();
                 if let Some(tbl) = guard.get_mut(table) {
@@ -1125,6 +1183,7 @@ impl ActiveSession {
 
     pub async fn list_processes(&self) -> Result<QueryResult> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { .. } => {
                 let columns = vec![
                     "Id".to_string(),
@@ -1225,6 +1284,7 @@ impl ActiveSession {
     pub async fn kill_query(&self, connection_id: u64) -> Result<()> {
         match self {
             Self::DemoSandbox { .. } => Ok(()),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let kill_stmt = format!("KILL QUERY {connection_id}");
@@ -1236,6 +1296,7 @@ impl ActiveSession {
 
     pub async fn server_status_summary(&self) -> Result<HashMap<String, String>> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { .. } => {
                 let mut map = HashMap::new();
                 map.insert("Uptime".to_string(), "86420".to_string());
@@ -1264,6 +1325,7 @@ impl ActiveSession {
 
     pub async fn list_server_variables(&self) -> Result<Vec<(String, String)>> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { .. } => {
                 Ok(vec![
                     ("auto_increment_increment".into(), "1".into()),
@@ -1314,6 +1376,7 @@ impl ActiveSession {
     pub async fn server_version(&self) -> Result<String> {
         match self {
             Self::DemoSandbox { .. } => Ok("8.4.0-demo".to_string()),
+            Self::Sqlite { .. } => Ok("SQLite".to_string()),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let ver: Option<String> = conn.query_first("SELECT VERSION()").await?;
@@ -1325,6 +1388,16 @@ impl ActiveSession {
     pub async fn show_create(&self, kind: &str, db: &str, name: &str) -> Result<String> {
         match self {
             Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                let kind = kind.to_string();
+                let name = name.to_string();
+                tokio::task::spawn_blocking(move || {
+                    crate::sqlite_db::show_create(&conn, &kind, &name)
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let qual = crate::dialect::Dialect::MySql.quote_qualified(db, name);
@@ -1346,7 +1419,9 @@ impl ActiveSession {
 
     pub async fn list_objects(&self, db: &str) -> Result<DbObjects> {
         match self {
-            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+                Err(anyhow::anyhow!("not supported for this engine"))
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let tbl_rows: Vec<(String, String)> = conn
@@ -1398,7 +1473,9 @@ impl ActiveSession {
         F: FnMut(&[String], Vec<Vec<CellValue>>) -> Result<()>,
     {
         match self {
-            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+                Err(anyhow::anyhow!("not supported for this engine"))
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let sql = format!(
@@ -1435,7 +1512,9 @@ impl ActiveSession {
 
     pub async fn open_pool_conn(&self, db: &str) -> Result<mysql_async::Conn> {
         match self {
-            Self::DemoSandbox { .. } => Err(anyhow::anyhow!("not supported in demo")),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => {
+                Err(anyhow::anyhow!("not supported for this engine"))
+            }
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let db_trimmed = db.trim();
@@ -1454,6 +1533,7 @@ impl ActiveSession {
     pub async fn performance_schema_enabled(&self) -> Result<bool> {
         match self {
             Self::DemoSandbox { .. } => Ok(true),
+            Self::Sqlite { .. } => Ok(false),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 let val: Option<u64> = conn.query_first("SELECT @@performance_schema").await?;
@@ -1468,6 +1548,7 @@ impl ActiveSession {
         schema_filter: Option<&str>,
     ) -> Result<QueryResult> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { .. } => Ok(QueryResult {
                 sql: "/* performance_schema digests (demo) */".to_string(),
                 database: schema_filter.unwrap_or("shop").to_string(),
@@ -1590,6 +1671,7 @@ impl ActiveSession {
     pub async fn reset_statement_digests(&self) -> Result<()> {
         match self {
             Self::DemoSandbox { .. } => Ok(()),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 conn.query_drop(
@@ -1603,7 +1685,7 @@ impl ActiveSession {
 
     pub async fn tls_status(&self) -> (Option<String>, Option<String>) {
         match self {
-            Self::DemoSandbox { .. } => (None, None),
+            Self::DemoSandbox { .. } | Self::Sqlite { .. } => (None, None),
             Self::RealMysql { pool, .. } => {
                 let Ok(mut conn) = pool.get_conn().await else {
                     return (None, None);
@@ -1628,6 +1710,16 @@ impl ActiveSession {
 
     pub async fn fetch_object_ddl(&self, db: &str, obj_type: &str, name: &str) -> Result<String> {
         match self {
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                let kind = obj_type.to_string();
+                let name = name.to_string();
+                tokio::task::spawn_blocking(move || {
+                    crate::sqlite_db::show_create(&conn, &kind, &name)
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite task failed: {e}"))?
+            }
             Self::DemoSandbox { .. } => match obj_type.to_ascii_uppercase().as_str() {
                 "VIEW" => Ok(format!(
                     "CREATE VIEW `{name}` AS\nSELECT o.id, o.user_id, o.total_amount, o.status\nFROM orders o\nWHERE o.total_amount >= 100;"
@@ -1663,6 +1755,7 @@ impl ActiveSession {
         routine_name: &str,
     ) -> Result<Vec<RoutineParamInfo>> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { .. } => {
                 if routine_name == "sp_customer_summary" {
                     Ok(vec![
@@ -1762,6 +1855,7 @@ impl ActiveSession {
 
     pub async fn list_users(&self) -> Result<Vec<UserInfo>> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { store, .. } => {
                 let guard = store
                     .users
@@ -1801,6 +1895,7 @@ impl ActiveSession {
 
     pub async fn fetch_user_grants(&self, user: &str, host: &str) -> Result<Vec<String>> {
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { store, .. } => {
                 let guard = store
                     .users
@@ -1834,6 +1929,7 @@ impl ActiveSession {
     ) -> Result<()> {
         let sql = build_create_user_sql(user, host, password, auth_plugin);
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users
@@ -1869,6 +1965,7 @@ impl ActiveSession {
             escape_sql_str(host)
         );
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users
@@ -1899,6 +1996,7 @@ impl ActiveSession {
         );
         match self {
             Self::DemoSandbox { .. } => Ok(()),
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::RealMysql { pool, .. } => {
                 let mut conn = pool.get_conn().await?;
                 conn.query_drop(sql).await?;
@@ -1916,6 +2014,7 @@ impl ActiveSession {
     ) -> Result<()> {
         let stmts = build_grant_revoke_sql(user, host, "*.*", grants, revokes);
         match self {
+            Self::Sqlite { .. } => Err(anyhow!("Not supported for SQLite")),
             Self::DemoSandbox { store, .. } => {
                 let mut guard = store
                     .users
