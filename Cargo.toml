@@ -2,8 +2,15 @@
 name = "mysql-rusty"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Modern native MySQL/MariaDB Workbench alternative in Rust with AI autocomplete & CLI assistant"
 authors = ["juancastingo"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/juancastingo/mysql-rusty"
+homepage = "https://github.com/juancastingo/mysql-rusty"
+readme = "README.md"
+keywords = ["mysql", "mariadb", "sql", "database", "gui"]
+categories = ["database", "development-tools", "gui"]
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = [
@@ -61,3 +68,8 @@ assets = [
     ["assets/mysql-rusty.desktop", "usr/share/applications/", "644"],
     ["assets/icon.png", "usr/share/pixmaps/mysql-rusty.png", "644"],
 ]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
