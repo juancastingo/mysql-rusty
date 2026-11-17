@@ -1,6 +1,7 @@
-# 🦀 MySQL-Rusty Workbench
+# 🦀 MySQL-Rusty
 
 ![CI](https://github.com/juancastingo/mysql-rusty/actions/workflows/ci.yml/badge.svg)
+[![Latest Release](https://img.shields.io/github/v/release/juancastingo/mysql-rusty?include_prereleases&label=download)](https://github.com/juancastingo/mysql-rusty/releases/tag/latest)
 
 A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for Linux (Ubuntu X11/Wayland), featuring **schema-aware AI inline autocomplete** and **multi-provider AI / CLI Copilot integration** (`Ollama`, `OpenAI/Compatible`, `Anthropic`, `Gemini`, and local CLI tools like `agy` or `llm`).
 
@@ -65,6 +66,18 @@ A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for 
 
 ---
 
+## 📦 Download Pre-built Binaries
+
+Every push to `main` automatically builds and publishes ready-to-run installers on the [**Latest Release (`latest`)**](https://github.com/juancastingo/mysql-rusty/releases/tag/latest):
+
+| Platform | Package | Install / Run |
+| :--- | :--- | :--- |
+| **Linux (Ubuntu / Debian)** | `.deb` / `.tar.gz` | `sudo apt install ./mysql-rusty_*.deb` |
+| **Windows (x86_64)** | `.exe` / `.zip` | Download and run `mysql-rusty-windows-x86_64.exe` |
+| **macOS (Apple Silicon)** | `.dmg` | Open `mysql-rusty-macos-arm64.dmg` and drag `MySQL-Rusty.app` to Applications |
+
+---
+
 ## 🚀 Building & Running on Ubuntu
 
 ### System Prerequisites (Ubuntu / Debian)
@@ -107,7 +120,7 @@ To add MySQL-Rusty to your desktop application menu:
 cat << 'EOF' > ~/.local/share/applications/mysql-rusty.desktop
 [Desktop Entry]
 Name=MySQL Rusty
-Comment=Modern Native Rust MySQL Workbench
+Comment=Modern Native Rust SQL Client
 Exec=mysql-rusty
 Icon=utilities-terminal
 Terminal=false
