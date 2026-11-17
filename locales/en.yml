@@ -29,7 +29,7 @@ sidebar:
   history: "History"
 
 dashboard:
-  badge: "WORKBENCH CONNECTIONS"
+  badge: "SERVER CONNECTIONS"
   heading: "Database Servers"
   subtitle: "Select a server connection to open the SQL workspace, or configure a new profile."
 

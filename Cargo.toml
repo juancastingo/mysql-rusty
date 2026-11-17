@@ -49,3 +49,15 @@ sys-locale = "0.3"
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
 serde_yaml = "0.9"
+
+[package.metadata.deb]
+maintainer = "juancastingo"
+copyright = "2026, juancastingo"
+section = "database"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/mysql-rusty", "usr/bin/", "755"],
+    ["assets/mysql-rusty.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.png", "usr/share/pixmaps/mysql-rusty.png", "644"],
+]

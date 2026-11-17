@@ -665,6 +665,13 @@ impl MysqlRustyApp {
             self.editing_connection = ConnectionProfile::default();
             self.show_connection_modal = true;
         }
+        if ui
+            .button("⬇ Import from Workbench")
+            .on_hover_text("Import connections from MySQL Workbench (connections.xml)")
+            .clicked()
+        {
+            self.import_workbench_connections();
+        }
         ui.add_space(6.0);
 
         let profiles = self.config.connections.clone();

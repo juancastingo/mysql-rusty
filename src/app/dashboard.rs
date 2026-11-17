@@ -41,22 +41,42 @@ impl MysqlRustyApp {
                     );
                     ui.add_space(14.0);
 
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(" + New Connection Profile ")
-                                    .size(13.5)
-                                    .color(Color32::WHITE)
-                                    .strong(),
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(" + New Connection Profile ")
+                                        .size(13.5)
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(Color32::from_rgb(14, 116, 144))
+                                .corner_radius(egui::CornerRadius::same(6)),
                             )
-                            .fill(Color32::from_rgb(14, 116, 144))
-                            .corner_radius(egui::CornerRadius::same(6)),
-                        )
-                        .clicked()
-                    {
-                        self.editing_connection = ConnectionProfile::default();
-                        self.show_connection_modal = true;
-                    }
+                            .clicked()
+                        {
+                            self.editing_connection = ConnectionProfile::default();
+                            self.show_connection_modal = true;
+                        }
+                        ui.add_space(6.0);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(" ⬇ Import from Workbench ")
+                                        .size(13.0)
+                                        .color(Color32::from_rgb(226, 232, 240)),
+                                )
+                                .fill(Color32::from_rgb(30, 41, 59))
+                                .corner_radius(egui::CornerRadius::same(6)),
+                            )
+                            .on_hover_text(
+                                "Import connections from MySQL Workbench (connections.xml)",
+                            )
+                            .clicked()
+                        {
+                            self.import_workbench_connections();
+                        }
+                    });
                     if !self.config.trashed_connections.is_empty() {
                         ui.add_space(8.0);
                         if ui

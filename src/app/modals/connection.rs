@@ -575,8 +575,10 @@ impl MysqlRustyApp {
                 });
                 ui.separator();
 
+                let trash_h = ui.available_height().max(160.0);
                 egui::ScrollArea::vertical()
-                    .max_height(320.0)
+                    .auto_shrink([false, false])
+                    .max_height(trash_h)
                     .show(ui, |ui| {
                         for (idx, item) in self.config.trashed_connections.iter().enumerate() {
                             egui::Frame::group(ui.style())

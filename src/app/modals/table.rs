@@ -135,53 +135,55 @@ impl MysqlRustyApp {
                 });
                 ui.separator();
 
-                egui::ScrollArea::vertical().show(ui, |ui| match subtab {
-                    0 => {
-                        for col in &tbl.columns {
-                            ui.horizontal(|ui| {
-                                let pk = if col.is_primary_key { "[PK] " } else { "" };
-                                ui.label(RichText::new(format!("{pk}{}", col.name)).strong());
-                                ui.label(
-                                    RichText::new(&col.data_type)
-                                        .color(Color32::from_rgb(56, 189, 248)),
-                                );
-                                if !col.is_nullable {
-                                    ui.label(RichText::new("NOT NULL").small().weak());
-                                }
-                                if let Some(def) = &col.default_value {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match subtab {
+                        0 => {
+                            for col in &tbl.columns {
+                                ui.horizontal(|ui| {
+                                    let pk = if col.is_primary_key { "[PK] " } else { "" };
+                                    ui.label(RichText::new(format!("{pk}{}", col.name)).strong());
                                     ui.label(
-                                        RichText::new(format!("DEFAULT {def}")).small().weak(),
+                                        RichText::new(&col.data_type)
+                                            .color(Color32::from_rgb(56, 189, 248)),
                                     );
+                                    if !col.is_nullable {
+                                        ui.label(RichText::new("NOT NULL").small().weak());
+                                    }
+                                    if let Some(def) = &col.default_value {
+                                        ui.label(
+                                            RichText::new(format!("DEFAULT {def}")).small().weak(),
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                        1 => {
+                            if tbl.foreign_keys.is_empty() {
+                                ui.label(RichText::new("No foreign keys defined.").weak());
+                            } else {
+                                for fk in &tbl.foreign_keys {
+                                    ui.label(format!(
+                                        "{} -> {}.{}",
+                                        fk.column_name, fk.referenced_table, fk.referenced_column
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {
+                            let mut ddl = format_table_create_ddl(&tbl);
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Copy DDL").clicked() {
+                                    ui.ctx().copy_text(ddl.clone());
                                 }
                             });
+                            ui.add(
+                                egui::TextEdit::multiline(&mut ddl)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY),
+                            );
                         }
-                    }
-                    1 => {
-                        if tbl.foreign_keys.is_empty() {
-                            ui.label(RichText::new("No foreign keys defined.").weak());
-                        } else {
-                            for fk in &tbl.foreign_keys {
-                                ui.label(format!(
-                                    "{} -> {}.{}",
-                                    fk.column_name, fk.referenced_table, fk.referenced_column
-                                ));
-                            }
-                        }
-                    }
-                    _ => {
-                        let mut ddl = format_table_create_ddl(&tbl);
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Copy DDL").clicked() {
-                                ui.ctx().copy_text(ddl.clone());
-                            }
-                        });
-                        ui.add(
-                            egui::TextEdit::multiline(&mut ddl)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY),
-                        );
-                    }
-                });
+                    });
             });
 
         if !open {

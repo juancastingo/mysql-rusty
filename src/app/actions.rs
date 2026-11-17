@@ -591,6 +591,10 @@ impl MysqlRustyApp {
 
         tab.is_running = true;
         tab.last_error = None;
+        tab.last_executed_sql = Some(sql.clone());
+        tab.ai_error_fix_req_id += 1;
+        tab.ai_error_fix_loading = false;
+        tab.ai_error_fix = None;
         tab.pending_edits.clear();
         tab.editing_cell = None;
 
@@ -813,5 +817,64 @@ impl MysqlRustyApp {
         if !stmt.trim().is_empty() {
             self.execute_sql_in_current_tab(stmt, None);
         }
+    }
+
+    pub(crate) fn import_workbench_connections(&mut self) {
+        let path = crate::config::find_workbench_connections_xml().or_else(|| {
+            rfd::FileDialog::new()
+                .set_title("Select MySQL Workbench connections.xml")
+                .add_filter("XML", &["xml"])
+                .pick_file()
+        });
+        let Some(path) = path else {
+            self.status_banner =
+                "Workbench import cancelled (connections.xml not found).".to_string();
+            return;
+        };
+        let xml = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                self.status_banner = format!("Failed to read {}: {e}", path.display());
+                return;
+            }
+        };
+        let parsed = crate::config::parse_workbench_connections_xml(&xml);
+        if parsed.is_empty() {
+            self.status_banner = format!("No connections found in {}.", path.display());
+            return;
+        }
+
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        for prof in parsed {
+            let exists = self.config.connections.iter().any(|c| {
+                c.name.eq_ignore_ascii_case(&prof.name)
+                    && c.host.eq_ignore_ascii_case(&prof.host)
+                    && c.port == prof.port
+                    && c.user == prof.user
+            });
+            if exists {
+                skipped += 1;
+            } else {
+                self.config.connections.push(prof);
+                added += 1;
+            }
+        }
+
+        if added > 0
+            && let Err(e) = self.config.save()
+        {
+            self.status_banner = format!("Imported {added} connection(s), but save failed: {e}");
+            return;
+        }
+
+        self.status_banner = if skipped > 0 {
+            format!("Imported {added} Workbench connection(s) ({skipped} duplicate(s) skipped).")
+        } else {
+            format!(
+                "Imported {added} Workbench connection(s) from {}.",
+                path.display()
+            )
+        };
     }
 }

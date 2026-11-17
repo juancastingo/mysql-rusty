@@ -250,14 +250,18 @@ impl MysqlRustyApp {
                 });
                 ui.add_space(4.0);
 
-                egui::ScrollArea::both().max_height(280.0).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut display_text.as_str())
-                            .font(egui::TextStyle::Monospace)
-                            .code_editor()
-                            .desired_width(f32::INFINITY),
-                    );
-                });
+                let inspector_h = (ui.available_height() - 40.0).max(140.0);
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .max_height(inspector_h)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut display_text.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -731,8 +735,10 @@ impl MysqlRustyApp {
                 ui.separator();
 
                 let filter_lower = self.shortcuts_filter.trim().to_lowercase();
+                let shortcuts_h = ui.available_height().max(180.0);
                 egui::ScrollArea::vertical()
-                    .max_height(380.0)
+                    .auto_shrink([false, false])
+                    .max_height(shortcuts_h)
                     .show(ui, |ui| {
                         egui::Grid::new("shortcuts_help_grid")
                             .num_columns(4)
@@ -826,7 +832,7 @@ impl MysqlRustyApp {
         if self.tour.show_welcome {
             let mut start = false;
             let mut skip = false;
-            egui::Window::new("Welcome to MySQL-Rusty Workbench")
+            egui::Window::new("Welcome to MySQL-Rusty")
                 .collapsible(false)
                 .resizable(false)
                 .default_width(460.0)

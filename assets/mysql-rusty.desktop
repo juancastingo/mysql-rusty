@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MySQL-Rusty
+Comment=Modern native MySQL/MariaDB/PostgreSQL/SQLite client with AI autocomplete & CLI assistant
+Exec=mysql-rusty
+Icon=mysql-rusty
+Terminal=false
+Type=Application
+Categories=Development;Database;
+StartupWMClass=mysql-rusty

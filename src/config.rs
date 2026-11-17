@@ -207,6 +207,8 @@ impl AiProvider {
 pub struct AiConfig {
     pub provider: AiProvider,
     pub enable_inline_autocomplete: bool,
+    #[serde(default = "default_true")]
+    pub enable_auto_error_fix: bool,
     pub include_schema_context: bool,
 
     #[serde(default = "default_debounce_ms")]
@@ -265,6 +267,7 @@ impl Default for AiConfig {
         Self {
             provider: AiProvider::LocalSchema,
             enable_inline_autocomplete: true,
+            enable_auto_error_fix: true,
             include_schema_context: true,
             autocomplete_debounce_ms: 180,
             autocomplete_max_tokens: 35,
@@ -407,6 +410,22 @@ impl Default for UiSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSyncPreset {
+    pub id: String,
+    pub name: String,
+    pub batch_mode: bool,
+    pub source_server_name: String,
+    pub source_db: String,
+    pub source_table: String,
+    pub target_server_name: String,
+    pub target_db: String,
+    pub target_table: String,
+    pub key_col: usize,
+    #[serde(default)]
+    pub excluded_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub connections: Vec<ConnectionProfile>,
     pub ai: AiConfig,
@@ -424,6 +443,8 @@ pub struct AppConfig {
     pub keybindings: std::collections::HashMap<crate::shortcuts::Action, String>,
     #[serde(default)]
     pub onboarding_completed: bool,
+    #[serde(default)]
+    pub saved_sync_presets: Vec<SavedSyncPreset>,
 }
 
 impl Default for AppConfig {
@@ -441,6 +462,7 @@ impl Default for AppConfig {
             trashed_connections: Vec::new(),
             keybindings: std::collections::HashMap::new(),
             onboarding_completed: false,
+            saved_sync_presets: Vec::new(),
             snippets: vec![
                 SavedSnippet {
                     id: Uuid::new_v4().to_string(),
@@ -616,6 +638,203 @@ pub fn delete_secret(key: &str) -> Result<()> {
     Ok(())
 }
 
+fn unescape_xml(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+fn extract_workbench_tag_value(block: &str, key: &str) -> Option<String> {
+    let needle = format!("key=\"{key}\"");
+    let mut search_from = 0;
+    while let Some(rel_idx) = block[search_from..].find(&needle) {
+        let key_idx = search_from + rel_idx;
+        let after_key = &block[key_idx + needle.len()..];
+        let Some(gt_rel) = after_key.find('>') else {
+            break;
+        };
+        // Skip self-closing tags like <value ... key="..." />
+        if gt_rel > 0 && after_key.as_bytes()[gt_rel - 1] == b'/' {
+            search_from = key_idx + needle.len() + gt_rel + 1;
+            continue;
+        }
+        let val_start = key_idx + needle.len() + gt_rel + 1;
+        let rest = &block[val_start..];
+        // Direct scalar value ends at </value> or </link>
+        if let Some(end_rel) = rest.find("</") {
+            let inner = rest[..end_rel].trim();
+            // Skip container tags like parameterValues whose inner content contains child tags
+            if !inner.starts_with('<') {
+                return Some(unescape_xml(inner));
+            }
+        }
+        search_from = val_start;
+    }
+    None
+}
+
+/// Locates MySQL Workbench's `connections.xml` on Linux, macOS, or Windows.
+pub fn find_workbench_connections_xml() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".mysql/workbench/connections.xml"));
+        candidates.push(
+            home.join("snap/mysql-workbench-community/common/.mysql/workbench/connections.xml"),
+        );
+        candidates
+            .push(home.join(".var/app/com.mysql.Workbench/data/mysql/workbench/connections.xml"));
+        candidates.push(home.join("Library/Application Support/MySQL/Workbench/connections.xml"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        candidates.push(PathBuf::from(appdata).join("MySQL/Workbench/connections.xml"));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Parses MySQL Workbench `connections.xml` into `ConnectionProfile` entries.
+pub fn parse_workbench_connections_xml(xml: &str) -> Vec<ConnectionProfile> {
+    let mut profiles = Vec::new();
+    let marker = "struct-name=\"db.mgmt.Connection\"";
+    let mut search_from = 0;
+
+    while let Some(rel_idx) = xml[search_from..].find(marker) {
+        let marker_idx = search_from + rel_idx;
+        if !xml[..marker_idx].ends_with(char::is_whitespace) {
+            search_from = marker_idx + marker.len();
+            continue;
+        }
+        let Some(tag_start) = xml[..marker_idx].rfind("<value") else {
+            search_from = marker_idx + marker.len();
+            continue;
+        };
+
+        // Walk <value ...> and </value> tags to find the matching closing </value>
+        let mut depth = 0usize;
+        let mut cursor = tag_start;
+        let mut block_end = None;
+        while let Some(lt_rel) = xml[cursor..].find('<') {
+            let lt = cursor + lt_rel;
+            let Some(gt_rel) = xml[lt..].find('>') else {
+                break;
+            };
+            let gt = lt + gt_rel;
+            let tag = &xml[lt..=gt];
+            if tag.starts_with("<value") {
+                if !tag.ends_with("/>") {
+                    depth += 1;
+                }
+            } else if tag.starts_with("</value>") {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    block_end = Some(gt + 1);
+                    break;
+                }
+            }
+            cursor = gt + 1;
+        }
+
+        let Some(end_idx) = block_end else {
+            break;
+        };
+        let block = &xml[tag_start..end_idx];
+        search_from = end_idx;
+
+        let name = extract_workbench_tag_value(block, "name")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "Workbench Connection".to_string());
+        let host = extract_workbench_tag_value(block, "hostName")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = extract_workbench_tag_value(block, "port")
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|&p| p > 0)
+            .unwrap_or(3306);
+        let user = extract_workbench_tag_value(block, "userName")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "root".to_string());
+        let password = extract_workbench_tag_value(block, "password").unwrap_or_default();
+        let default_database = extract_workbench_tag_value(block, "schema")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| extract_workbench_tag_value(block, "DbSqlEditor:LastDefaultSchema"))
+            .unwrap_or_default();
+
+        let ssl_mode =
+            match extract_workbench_tag_value(block, "useSSL").and_then(|v| v.parse::<u8>().ok()) {
+                Some(0) => SslMode::Disabled,
+                Some(2) => SslMode::Required,
+                Some(3) => SslMode::VerifyCa,
+                Some(4) => SslMode::VerifyIdentity,
+                _ => SslMode::Preferred,
+            };
+        let ssl_ca_path = extract_workbench_tag_value(block, "sslCA").unwrap_or_default();
+        let ssl_client_cert_path =
+            extract_workbench_tag_value(block, "sslCert").unwrap_or_default();
+        let ssl_client_key_path = extract_workbench_tag_value(block, "sslKey").unwrap_or_default();
+
+        let driver = extract_workbench_tag_value(block, "driver").unwrap_or_default();
+        let ssh_raw_host = extract_workbench_tag_value(block, "sshHost").unwrap_or_default();
+        let ssh_enabled = driver.contains("sshtun") || !ssh_raw_host.trim().is_empty();
+        let (ssh_host, ssh_port) = if let Some((h, p)) = ssh_raw_host.rsplit_once(':') {
+            if let Ok(port_num) = p.trim().parse::<u16>() {
+                (h.trim().to_string(), port_num)
+            } else {
+                (ssh_raw_host.trim().to_string(), 22)
+            }
+        } else {
+            (ssh_raw_host.trim().to_string(), 22)
+        };
+        let ssh_user = extract_workbench_tag_value(block, "sshUserName")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "ubuntu".to_string());
+        let ssh_key_path = extract_workbench_tag_value(block, "sshKeyFile")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "~/.ssh/id_ed25519".to_string());
+
+        let name_lower = name.to_ascii_lowercase();
+        let (environment, color_hex) = if name_lower.contains("prod") {
+            (Environment::Production, "#ef4444".to_string())
+        } else if name_lower.contains("uat") || name_lower.contains("stag") {
+            (Environment::Staging, "#eab308".to_string())
+        } else {
+            (Environment::Development, "#38bdf8".to_string())
+        };
+
+        profiles.push(ConnectionProfile {
+            id: Uuid::new_v4().to_string(),
+            name,
+            color_hex,
+            host,
+            port,
+            user,
+            password,
+            default_database,
+            ssl_mode,
+            ssl_accept_invalid_certs: false,
+            ssl_ca_path,
+            ssl_client_cert_path,
+            ssl_client_key_path,
+            ssh: SshTunnelConfig {
+                enabled: ssh_enabled,
+                ssh_host,
+                ssh_port,
+                ssh_user,
+                ssh_key_path,
+                local_bind_port: 13306,
+            },
+            is_demo: false,
+            environment,
+            read_only: false,
+            favorite_tables: Vec::new(),
+            dialect: crate::dialect::Dialect::MySql,
+            sqlite_path: String::new(),
+        });
+    }
+
+    profiles
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -624,5 +843,64 @@ mod tests {
         let _ = set_secret("test_key", "secret_value");
         let _ = get_secret("test_key");
         let _ = delete_secret("test_key");
+    }
+
+    #[test]
+    fn test_parse_workbench_connections_xml() {
+        use crate::config::{Environment, SslMode, parse_workbench_connections_xml};
+        let xml = r#"<?xml version="1.0"?>
+<data grt_format="2.0">
+  <value type="list" content-type="object" content-struct-name="db.mgmt.Connection">
+    <value type="object" struct-name="db.mgmt.Connection" id="1">
+      <link type="object" struct-name="db.mgmt.Driver" key="driver">com.mysql.rdbms.mysql.driver.native</link>
+      <value type="dict" key="modules"/>
+      <value type="dict" key="parameterValues">
+        <value type="string" key="DbSqlEditor:LastDefaultSchema">app_db</value>
+        <value type="string" key="hostName">127.0.0.1</value>
+        <value type="int" key="port">33061</value>
+        <value type="int" key="useSSL">0</value>
+        <value type="string" key="userName">root</value>
+      </value>
+      <value type="string" key="name">local &amp; dev</value>
+    </value>
+    <value type="object" struct-name="db.mgmt.Connection" id="2">
+      <link type="object" struct-name="db.mgmt.Driver" key="driver">com.mysql.rdbms.mysql.driver.native_sshtun</link>
+      <value type="dict" key="parameterValues">
+        <value type="string" key="hostName">db.prod.internal</value>
+        <value type="int" key="port">3306</value>
+        <value type="string" key="schema">prod_core</value>
+        <value type="string" key="sshHost">bastion.example.com:2222</value>
+        <value type="string" key="sshKeyFile">/home/user/.ssh/id_rsa</value>
+        <value type="string" key="sshUserName">ec2-user</value>
+        <value type="int" key="useSSL">2</value>
+        <value type="string" key="userName">admin</value>
+      </value>
+      <value type="string" key="name">portal - prod</value>
+    </value>
+  </value>
+</data>"#;
+
+        let parsed = parse_workbench_connections_xml(xml);
+        assert_eq!(parsed.len(), 2);
+
+        assert_eq!(parsed[0].name, "local & dev");
+        assert_eq!(parsed[0].host, "127.0.0.1");
+        assert_eq!(parsed[0].port, 33061);
+        assert_eq!(parsed[0].user, "root");
+        assert_eq!(parsed[0].default_database, "app_db");
+        assert_eq!(parsed[0].ssl_mode, SslMode::Disabled);
+        assert!(!parsed[0].ssh.enabled);
+        assert_eq!(parsed[0].environment, Environment::Development);
+
+        assert_eq!(parsed[1].name, "portal - prod");
+        assert_eq!(parsed[1].host, "db.prod.internal");
+        assert_eq!(parsed[1].default_database, "prod_core");
+        assert_eq!(parsed[1].ssl_mode, SslMode::Required);
+        assert!(parsed[1].ssh.enabled);
+        assert_eq!(parsed[1].ssh.ssh_host, "bastion.example.com");
+        assert_eq!(parsed[1].ssh.ssh_port, 2222);
+        assert_eq!(parsed[1].ssh.ssh_user, "ec2-user");
+        assert_eq!(parsed[1].ssh.ssh_key_path, "/home/user/.ssh/id_rsa");
+        assert_eq!(parsed[1].environment, Environment::Production);
     }
 }

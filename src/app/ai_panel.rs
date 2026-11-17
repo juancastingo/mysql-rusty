@@ -46,6 +46,75 @@ impl MysqlRustyApp {
         });
     }
 
+    pub(crate) fn trigger_ai_error_fix(&mut self, tab_id: &str, err_msg: &str) {
+        if !self.config.ai.enable_auto_error_fix {
+            return;
+        }
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) else {
+            return;
+        };
+        let failed_sql = tab
+            .last_executed_sql
+            .as_deref()
+            .filter(|s| !s.trim().is_empty() && tab.sql.contains(s))
+            .unwrap_or(&tab.sql)
+            .to_string();
+        if failed_sql.trim().is_empty() {
+            return;
+        }
+
+        tab.ai_error_fix_req_id += 1;
+        let req_id = tab.ai_error_fix_req_id;
+        tab.ai_error_fix = None;
+
+        let schema = self.schemas.get(&self.active_database).cloned();
+        if self.config.ai.provider == AiProvider::LocalSchema {
+            if let Some(mut fix) =
+                crate::ai::compute_heuristic_sql_error_fix(&failed_sql, err_msg, schema.as_ref())
+            {
+                align_fix_to_tab_sql(&tab.sql, &mut fix);
+                tab.ai_error_fix = Some(fix);
+                self.status_banner =
+                    "AI fix ready — Press Tab to apply or Esc to dismiss.".to_string();
+            }
+            return;
+        }
+
+        tab.ai_error_fix_loading = true;
+        let ddl = schema
+            .as_ref()
+            .map(|s| s.to_pruned_ai_ddl_context(&failed_sql))
+            .unwrap_or_default();
+        let dialect = self
+            .active_session
+            .as_ref()
+            .map(|s| s.dialect().display_name())
+            .unwrap_or("MySQL")
+            .to_string();
+        let ai_cfg = self.config.ai.clone();
+        let tx = self.tx.clone();
+        let tab_id_owned = tab_id.to_string();
+        let err_owned = err_msg.to_string();
+
+        self.rt.spawn(async move {
+            let res = crate::ai::request_sql_error_fix(
+                &ai_cfg,
+                &dialect,
+                &failed_sql,
+                &err_owned,
+                &ddl,
+                schema.as_ref(),
+            )
+            .await
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AsyncEvent::AiErrorFixReady {
+                tab_id: tab_id_owned,
+                req_id,
+                result: res,
+            });
+        });
+    }
+
     pub(crate) fn send_chat_prompt(&mut self, custom_prompt: Option<String>) {
         let prompt = custom_prompt.unwrap_or_else(|| self.chat_input.trim().to_string());
         if prompt.is_empty() {
@@ -202,4 +271,47 @@ impl MysqlRustyApp {
                 });
             });
     }
+}
+
+pub(crate) fn align_fix_to_tab_sql(
+    tab_sql: &str,
+    fix: &mut crate::ai::SqlErrorFixSuggestion,
+) -> bool {
+    if tab_sql == fix.original_sql {
+        fix.replace_byte_range = None;
+        return true;
+    }
+    if let Some(base) = tab_sql.find(&fix.original_sql) {
+        let end = base + fix.original_sql.len();
+        for r in &mut fix.strike_ranges {
+            r.start += base;
+            r.end += base;
+        }
+        fix.replace_byte_range = Some(base..end);
+        return true;
+    }
+    false
+}
+
+pub(crate) fn apply_ai_error_fix(tab: &mut QueryTab) -> Option<usize> {
+    let fix = tab.ai_error_fix.take()?;
+    tab.ai_error_fix_loading = false;
+    let new_cursor = if let Some(range) = fix.replace_byte_range {
+        if range.end <= tab.sql.len()
+            && tab.sql.is_char_boundary(range.start)
+            && tab.sql.is_char_boundary(range.end)
+        {
+            tab.sql.replace_range(range.clone(), &fix.fixed_sql);
+            tab.sql[..range.start].chars().count() + fix.fixed_sql.chars().count()
+        } else {
+            tab.sql = fix.fixed_sql;
+            tab.sql.chars().count()
+        }
+    } else {
+        tab.sql = fix.fixed_sql;
+        tab.sql.chars().count()
+    };
+    tab.is_dirty = true;
+    tab.ghost_completion = None;
+    Some(new_cursor)
 }

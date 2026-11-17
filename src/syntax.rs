@@ -314,6 +314,120 @@ pub fn apply_background_ranges(
     job.sections = new_sections;
 }
 
+/// Applies red strikethrough to erroneous ranges in the existing SQL `LayoutJob`
+/// and appends the AI's suggested correction as ghost text below the query.
+pub fn apply_error_fix_overlay(
+    job: &mut egui::text::LayoutJob,
+    strike_ranges: &[std::ops::Range<usize>],
+    fixed_sql: &str,
+    insert_ranges: &[std::ops::Range<usize>],
+    font_size: f32,
+) {
+    if !strike_ranges.is_empty() && !job.sections.is_empty() {
+        let strike_stroke = egui::Stroke::new(1.5, Color32::from_rgb(248, 113, 113));
+        let strike_bg = Color32::from_rgba_unmultiplied(239, 68, 68, 45);
+        let strike_color = Color32::from_rgba_unmultiplied(252, 165, 165, 210);
+
+        let mut new_sections = Vec::with_capacity(job.sections.len());
+        for section in job.sections.drain(..) {
+            let s_start: usize = section.byte_range.start.into();
+            let s_end: usize = section.byte_range.end.into();
+
+            let mut split_points: Vec<usize> = Vec::new();
+            split_points.push(s_start);
+            for r in strike_ranges {
+                if r.start > s_start && r.start < s_end {
+                    split_points.push(r.start);
+                }
+                if r.end > s_start && r.end < s_end {
+                    split_points.push(r.end);
+                }
+            }
+            split_points.push(s_end);
+            split_points.sort_unstable();
+            split_points.dedup();
+
+            for win in split_points.windows(2) {
+                let sub_start = win[0];
+                let sub_end = win[1];
+                if sub_start >= sub_end {
+                    continue;
+                }
+                let mut fmt = section.format.clone();
+                if strike_ranges
+                    .iter()
+                    .any(|r| sub_start >= r.start && sub_end <= r.end)
+                {
+                    fmt.strikethrough = strike_stroke;
+                    fmt.background = strike_bg;
+                    fmt.color = strike_color;
+                }
+                new_sections.push(egui::text::LayoutSection {
+                    leading_space: if sub_start == s_start {
+                        section.leading_space
+                    } else {
+                        0.0
+                    },
+                    byte_range: egui::text::ByteIndex(sub_start)..egui::text::ByteIndex(sub_end),
+                    format: fmt,
+                });
+            }
+        }
+        job.sections = new_sections;
+    }
+
+    if fixed_sql.trim().is_empty() {
+        return;
+    }
+
+    let mono = FontId::monospace(font_size);
+    let header_fmt = TextFormat {
+        font_id: mono.clone(),
+        color: Color32::from_rgba_unmultiplied(148, 163, 184, 175),
+        italics: true,
+        ..Default::default()
+    };
+    job.append(
+        "\n-- AI Fix (Tab to apply · Esc to dismiss):\n",
+        0.0,
+        header_fmt,
+    );
+
+    let ghost_base_fmt = TextFormat {
+        font_id: mono.clone(),
+        color: Color32::from_rgba_unmultiplied(125, 211, 252, 165),
+        italics: true,
+        ..Default::default()
+    };
+    let ghost_changed_fmt = TextFormat {
+        font_id: mono,
+        color: Color32::from_rgba_unmultiplied(74, 222, 128, 225),
+        background: Color32::from_rgba_unmultiplied(34, 197, 94, 30),
+        italics: true,
+        ..Default::default()
+    };
+
+    let mut pos = 0usize;
+    for r in insert_ranges {
+        let start = r.start.min(fixed_sql.len());
+        let end = r.end.min(fixed_sql.len());
+        if start < pos || start >= end {
+            continue;
+        }
+        if !fixed_sql.is_char_boundary(start) || !fixed_sql.is_char_boundary(end) {
+            continue;
+        }
+        if start > pos {
+            job.append(&fixed_sql[pos..start], 0.0, ghost_base_fmt.clone());
+        }
+        job.append(&fixed_sql[start..end], 0.0, ghost_changed_fmt.clone());
+        pos = end;
+    }
+    if pos < fixed_sql.len() {
+        job.append(&fixed_sql[pos..], 0.0, ghost_base_fmt);
+    }
+}
+
 /// Splits `sql` at `cursor_char_idx` into `(prefix, suffix)` slices.
 pub fn split_sql_at_cursor(sql: &str, cursor_char_idx: usize) -> (&str, &str) {
     let byte_idx = char_idx_to_byte_idx(sql, cursor_char_idx);
@@ -1877,5 +1991,24 @@ mod tests {
             digest_placeholders_to_params(sql),
             "SELECT * FROM users WHERE status = '?' AND id = :p1 AND age > :p2"
         );
+    }
+
+    #[test]
+    fn test_apply_error_fix_overlay_strikethrough_and_ghost() {
+        let sql = "SELCT * FORM users";
+        let mut job = highlight_sql(sql, None, None, 13.0);
+        let strike = vec![0..5, 8..12];
+        let fixed = "SELECT * FROM users";
+        let insert = vec![0..6, 9..13];
+        apply_error_fix_overlay(&mut job, &strike, fixed, &insert, 13.0);
+
+        let struck_count = job
+            .sections
+            .iter()
+            .filter(|s| s.format.strikethrough != egui::Stroke::NONE)
+            .count();
+        assert_eq!(struck_count, 2);
+        assert!(job.text.contains("-- AI Fix (Tab to apply"));
+        assert!(job.text.contains("SELECT * FROM users"));
     }
 }

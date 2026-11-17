@@ -869,7 +869,7 @@ pub async fn request_chat_assistant(
     current_editor_sql: &str,
     schema_ddl: &str,
 ) -> Result<ChatMessage> {
-    let system_prompt = "You are a senior MySQL/MariaDB database engineer built into MySQL-Rusty Workbench. \
+    let system_prompt = "You are a senior MySQL/MariaDB database engineer built into MySQL-Rusty. \
         Always write clean, optimized MySQL 8.0 / MariaDB SQL queries inside ```sql ... ``` fenced blocks, \
         followed by a concise explanation of indexes, joins, or performance trade-offs in English.";
 
@@ -1701,6 +1701,443 @@ pub async fn diagnose_query_plan(
     Ok(parse_optimization_report(&raw))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlErrorFixSuggestion {
+    pub original_sql: String,
+    pub fixed_sql: String,
+    pub explanation: String,
+    pub strike_ranges: Vec<std::ops::Range<usize>>,
+    pub insert_ranges: Vec<std::ops::Range<usize>>,
+    pub replace_byte_range: Option<std::ops::Range<usize>>,
+}
+
+#[derive(Debug, Clone)]
+struct DiffToken<'a> {
+    text: &'a str,
+    range: std::ops::Range<usize>,
+}
+
+fn tokenize_for_diff(sql: &str) -> Vec<DiffToken<'_>> {
+    let mut tokens = Vec::new();
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = sql[i..].chars().next().unwrap();
+        if ch.is_whitespace() {
+            i += ch.len_utf8();
+            continue;
+        }
+        let start = i;
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            i += ch.len_utf8();
+            let mut escaped = false;
+            while i < bytes.len() {
+                let c = sql[i..].chars().next().unwrap();
+                i += c.len_utf8();
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == quote {
+                    break;
+                }
+            }
+            tokens.push(DiffToken {
+                text: &sql[start..i],
+                range: start..i,
+            });
+        } else if ch.is_alphanumeric() || ch == '_' || ch == '`' {
+            i += ch.len_utf8();
+            while i < bytes.len() {
+                let c = sql[i..].chars().next().unwrap();
+                if c.is_alphanumeric() || c == '_' || c == '`' {
+                    i += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(DiffToken {
+                text: &sql[start..i],
+                range: start..i,
+            });
+        } else {
+            i += ch.len_utf8();
+            tokens.push(DiffToken {
+                text: &sql[start..i],
+                range: start..i,
+            });
+        }
+    }
+    tokens
+}
+
+fn merge_whitespace_separated_ranges(
+    sql: &str,
+    ranges: Vec<std::ops::Range<usize>>,
+) -> Vec<std::ops::Range<usize>> {
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+    for r in ranges {
+        if let Some(last) = merged.last_mut()
+            && r.start >= last.end
+            && sql[last.end..r.start].chars().all(char::is_whitespace)
+        {
+            last.end = r.end;
+            continue;
+        }
+        merged.push(r);
+    }
+    merged
+}
+
+/// Computes token-level LCS diff between `original` and `fixed`, returning:
+/// `(strike_ranges_in_original, insert_ranges_in_fixed)`.
+pub fn compute_sql_diff_ranges(
+    original: &str,
+    fixed: &str,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let a = tokenize_for_diff(original);
+    let b = tokenize_for_diff(fixed);
+    let n = a.len();
+    let m = b.len();
+
+    if n == 0 || m == 0 {
+        let strike = if original.trim().is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0..original.len()).collect()
+        };
+        let insert = if fixed.trim().is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0..fixed.len()).collect()
+        };
+        return (strike, insert);
+    }
+
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if a[i].text == b[j].text {
+                1 + dp[i + 1][j + 1]
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+
+    let mut matched_a = vec![false; n];
+    let mut matched_b = vec![false; m];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if a[i].text == b[j].text {
+            matched_a[i] = true;
+            matched_b[j] = true;
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    let raw_strike: Vec<std::ops::Range<usize>> = a
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !matched_a[*idx])
+        .map(|(_, tok)| tok.range.clone())
+        .collect();
+    let raw_insert: Vec<std::ops::Range<usize>> = b
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !matched_b[*idx])
+        .map(|(_, tok)| tok.range.clone())
+        .collect();
+
+    (
+        merge_whitespace_separated_ranges(original, raw_strike),
+        merge_whitespace_separated_ranges(fixed, raw_insert),
+    )
+}
+
+pub fn parse_sql_error_fix_response(
+    raw: &str,
+    original_sql: &str,
+) -> Option<SqlErrorFixSuggestion> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let fixed_sql = if let Some(block) = extract_sql_code_block(trimmed) {
+        block.trim().to_string()
+    } else {
+        // Fallback: take non-explanation lines if model omitted fences
+        let mut sql_lines = Vec::new();
+        for line in trimmed.lines() {
+            let l_trim = line.trim();
+            if l_trim.starts_with("```") {
+                continue;
+            }
+            if l_trim.to_ascii_lowercase().starts_with("reason:")
+                || l_trim.to_ascii_lowercase().starts_with("explanation:")
+            {
+                break;
+            }
+            sql_lines.push(line);
+        }
+        sql_lines.join("\n").trim().to_string()
+    };
+
+    if fixed_sql.is_empty() || fixed_sql.trim() == original_sql.trim() {
+        return None;
+    }
+
+    let mut explanation = String::new();
+    for line in trimmed.lines() {
+        let l = line.trim();
+        let lower = l.to_ascii_lowercase();
+        if let Some(rest) = lower
+            .strip_prefix("reason:")
+            .or_else(|| lower.strip_prefix("explanation:"))
+        {
+            let prefix_len = l.len() - rest.len();
+            explanation = l[prefix_len..].trim().to_string();
+            break;
+        }
+    }
+
+    let (strike_ranges, insert_ranges) = compute_sql_diff_ranges(original_sql, &fixed_sql);
+    Some(SqlErrorFixSuggestion {
+        original_sql: original_sql.to_string(),
+        fixed_sql,
+        explanation,
+        strike_ranges,
+        insert_ranges,
+        replace_byte_range: None,
+    })
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut dp = vec![vec![0usize; b_chars.len() + 1]; a_chars.len() + 1];
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, slot) in dp[0].iter_mut().enumerate().take(b_chars.len() + 1) {
+        *slot = j;
+    }
+    for i in 1..=a_chars.len() {
+        for j in 1..=b_chars.len() {
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[a_chars.len()][b_chars.len()]
+}
+
+fn find_closest_name<'a>(
+    target: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let t_lower = target.to_ascii_lowercase();
+    let max_dist = if t_lower.len() <= 3 { 1 } else { 2 };
+    let mut best: Option<(usize, &str)> = None;
+    for cand in candidates {
+        let d = edit_distance(&t_lower, &cand.to_ascii_lowercase());
+        if d > 0 && d <= max_dist && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, cand));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Instant offline heuristic SQL error fixer for common keyword typos and schema identifier typos.
+pub fn compute_heuristic_sql_error_fix(
+    original_sql: &str,
+    error_msg: &str,
+    schema: Option<&DatabaseSchema>,
+) -> Option<SqlErrorFixSuggestion> {
+    const TYPOS: &[(&str, &str)] = &[
+        ("SELCT", "SELECT"),
+        ("SLECT", "SELECT"),
+        ("SELEC", "SELECT"),
+        ("FORM", "FROM"),
+        ("FRMO", "FROM"),
+        ("WHRE", "WHERE"),
+        ("WHER", "WHERE"),
+        ("WHEER", "WHERE"),
+        ("GROP", "GROUP"),
+        ("ORDR", "ORDER"),
+        ("INSRT", "INSERT"),
+        ("UPDAT", "UPDATE"),
+        ("DELET", "DELETE"),
+        ("LIMT", "LIMIT"),
+        ("JION", "JOIN"),
+        ("VALUS", "VALUES"),
+        ("HAVNG", "HAVING"),
+    ];
+
+    let tokens = tokenize_for_diff(original_sql);
+    let mut replacements: Vec<(std::ops::Range<usize>, String, String)> = Vec::new();
+
+    for tok in &tokens {
+        let upper = tok.text.to_ascii_uppercase();
+        if let Some((_, fixed_kw)) = TYPOS.iter().find(|(bad, _)| *bad == upper) {
+            replacements.push((
+                tok.range.clone(),
+                fixed_kw.to_string(),
+                format!("Fixed keyword `{}` -> `{fixed_kw}`", tok.text),
+            ));
+        }
+    }
+
+    if replacements.is_empty()
+        && let Some(schema) = schema
+    {
+        // Try extracting unknown column/table from error message: e.g. Unknown column 'emai' or Table 'db.usrs' doesn't exist
+        let mut unknown_ident: Option<String> = None;
+        for quote in ['\'', '"', '`'] {
+            if let Some(start) = error_msg.find(quote) {
+                let rest = &error_msg[start + 1..];
+                if let Some(end) = rest.find(quote) {
+                    let raw_ident = &rest[..end];
+                    let ident = raw_ident.rsplit('.').next().unwrap_or(raw_ident);
+                    if !ident.is_empty() {
+                        unknown_ident = Some(ident.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(bad_ident) = unknown_ident {
+            let err_lower = error_msg.to_ascii_lowercase();
+            let candidate = if err_lower.contains("table") || err_lower.contains("relation") {
+                find_closest_name(&bad_ident, schema.tables.iter().map(|t| t.name.as_str()))
+            } else {
+                let all_cols = schema
+                    .tables
+                    .iter()
+                    .flat_map(|t| t.columns.iter().map(|c| c.name.as_str()));
+                find_closest_name(&bad_ident, all_cols)
+            };
+            if let Some(good_ident) = candidate {
+                for tok in &tokens {
+                    let clean_tok = tok.text.trim_matches('`');
+                    if clean_tok.eq_ignore_ascii_case(&bad_ident) {
+                        let replacement = if tok.text.starts_with('`') {
+                            format!("`{good_ident}`")
+                        } else {
+                            good_ident.to_string()
+                        };
+                        replacements.push((
+                            tok.range.clone(),
+                            replacement,
+                            format!("Fixed identifier `{clean_tok}` -> `{good_ident}`"),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if replacements.is_empty() {
+        return None;
+    }
+
+    replacements.sort_by_key(|(r, _, _)| r.start);
+    let mut fixed_sql = String::with_capacity(original_sql.len() + 16);
+    let mut last_end = 0;
+    let mut reasons = Vec::new();
+    for (range, rep, reason) in replacements {
+        if range.start < last_end {
+            continue;
+        }
+        fixed_sql.push_str(&original_sql[last_end..range.start]);
+        fixed_sql.push_str(&rep);
+        last_end = range.end;
+        reasons.push(reason);
+    }
+    fixed_sql.push_str(&original_sql[last_end..]);
+
+    if fixed_sql.trim() == original_sql.trim() {
+        return None;
+    }
+
+    let (strike_ranges, insert_ranges) = compute_sql_diff_ranges(original_sql, &fixed_sql);
+    Some(SqlErrorFixSuggestion {
+        original_sql: original_sql.to_string(),
+        fixed_sql,
+        explanation: reasons.join("; "),
+        strike_ranges,
+        insert_ranges,
+        replace_byte_range: None,
+    })
+}
+
+/// Calls the selected AI provider (or local heuristic if `AiProvider::LocalSchema`)
+/// to automatically suggest a corrected SQL query when execution fails.
+pub async fn request_sql_error_fix(
+    config: &AiConfig,
+    dialect: &str,
+    failed_sql: &str,
+    error_msg: &str,
+    schema_ddl: &str,
+    schema: Option<&DatabaseSchema>,
+) -> Result<Option<SqlErrorFixSuggestion>> {
+    if config.provider == AiProvider::LocalSchema {
+        return Ok(compute_heuristic_sql_error_fix(
+            failed_sql, error_msg, schema,
+        ));
+    }
+
+    let system_prompt = format!(
+        "You are an expert {dialect} SQL debugger. Given a failing SQL query, the database error message, \
+        and the active schema, fix the SQL query.\n\
+        Preserve the user's formatting and valid parts; change only what is needed to fix the error.\n\
+        Respond ONLY with:\n\
+        ```sql\n<corrected SQL>\n```\n\
+        Reason: <one short sentence explaining the fix>"
+    );
+
+    let mut user_prompt = String::new();
+    if config.include_schema_context && !schema_ddl.trim().is_empty() {
+        user_prompt.push_str("Active Database Schema:\n");
+        user_prompt.push_str(schema_ddl);
+        user_prompt.push_str("\n\n");
+    }
+    user_prompt.push_str("Failing SQL:\n```sql\n");
+    user_prompt.push_str(failed_sql.trim());
+    user_prompt.push_str("\n```\n\nDatabase Error:\n");
+    user_prompt.push_str(error_msg.trim());
+
+    let started = std::time::Instant::now();
+    match call_provider(config, &system_prompt, &user_prompt, false).await {
+        Ok(raw) => {
+            tracing::debug!(
+                provider = ?config.provider,
+                latency_ms = started.elapsed().as_millis() as u64,
+                "AI SQL error fix finished"
+            );
+            Ok(parse_sql_error_fix_response(&raw, failed_sql))
+        }
+        Err(err) => {
+            tracing::warn!(
+                provider = ?config.provider,
+                latency_ms = started.elapsed().as_millis() as u64,
+                error = %err,
+                "AI SQL error fix failed"
+            );
+            Err(err)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1864,5 +2301,40 @@ mod tests {
         assert_eq!(fallback.bottlenecks, vec!["Full table scan on users"]);
         assert_eq!(fallback.suggested_indexes.len(), 1);
         assert!(fallback.rewritten_sql.is_some());
+    }
+
+    #[test]
+    fn test_sql_error_fix_diff_parse_and_heuristic() {
+        let orig = "SELCT * FORM users WHRE emai = 'a@b.com'";
+        let fixed = "SELECT * FROM users WHERE email = 'a@b.com'";
+        let (strike, insert) = compute_sql_diff_ranges(orig, fixed);
+        let struck_words: Vec<&str> = strike.iter().map(|r| &orig[r.clone()]).collect();
+        let inserted_words: Vec<&str> = insert.iter().map(|r| &fixed[r.clone()]).collect();
+        assert_eq!(struck_words, vec!["SELCT", "FORM", "WHRE emai"]);
+        assert_eq!(inserted_words, vec!["SELECT", "FROM", "WHERE email"]);
+
+        let raw_ai = "```sql\nSELECT * FROM users WHERE email = 'a@b.com'\n```\nReason: Fixed typos in SELECT, FROM, WHERE, and column email.";
+        let parsed = parse_sql_error_fix_response(raw_ai, orig).unwrap();
+        assert_eq!(parsed.fixed_sql, fixed);
+        assert!(parsed.explanation.contains("Fixed typos"));
+        assert_eq!(parsed.strike_ranges.len(), 3);
+
+        let schema = build_demo_schema("ecommerce_prod");
+        let kw_fix = compute_heuristic_sql_error_fix(
+            "SELCT * FORM users",
+            "You have an error in your SQL syntax",
+            Some(&schema),
+        )
+        .unwrap();
+        assert_eq!(kw_fix.fixed_sql, "SELECT * FROM users");
+        assert_eq!(kw_fix.strike_ranges.len(), 2);
+
+        let col_fix = compute_heuristic_sql_error_fix(
+            "SELECT emai FROM users",
+            "Unknown column 'emai' in 'field list'",
+            Some(&schema),
+        )
+        .unwrap();
+        assert_eq!(col_fix.fixed_sql, "SELECT email FROM users");
     }
 }

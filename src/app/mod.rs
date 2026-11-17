@@ -29,9 +29,7 @@ use crate::config::{
     AiProvider, AppConfig, ConnectionProfile, Environment, SavedScratchpad, SavedSnippet, SslMode,
     TrashedConnection,
 };
-use crate::data_diff::{
-    DataDiffReport, RowDiffStatus, compute_data_diff, generate_data_diff_sync_sql,
-};
+use crate::data_diff::{DataDiffReport, RowDiffStatus, compute_data_diff};
 use crate::db::{ActiveSession, DatabaseSchema, PendingCellEdit, QueryResult};
 use crate::er_diagram::ErCanvasState;
 use crate::export::{
@@ -104,8 +102,13 @@ pub struct MysqlRustyApp {
 
     // Schema Diff & Sync modal
     show_schema_diff_modal: bool,
+    diff_source_ws_idx: Option<usize>,
     diff_source_db: String,
+    diff_target_ws_idx: Option<usize>,
     diff_target_db: String,
+    diff_excluded_tables: std::collections::HashSet<String>,
+    diff_table_filter: String,
+    diff_loading_schemas: bool,
     current_diff_report: Option<SchemaDiffReport>,
 
     // Mock Data Generator modal
@@ -173,14 +176,27 @@ pub struct MysqlRustyApp {
 
     // Data Diff Modal (Table/Environment row comparison)
     show_data_diff_modal: bool,
+    data_diff_batch_mode: bool,
+    data_diff_source_ws_idx: Option<usize>,
     data_diff_source_db: String,
     data_diff_source_table: String,
+    data_diff_target_ws_idx: Option<usize>,
     data_diff_target_db: String,
     data_diff_target_table: String,
     data_diff_key_col: usize,
     data_diff_report: Option<DataDiffReport>,
     data_diff_sync_sql: String,
     data_diff_loading: bool,
+    data_diff_excluded_tables: std::collections::HashSet<String>,
+    data_diff_table_filter: String,
+    data_diff_batch_results: Vec<BatchTableDiffEntry>,
+    data_diff_selected_batch_idx: Option<usize>,
+    data_diff_preset_name: String,
+    data_diff_selected_preset_id: Option<String>,
+    pending_db_sync: Option<PendingDbSync>,
+    db_sync_confirm_checked: bool,
+    db_sync_running: bool,
+    db_sync_progress: Option<(usize, usize, String)>,
 
     // SQL Dump Export / Import Modal
     show_sql_dump_modal: bool,
@@ -350,7 +366,7 @@ impl MysqlRustyApp {
             is_server_admin_loading: false,
             chat_messages: vec![ChatMessage {
                 role: "assistant".to_string(),
-                content: "Welcome to **MySQL-Rusty Workbench**!\n\nSelect a server connection from the central dashboard or the 'Servers' sidebar tab to begin.".to_string(),
+                content: "Welcome to **MySQL-Rusty**!\n\nSelect a server connection from the central dashboard or the 'Servers' sidebar tab to begin.".to_string(),
                 extracted_sql: None,
             }],
             chat_input: String::new(),
@@ -365,8 +381,13 @@ impl MysqlRustyApp {
             pending_safe_sql: String::new(),
 
             show_schema_diff_modal: false,
+            diff_source_ws_idx: None,
             diff_source_db: String::new(),
+            diff_target_ws_idx: None,
             diff_target_db: String::new(),
+            diff_excluded_tables: std::collections::HashSet::new(),
+            diff_table_filter: String::new(),
+            diff_loading_schemas: false,
             current_diff_report: None,
 
             show_mock_data_modal: false,
@@ -420,14 +441,27 @@ impl MysqlRustyApp {
             active_workspace_idx: None,
             fk_lookup_cache: HashMap::new(),
             show_data_diff_modal: false,
+            data_diff_batch_mode: false,
+            data_diff_source_ws_idx: None,
             data_diff_source_db: String::new(),
             data_diff_source_table: String::new(),
+            data_diff_target_ws_idx: None,
             data_diff_target_db: String::new(),
             data_diff_target_table: String::new(),
             data_diff_key_col: 0,
             data_diff_report: None,
             data_diff_sync_sql: String::new(),
             data_diff_loading: false,
+            data_diff_excluded_tables: std::collections::HashSet::new(),
+            data_diff_table_filter: String::new(),
+            data_diff_batch_results: Vec::new(),
+            data_diff_selected_batch_idx: None,
+            data_diff_preset_name: String::new(),
+            data_diff_selected_preset_id: None,
+            pending_db_sync: None,
+            db_sync_confirm_checked: false,
+            db_sync_running: false,
+            db_sync_progress: None,
             show_sql_dump_modal: false,
             dump_include_drop: true,
             dump_include_data: true,
@@ -670,6 +704,7 @@ impl eframe::App for MysqlRustyApp {
         self.render_delete_connection_confirm_modal(&ctx);
         self.render_connection_trash_modal(&ctx);
         self.render_data_diff_modal(&ctx);
+        self.render_db_sync_confirm_modal(&ctx);
         self.render_sql_dump_modal(&ctx);
         self.render_shortcuts_modal(&ctx);
         self.render_onboarding_overlay(&ctx);

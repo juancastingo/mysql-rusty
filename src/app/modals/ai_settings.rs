@@ -37,6 +37,10 @@ impl MysqlRustyApp {
                     &mut self.config.ai.enable_inline_autocomplete,
                     "Enable Copilot-style inline ghost SQL suggestions",
                 );
+                ui.checkbox(
+                    &mut self.config.ai.enable_auto_error_fix,
+                    "Auto-suggest AI fix on SQL error (strikethrough + ghost)",
+                );
                 ui.separator();
 
                 match self.config.ai.provider {

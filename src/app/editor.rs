@@ -403,13 +403,15 @@ impl MysqlRustyApp {
                 let mut selected_suggestion: Option<CompletionItem> = None;
                 let has_suggestions_or_ghost =
                     tab.ghost_completion.is_some() || !tab.local_suggestions.is_empty();
+                let has_error_fix = tab.ai_error_fix.is_some();
 
-                if has_suggestions_or_ghost
+                if (has_suggestions_or_ghost || has_error_fix)
                     && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
                 {
                     tab.ghost_completion = None;
                     tab.local_suggestions.clear();
                     tab.selected_suggestion_idx = 0;
+                    tab.ai_error_fix = None;
                     keep_editor_focus = true;
                 } else if !tab.local_suggestions.is_empty()
                     && ui.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowDown))
@@ -435,14 +437,18 @@ impl MysqlRustyApp {
                             .trim()
                             .to_string()
                     };
-                    let has_any_tab_completion = expand_sql_macro_with_cursor(&last_word).is_some()
+                    let has_any_tab_completion = tab.ai_error_fix.is_some()
+                        || expand_sql_macro_with_cursor(&last_word).is_some()
                         || tab.ghost_completion.is_some()
                         || !tab.local_suggestions.is_empty();
 
                     if has_any_tab_completion
                         && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab))
                     {
-                        if let Some((expanded, cursor_offset)) =
+                        if let Some(new_cursor) = super::ai_panel::apply_ai_error_fix(tab) {
+                            move_cursor_to_char = Some(new_cursor);
+                            keep_editor_focus = true;
+                        } else if let Some((expanded, cursor_offset)) =
                             expand_sql_macro_with_cursor(&last_word)
                         {
                             let new_cursor = replace_at_cursor(
@@ -920,6 +926,7 @@ impl MysqlRustyApp {
                 }
 
                 let ghost_clone = tab.ghost_completion.clone();
+                let ai_error_fix_clone = tab.ai_error_fix.clone();
                 let cursor_idx_snapshot = tab.cursor_index;
                 let find_ranges_clone = if tab.find_open {
                     tab.find_matches.clone()
@@ -932,9 +939,14 @@ impl MysqlRustyApp {
                     None
                 };
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                    let ghost_for_syntax = if ai_error_fix_clone.is_some() {
+                        None
+                    } else {
+                        ghost_clone.as_deref()
+                    };
                     let mut job = crate::syntax::highlight_sql_with_palette(
                         buf.as_str(),
-                        ghost_clone.as_deref(),
+                        ghost_for_syntax,
                         Some(cursor_idx_snapshot),
                         editor_font_size,
                         &editor_palette,
@@ -944,6 +956,15 @@ impl MysqlRustyApp {
                             &mut job,
                             &find_ranges_clone,
                             find_current_clone,
+                        );
+                    }
+                    if let Some(fix) = &ai_error_fix_clone {
+                        crate::syntax::apply_error_fix_overlay(
+                            &mut job,
+                            &fix.strike_ranges,
+                            &fix.fixed_sql,
+                            &fix.insert_ranges,
+                            editor_font_size,
                         );
                     }
                     job.wrap.max_width = wrap_width;
@@ -1099,6 +1120,9 @@ impl MysqlRustyApp {
                 if editor_resp.changed() {
                     tab.is_dirty = true;
                     tab.selected_sql = None;
+                    tab.ai_error_fix = None;
+                    tab.ai_error_fix_loading = false;
+                    tab.ai_error_fix_req_id += 1;
                     tab.last_edit_instant = Some(std::time::Instant::now());
                     let (sql_prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
                     let (prefix, suggestions) =
@@ -1226,19 +1250,63 @@ impl MysqlRustyApp {
                 }
 
                 if let Some(err) = &tab.last_error {
+                    let mut apply_fix_clicked = false;
+                    let mut dismiss_fix_clicked = false;
                     egui::Frame::group(ui.style())
                         .fill(Color32::from_rgb(69, 10, 10))
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(
                                     Color32::from_rgb(248, 113, 113),
                                     format!("SQL Error: {err}"),
                                 );
+                                if tab.ai_error_fix_loading {
+                                    ui.spinner();
+                                    ui.colored_label(
+                                        Color32::from_rgb(125, 211, 252),
+                                        "AI suggesting fix...",
+                                    );
+                                } else if let Some(fix) = &tab.ai_error_fix {
+                                    if !fix.explanation.is_empty() {
+                                        ui.colored_label(
+                                            Color32::from_rgb(134, 239, 172),
+                                            format!("💡 {}", fix.explanation),
+                                        );
+                                    }
+                                    if ui
+                                        .small_button("✔ Apply Fix (Tab)")
+                                        .on_hover_text("Apply AI correction to editor (Tab)")
+                                        .clicked()
+                                    {
+                                        apply_fix_clicked = true;
+                                    }
+                                    if ui
+                                        .small_button("✖ Dismiss (Esc)")
+                                        .on_hover_text("Dismiss AI suggestion (Esc)")
+                                        .clicked()
+                                    {
+                                        dismiss_fix_clicked = true;
+                                    }
+                                }
                                 if ui.small_button("Fix Query with AI").clicked() {
                                     request_fix_with_ai = Some(err.clone());
                                 }
                             });
                         });
+                    if apply_fix_clicked {
+                        if let Some(new_cursor) = super::ai_panel::apply_ai_error_fix(tab) {
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                                let ccursor = egui::text::CCursor::new(new_cursor);
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                                state.store(ui.ctx(), editor_id);
+                            }
+                            tab.cursor_index = new_cursor;
+                        }
+                    } else if dismiss_fix_clicked {
+                        tab.ai_error_fix = None;
+                    }
                 }
             }
 

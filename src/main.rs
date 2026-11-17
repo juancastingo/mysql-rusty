@@ -129,7 +129,7 @@ fn main() -> eframe::Result<()> {
     );
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("MySQL-Rusty Workbench — Native Rust SQL Client & AI Copilot")
+        .with_title("MySQL-Rusty — Native Rust SQL Client & AI Copilot")
         .with_inner_size([1420.0, 860.0])
         .with_min_inner_size([960.0, 620.0])
         .with_app_id("mysql-rusty");

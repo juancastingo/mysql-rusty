@@ -29,7 +29,7 @@ sidebar:
   history: "Historial"
 
 dashboard:
-  badge: "CONEXIONES DEL WORKBENCH"
+  badge: "CONEXIONES DE SERVIDORES"
   heading: "Servidores de bases de datos"
   subtitle: "Selecciona una conexión para abrir el espacio SQL o configura un nuevo perfil."
 

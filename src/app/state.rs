@@ -47,6 +47,25 @@ pub enum AsyncEvent {
         right: Result<QueryResult, String>,
         key_col_idx: usize,
     },
+    WorkspaceSchemaLoaded {
+        ws_idx: Option<usize>,
+        db: String,
+        schema: Result<DatabaseSchema, String>,
+    },
+    BatchDataDiffLoaded {
+        entries: Vec<BatchTableDiffEntry>,
+    },
+    DbSyncProgress {
+        done: usize,
+        total: usize,
+        current_stmt: String,
+    },
+    DbSyncFinished {
+        target_ws_idx: Option<usize>,
+        target_db: String,
+        reload_schema: bool,
+        result: Result<usize, String>,
+    },
     SqlDumpLoaded {
         sql: Result<String, String>,
         suggested_name: String,
@@ -88,10 +107,41 @@ pub enum AsyncEvent {
         tab_id: String,
         result: Result<crate::ai::QueryOptimizationReport, String>,
     },
+    AiErrorFixReady {
+        tab_id: String,
+        req_id: u64,
+        result: Result<Option<crate::ai::SqlErrorFixSuggestion>, String>,
+    },
     MockFkSamplesLoaded {
         table_name: String,
         samples: Result<HashMap<String, Vec<String>>, String>,
     },
+}
+
+#[derive(Clone)]
+pub struct BatchTableDiffEntry {
+    pub table_name: String,
+    pub schema_status: String,
+    pub schema_has_diff: bool,
+    pub schema_sql: String,
+    pub report: Option<DataDiffReport>,
+    pub sync_sql: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct PendingDbSync {
+    pub title: String,
+    pub source_label: String,
+    pub target_label: String,
+    pub target_ws_idx: Option<usize>,
+    pub target_db: String,
+    pub target_is_prod: bool,
+    pub target_is_read_only: bool,
+    pub target_is_local: bool,
+    pub sql: String,
+    pub statement_count: usize,
+    pub reload_target_schema: bool,
 }
 
 pub struct RoutineCallModalState {
@@ -215,6 +265,10 @@ pub struct QueryTab {
     pub ai_plan_loading: bool,
     pub ai_plan_report: Option<crate::ai::QueryOptimizationReport>,
     pub ai_plan_error: Option<String>,
+    pub last_executed_sql: Option<String>,
+    pub ai_error_fix_req_id: u64,
+    pub ai_error_fix_loading: bool,
+    pub ai_error_fix: Option<crate::ai::SqlErrorFixSuggestion>,
     pub vim_state: crate::vim::VimState,
     pub undocked: bool,
 }
@@ -285,6 +339,10 @@ impl QueryTab {
             ai_plan_loading: false,
             ai_plan_report: None,
             ai_plan_error: None,
+            last_executed_sql: None,
+            ai_error_fix_req_id: 0,
+            ai_error_fix_loading: false,
+            ai_error_fix: None,
             vim_state: crate::vim::VimState::default(),
             undocked: false,
         }

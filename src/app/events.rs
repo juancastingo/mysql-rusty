@@ -179,6 +179,11 @@ impl MysqlRustyApp {
                             Err(err) => {
                                 let hist_sql = tab.sql.clone();
                                 let hist_err = err.clone();
+                                let ai_err_opt = if !is_connection_error {
+                                    Some(err.clone())
+                                } else {
+                                    None
+                                };
                                 if is_connection_error {
                                     if !self.auto_retry_attempted
                                         && !crate::syntax::is_write_query(&tab.sql)
@@ -208,6 +213,9 @@ impl MysqlRustyApp {
                                 tab.multi_results.clear();
                                 let db = self.active_database.clone();
                                 self.record_history(db, hist_sql, 0, 0, false, Some(hist_err));
+                                if let Some(ai_err) = ai_err_opt {
+                                    self.trigger_ai_error_fix(&tab_id, &ai_err);
+                                }
                             }
                         }
                     }
@@ -252,8 +260,12 @@ impl MysqlRustyApp {
                             tab.current_page = 0;
                         } else if let Some(err) = first_err {
                             self.status_banner = format!("Multi-query failed: {err}");
+                            let err_clone = err.clone();
                             tab.last_error = Some(err);
                             tab.last_result = None;
+                            if !is_connection_error {
+                                self.trigger_ai_error_fix(&tab_id, &err_clone);
+                            }
                         }
                     }
                 }
@@ -303,6 +315,45 @@ impl MysqlRustyApp {
                                 self.status_banner = format!(
                                     "AI provider unreachable ({err}); using local schema heuristic."
                                 );
+                            }
+                        }
+                    }
+                }
+                AsyncEvent::AiErrorFixReady {
+                    tab_id,
+                    req_id,
+                    result,
+                } => {
+                    let schema = self.schemas.get(&self.active_database);
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        if tab.ai_error_fix_req_id != req_id || tab.last_error.is_none() {
+                            continue;
+                        }
+                        tab.ai_error_fix_loading = false;
+                        match result {
+                            Ok(Some(mut fix)) => {
+                                if super::ai_panel::align_fix_to_tab_sql(&tab.sql, &mut fix) {
+                                    tab.ai_error_fix = Some(fix);
+                                    self.status_banner =
+                                        "AI fix ready — Press Tab to apply or Esc to dismiss."
+                                            .to_string();
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                // Fallback to instant local heuristic if provider failed
+                                if let Some(err_msg) = tab.last_error.as_deref()
+                                    && let Some(mut fix) =
+                                        crate::ai::compute_heuristic_sql_error_fix(
+                                            &tab.sql, err_msg, schema,
+                                        )
+                                    && super::ai_panel::align_fix_to_tab_sql(&tab.sql, &mut fix)
+                                {
+                                    tab.ai_error_fix = Some(fix);
+                                    self.status_banner =
+                                        "AI fix ready (local heuristic) — Press Tab to apply."
+                                            .to_string();
+                                }
                             }
                         }
                     }
@@ -461,7 +512,7 @@ impl MysqlRustyApp {
                     match (left, right) {
                         (Ok(l_res), Ok(r_res)) => {
                             let report = compute_data_diff(&l_res, &r_res, key_col_idx);
-                            let sync_sql = generate_data_diff_sync_sql(
+                            let sync_sql = crate::data_diff::generate_data_diff_upsert_sql(
                                 &self.data_diff_target_table,
                                 &report,
                                 key_col_idx,
@@ -477,6 +528,101 @@ impl MysqlRustyApp {
                         }
                         (Err(e), _) | (_, Err(e)) => {
                             self.status_banner = format!("Data Diff failed: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::WorkspaceSchemaLoaded { ws_idx, db, schema } => {
+                    self.diff_loading_schemas = false;
+                    match schema {
+                        Ok(s) => {
+                            let resolved = ws_idx.or(self.active_workspace_idx);
+                            if resolved == self.active_workspace_idx {
+                                self.schemas.insert(db.clone(), s.clone());
+                            }
+                            if let Some(idx) = resolved
+                                && let Some(ws) = self.open_workspaces.get_mut(idx)
+                            {
+                                ws.schemas.insert(db.clone(), s);
+                            }
+                            if self.show_schema_diff_modal
+                                && let (Some(src), Some(tgt)) = (
+                                    self.diff_server_schema(
+                                        self.diff_source_ws_idx,
+                                        &self.diff_source_db,
+                                    )
+                                    .cloned(),
+                                    self.diff_server_schema(
+                                        self.diff_target_ws_idx,
+                                        &self.diff_target_db,
+                                    )
+                                    .cloned(),
+                                )
+                            {
+                                let included = self.diff_included_table_set(&src, &tgt);
+                                self.current_diff_report =
+                                    Some(crate::schema_diff::diff_schemas_filtered(
+                                        &src,
+                                        &tgt,
+                                        Some(&included),
+                                    ));
+                            }
+                        }
+                        Err(e) => {
+                            self.status_banner = format!("Failed to load schema for `{db}`: {e}");
+                        }
+                    }
+                }
+                AsyncEvent::BatchDataDiffLoaded { entries } => {
+                    self.data_diff_loading = false;
+                    let changed_count = entries
+                        .iter()
+                        .filter(|e| {
+                            e.schema_has_diff
+                                || e.error.is_some()
+                                || e.report.as_ref().is_some_and(|r| {
+                                    r.modified_count > 0
+                                        || r.left_only_count > 0
+                                        || r.right_only_count > 0
+                                })
+                        })
+                        .count();
+                    self.status_banner = format!(
+                        "Batch Diff complete: {} table(s) compared, {} with schema/data differences.",
+                        entries.len(),
+                        changed_count
+                    );
+                    self.data_diff_selected_batch_idx =
+                        if entries.is_empty() { None } else { Some(0) };
+                    self.data_diff_batch_results = entries;
+                }
+                AsyncEvent::DbSyncProgress {
+                    done,
+                    total,
+                    current_stmt,
+                } => {
+                    self.db_sync_progress = Some((done, total, current_stmt));
+                }
+                AsyncEvent::DbSyncFinished {
+                    target_ws_idx,
+                    target_db,
+                    reload_schema,
+                    result,
+                } => {
+                    self.db_sync_running = false;
+                    self.db_sync_progress = None;
+                    match result {
+                        Ok(count) => {
+                            self.pending_db_sync = None;
+                            self.db_sync_confirm_checked = false;
+                            self.status_banner = format!(
+                                "Sync completed: executed {count} statement(s) on `{target_db}`."
+                            );
+                            if reload_schema {
+                                self.spawn_load_workspace_schema(target_ws_idx, target_db);
+                            }
+                        }
+                        Err(e) => {
+                            self.status_banner = format!("Sync failed on `{target_db}`: {e}");
                         }
                     }
                 }

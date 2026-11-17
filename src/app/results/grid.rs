@@ -966,20 +966,26 @@ impl MysqlRustyApp {
                     });
             }
 
-            // Render Virtualized Data Grid
-            let num_cols = result.columns.len().max(1);
-            let mut builder = TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+            // Render Virtualized Data Grid inside a horizontal ScrollArea so wide
+            // result sets can be scrolled horizontally.
+            let hscroll_id = tab.id.clone();
+            egui::ScrollArea::horizontal()
+                .id_salt(("results_grid_hscroll", hscroll_id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let num_cols = result.columns.len().max(1);
+                    let mut builder = TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
 
-            builder = builder.column(Column::exact(28.0)); // Selection checkbox column
-            for _ in 0..num_cols {
-                builder = builder.column(Column::initial(135.0).at_least(65.0).clip(true));
-            }
+                    builder = builder.column(Column::exact(28.0)); // Selection checkbox column
+                    for _ in 0..num_cols {
+                        builder = builder.column(Column::initial(135.0).at_least(65.0).clip(true));
+                    }
 
-            builder
-            .header(24.0, |mut header| {
+                    builder
+                    .header(24.0, |mut header| {
                 header.col(|ui| {
                     let all_selected = !page_indices.is_empty()
                         && page_indices.iter().all(|r| tab.selected_rows.contains(r));
@@ -1254,6 +1260,7 @@ impl MysqlRustyApp {
                     }
                 });
             });
+                });
 
             pending_edits = tab.pending_edits.clone();
             pending_deletes = tab.pending_row_deletes.clone();
