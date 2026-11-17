@@ -2,8 +2,18 @@
 
 ![CI](https://github.com/juancastingo/mysql-rusty/actions/workflows/ci.yml/badge.svg)
 [![Latest Release](https://img.shields.io/badge/download-latest%20release-2ea44f?logo=github)](https://github.com/juancastingo/mysql-rusty/releases/tag/latest)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](./LICENSE-MIT)
 
 A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for Linux (Ubuntu X11/Wayland), featuring **schema-aware AI inline autocomplete** and **multi-provider AI / CLI Copilot integration** (`Ollama`, `OpenAI/Compatible`, `Anthropic`, `Gemini`, and local CLI tools like `agy` or `llm`).
+
+---
+
+## 📸 Screenshots
+
+<!-- TODO screenshot: docs/images/dashboard.png (Connections Dashboard with Sandbox Demo) -->
+<!-- TODO screenshot: docs/images/editor-results.png (SQL Editor + Results Grid) -->
+<!-- TODO screenshot: docs/images/explain-tree.png (Visual EXPLAIN Plan Tree & Index Advisor) -->
+<!-- TODO screenshot: docs/images/ai-panel.png (Dockable AI SQL Copilot Panel) -->
 
 ---
 
@@ -115,18 +125,13 @@ sudo cp target/release/mysql-rusty /usr/local/bin/
 ```
 
 ### Desktop Shortcut (Ubuntu Application Launcher)
-To add MySQL-Rusty to your desktop application menu:
+To add MySQL-Rusty to your desktop application menu with its application icon (using [`packaging/linux/mysql-rusty.desktop`](./packaging/linux/mysql-rusty.desktop)):
 ```bash
-cat << 'EOF' > ~/.local/share/applications/mysql-rusty.desktop
-[Desktop Entry]
-Name=MySQL Rusty
-Comment=Modern Native Rust SQL Client
-Exec=mysql-rusty
-Icon=utilities-terminal
-Terminal=false
-Type=Application
-Categories=Development;Database;
-EOF
+mkdir -p ~/.local/share/icons/hicolor/256x256/apps
+cp assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/mysql-rusty.png
+
+mkdir -p ~/.local/share/applications
+cp packaging/linux/mysql-rusty.desktop ~/.local/share/applications/mysql-rusty.desktop
 ```
 
 ### Use with AI agents (MCP)
@@ -180,3 +185,7 @@ UI strings are localized via `rust-i18n` in [`locales/en.yml`](./locales/en.yml)
 
 ## 🗺 Architecture & Plan
 See [`ARCHITECTURE_AND_PLAN.md`](./ARCHITECTURE_AND_PLAN.md) for the detailed architectural blueprint and verified implementation phases.
+
+## 🤝 Contributing & License
+- Contributions are welcome! Please read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening a PR.
+- Dual-licensed under [`MIT`](./LICENSE-MIT) OR [`Apache-2.0`](./LICENSE-APACHE).
