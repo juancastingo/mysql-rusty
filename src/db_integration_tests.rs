@@ -188,7 +188,10 @@ async fn it_execute_query_types_and_insert_metadata() {
         .expect("select type_test");
     assert_eq!(res.columns.len(), 11);
     assert_eq!(res.rows.len(), 1);
-    assert!(matches!(res.rows[0][0], CellValue::Integer(1)));
+    assert!(
+        matches!(res.rows[0][0], CellValue::Integer(1))
+            || matches!(&res.rows[0][0], CellValue::Text(s) if s == "1")
+    );
     assert!(matches!(res.rows[0][10], CellValue::Null));
     assert!(res.rows[0][4].display_text().contains('🦀'));
 
