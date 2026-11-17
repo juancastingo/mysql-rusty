@@ -1,7 +1,7 @@
 # 🦀 MySQL-Rusty
 
 ![CI](https://github.com/juancastingo/mysql-rusty/actions/workflows/ci.yml/badge.svg)
-[![Latest Release](https://img.shields.io/github/v/release/juancastingo/mysql-rusty?include_prereleases&label=download)](https://github.com/juancastingo/mysql-rusty/releases/tag/latest)
+[![Latest Release](https://img.shields.io/badge/download-latest%20release-2ea44f?logo=github)](https://github.com/juancastingo/mysql-rusty/releases/tag/latest)
 
 A modern, fast, **100% native Rust** desktop alternative to MySQL Workbench for Linux (Ubuntu X11/Wayland), featuring **schema-aware AI inline autocomplete** and **multi-provider AI / CLI Copilot integration** (`Ollama`, `OpenAI/Compatible`, `Anthropic`, `Gemini`, and local CLI tools like `agy` or `llm`).
 
