@@ -150,6 +150,7 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn render_right_ai_panel(&mut self, ui: &mut egui::Ui) {
+        let pal = self.effective_palette(ui.ctx());
         egui::Panel::right("ai_assistant_panel")
             .default_size(340.0)
             .size_range(260.0..=520.0)
@@ -158,21 +159,25 @@ impl MysqlRustyApp {
                     .set_anchor(crate::tour::TourAnchor::AiPanel, ui.max_rect());
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.heading(
-                        RichText::new("AI SQL Copilot")
-                            .color(Color32::from_rgb(192, 132, 252))
-                            .strong(),
-                    );
+                    ui.heading(RichText::new("AI SQL Copilot").color(pal.purple).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("Configure").clicked() {
                             self.show_ai_settings_modal = true;
+                        }
+                        if !self.chat_messages.is_empty()
+                            && ui
+                                .small_button("Clear")
+                                .on_hover_text("Clear conversation history")
+                                .clicked()
+                        {
+                            self.chat_messages.clear();
                         }
                     });
                 });
                 ui.label(
                     RichText::new(format!("Active Engine: {}", self.config.ai.provider.label()))
                         .small()
-                        .weak(),
+                        .color(pal.muted_text),
                 );
                 ui.checkbox(
                     &mut self.config.ai.include_schema_context,
@@ -204,44 +209,76 @@ impl MysqlRustyApp {
                 let available_height = (ui.available_height() - 95.0).max(120.0);
 
                 egui::ScrollArea::vertical()
+                    .id_salt("ai_chat_scroll")
                     .max_height(available_height)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
+                        if self.chat_messages.is_empty() && !self.is_chat_loading {
+                            ui.add_space(28.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new("Ask AI Copilot about your SQL or schema")
+                                        .strong()
+                                        .color(pal.text_secondary),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("Use a quick action above or type a question below.")
+                                        .small()
+                                        .color(pal.muted_text),
+                                );
+                            });
+                        }
+
                         for msg in &self.chat_messages {
                             let is_user = msg.role == "user";
-                            let bg = if is_user {
-                                Color32::from_rgb(30, 41, 59)
+                            let (bg, border) = if is_user {
+                                (pal.accent_bg, pal.border_active)
                             } else {
-                                Color32::from_rgb(15, 23, 42)
+                                (pal.card_bg, pal.card_border)
                             };
-                            egui::Frame::group(ui.style()).fill(bg).show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(if is_user { "You" } else { "AI Copilot" })
-                                        .strong()
-                                        .small()
-                                        .color(if is_user {
-                                            Color32::from_rgb(56, 189, 248)
-                                        } else {
-                                            Color32::from_rgb(192, 132, 252)
-                                        }),
-                                );
-                                ui.label(&msg.content);
-                                if let Some(sql_block) = &msg.extracted_sql {
-                                    ui.horizontal(|ui| {
-                                        if ui.small_button("Insert into Editor").clicked() {
-                                            sql_to_insert = Some((sql_block.clone(), false));
-                                        }
-                                        if ui.small_button("Insert & Run").clicked() {
-                                            sql_to_insert = Some((sql_block.clone(), true));
-                                        }
-                                    });
-                                }
-                            });
-                            ui.add_space(4.0);
+                            egui::Frame::new()
+                                .fill(bg)
+                                .stroke(Stroke::new(1.0, border))
+                                .corner_radius(egui::CornerRadius::same(8))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        RichText::new(if is_user { "You" } else { "AI Copilot" })
+                                            .strong()
+                                            .small()
+                                            .color(if is_user {
+                                                pal.accent_text
+                                            } else {
+                                                pal.purple
+                                            }),
+                                    );
+                                    ui.add_space(2.0);
+                                    ui.label(RichText::new(&msg.content).color(pal.text_primary));
+                                    if let Some(sql_block) = &msg.extracted_sql {
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            if ui.small_button("Insert into Editor").clicked() {
+                                                sql_to_insert = Some((sql_block.clone(), false));
+                                            }
+                                            if ui.small_button("Insert & Run").clicked() {
+                                                sql_to_insert = Some((sql_block.clone(), true));
+                                            }
+                                        });
+                                    }
+                                });
+                            ui.add_space(6.0);
                         }
                         if self.is_chat_loading {
-                            ui.spinner();
-                            ui.label(RichText::new("Generating SQL response...").italics());
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    RichText::new("Generating SQL response...")
+                                        .italics()
+                                        .color(pal.muted_text),
+                                );
+                            });
                         }
                     });
 
@@ -255,16 +292,21 @@ impl MysqlRustyApp {
                 }
 
                 ui.separator();
+                let can_send = !self.chat_input.trim().is_empty() && !self.is_chat_loading;
                 ui.horizontal(|ui| {
                     let resp = ui.add(
                         egui::TextEdit::multiline(&mut self.chat_input)
                             .desired_rows(2)
-                            .desired_width(ui.available_width() - 62.0)
+                            .desired_width((ui.available_width() - 68.0).max(120.0))
                             .hint_text("Ask in natural language (e.g. 'Monthly revenue by country')..."),
                     );
-                    if (resp.lost_focus()
-                        && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift))
-                        || ui.button("Send").clicked()
+                    let enter_send = can_send
+                        && resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
+                    if enter_send
+                        || ui
+                            .add_enabled(can_send, pal.primary_button("Send"))
+                            .clicked()
                     {
                         self.send_chat_prompt(None);
                     }

@@ -21,105 +21,184 @@ impl MysqlRustyApp {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
+            let pal = self.effective_palette(ui.ctx());
             // Query Tabs Bar
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 let mut close_idx = None;
                 let mut tab_to_rename: Option<(usize, String)> = None;
 
-                for idx in 0..self.tabs.len() {
-                    let is_active = idx == self.active_tab_idx;
-                    let is_renaming = self.renaming_tab_idx == Some(idx);
-                    let title = self.tabs[idx].display_title();
+                egui::ScrollArea::horizontal()
+                    .id_salt("query_tabs_scroll")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for idx in 0..self.tabs.len() {
+                                let is_active = idx == self.active_tab_idx;
+                                let is_renaming = self.renaming_tab_idx == Some(idx);
+                                let is_dirty = self.tabs[idx].is_dirty;
+                                let title = self.tabs[idx].display_title();
 
-                    let tab_bg = if is_active {
-                        Color32::from_rgb(13, 18, 28)
-                    } else {
-                        Color32::from_rgb(9, 13, 20)
-                    };
-                    let tab_stroke = if is_active {
-                        Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
-                    } else {
-                        Stroke::new(1.0, Color32::from_rgb(26, 35, 51))
-                    };
-
-                    egui::Frame::new()
-                        .fill(tab_bg)
-                        .stroke(tab_stroke)
-                        .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
-                        .inner_margin(egui::Margin::symmetric(8, 4))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if is_renaming {
-                                    let edit_resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.rename_tab_buffer)
-                                            .desired_width(100.0),
-                                    );
-                                    if edit_resp.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
-                                        tab_to_rename = Some((idx, self.rename_tab_buffer.clone()));
-                                    }
-                                    if ui.input(|i| i.key_pressed(Key::Escape)) {
-                                        self.renaming_tab_idx = None;
-                                    }
+                                let tab_bg = if is_active {
+                                    pal.tab_active_bg
                                 } else {
-                                    let label_color = if is_active {
-                                        Color32::WHITE
-                                    } else {
-                                        Color32::from_rgb(148, 163, 184)
-                                    };
-                                    let label = RichText::new(&title).size(12.5).color(label_color);
-                                    let resp = ui.selectable_label(is_active, label);
-                                    if resp.clicked() {
-                                        self.active_tab_idx = idx;
-                                    }
-                                    if resp.double_clicked() {
-                                        self.renaming_tab_idx = Some(idx);
-                                        self.rename_tab_buffer = self.tabs[idx].title.clone();
-                                    }
-                                    resp.context_menu(|ui| {
-                                        if ui.button("Rename").clicked() {
-                                            self.renaming_tab_idx = Some(idx);
-                                            self.rename_tab_buffer = self.tabs[idx].title.clone();
-                                            ui.close();
-                                        }
-                                        if ui.button("Save (Direct)").clicked() {
-                                            self.active_tab_idx = idx;
-                                            self.save_active_tab_direct();
-                                            ui.close();
-                                        }
-                                        if self.tabs.len() > 1 && ui.button("Close Tab").clicked() {
-                                            close_idx = Some(idx);
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                                if ui
-                                    .button(
-                                        RichText::new(if self.tabs[idx].undocked {
-                                            "↙"
-                                        } else {
-                                            "↗"
-                                        })
-                                        .size(11.0)
-                                        .weak(),
-                                    )
-                                    .on_hover_text(if self.tabs[idx].undocked {
-                                        "Redock tab into main window"
-                                    } else {
-                                        "Undock tab into separate window"
+                                    pal.tab_inactive_bg
+                                };
+                                let tab_stroke = if is_active {
+                                    Stroke::new(1.0, pal.border_active)
+                                } else {
+                                    Stroke::new(1.0, pal.border_subtle)
+                                };
+
+                                egui::Frame::new()
+                                    .fill(tab_bg)
+                                    .stroke(tab_stroke)
+                                    .corner_radius(egui::CornerRadius {
+                                        nw: 6,
+                                        ne: 6,
+                                        sw: 0,
+                                        se: 0,
                                     })
-                                    .clicked()
-                                {
-                                    self.tabs[idx].undocked = !self.tabs[idx].undocked;
-                                }
-                                if self.tabs.len() > 1
-                                    && ui.button(RichText::new("×").size(11.0).weak()).clicked() {
-                                        close_idx = Some(idx);
-                                    }
-                            });
+                                    .inner_margin(egui::Margin::symmetric(8, 4))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            if is_renaming {
+                                                let edit_resp = ui.add(
+                                                    egui::TextEdit::singleline(
+                                                        &mut self.rename_tab_buffer,
+                                                    )
+                                                    .desired_width(110.0),
+                                                );
+                                                if edit_resp.lost_focus()
+                                                    || ui.input(|i| i.key_pressed(Key::Enter))
+                                                {
+                                                    tab_to_rename = Some((
+                                                        idx,
+                                                        self.rename_tab_buffer.clone(),
+                                                    ));
+                                                }
+                                                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                                    self.renaming_tab_idx = None;
+                                                }
+                                            } else {
+                                                if is_dirty {
+                                                    ui.label(
+                                                        RichText::new("●")
+                                                            .size(8.0)
+                                                            .color(pal.accent),
+                                                    );
+                                                }
+                                                let label_color = if is_active {
+                                                    pal.text_primary
+                                                } else {
+                                                    pal.muted_text
+                                                };
+                                                let mut label = RichText::new(&title)
+                                                    .size(12.5)
+                                                    .color(label_color);
+                                                if is_active {
+                                                    label = label.strong();
+                                                }
+                                                let resp = ui.add(
+                                                    egui::Label::new(label)
+                                                        .sense(egui::Sense::click()),
+                                                );
+                                                if resp.clicked() {
+                                                    self.active_tab_idx = idx;
+                                                }
+                                                if resp.middle_clicked() && self.tabs.len() > 1 {
+                                                    close_idx = Some(idx);
+                                                }
+                                                if resp.double_clicked() {
+                                                    self.renaming_tab_idx = Some(idx);
+                                                    self.rename_tab_buffer =
+                                                        self.tabs[idx].title.clone();
+                                                }
+                                                resp.context_menu(|ui| {
+                                                    if ui.button("Rename").clicked() {
+                                                        self.renaming_tab_idx = Some(idx);
+                                                        self.rename_tab_buffer =
+                                                            self.tabs[idx].title.clone();
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("Save (Ctrl+S)").clicked() {
+                                                        self.active_tab_idx = idx;
+                                                        self.save_active_tab_direct();
+                                                        ui.close();
+                                                    }
+                                                    if self.tabs.len() > 1
+                                                        && ui.button("Close Tab").clicked()
+                                                    {
+                                                        close_idx = Some(idx);
+                                                        ui.close();
+                                                    }
+                                                });
+                                            }
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        RichText::new(if self.tabs[idx].undocked {
+                                                            "↙"
+                                                        } else {
+                                                            "↗"
+                                                        })
+                                                        .size(11.0)
+                                                        .color(pal.muted_text),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(if self.tabs[idx].undocked {
+                                                    "Redock tab into main window"
+                                                } else {
+                                                    "Undock tab into separate window"
+                                                })
+                                                .clicked()
+                                            {
+                                                self.tabs[idx].undocked = !self.tabs[idx].undocked;
+                                            }
+                                            if self.tabs.len() > 1
+                                                && ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            RichText::new("×")
+                                                                .size(11.5)
+                                                                .color(pal.muted_text),
+                                                        )
+                                                        .frame(false),
+                                                    )
+                                                    .on_hover_text("Close tab")
+                                                    .clicked()
+                                            {
+                                                close_idx = Some(idx);
+                                            }
+                                        });
+                                    });
+                                ui.add_space(2.0);
+                            }
+
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("+ New Tab")
+                                            .size(12.0)
+                                            .color(pal.text_secondary),
+                                    )
+                                    .fill(pal.tab_inactive_bg)
+                                    .stroke(Stroke::new(1.0, pal.border_subtle))
+                                    .corner_radius(egui::CornerRadius::same(5)),
+                                )
+                                .clicked()
+                            {
+                                let n = self.tabs.len() + 1;
+                                self.tabs.push(QueryTab::new(
+                                    format!("Query {n}"),
+                                    "SELECT * FROM users LIMIT 50;",
+                                ));
+                                self.active_tab_idx = self.tabs.len() - 1;
+                            }
                         });
-                    ui.add_space(2.0);
-                }
+                    });
+
                 if let Some((idx, new_title)) = tab_to_rename {
                     self.rename_tab(idx, new_title);
                     self.renaming_tab_idx = None;
@@ -129,45 +208,6 @@ impl MysqlRustyApp {
                     if self.active_tab_idx >= self.tabs.len() {
                         self.active_tab_idx = self.tabs.len().saturating_sub(1);
                     }
-                }
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("+ New Tab").size(12.0).weak())
-                            .fill(Color32::from_rgb(15, 21, 33))
-                            .corner_radius(egui::CornerRadius::same(5)),
-                    )
-                    .clicked()
-                {
-                    let n = self.tabs.len() + 1;
-                    self.tabs
-                        .push(QueryTab::new(format!("Query {n}"), "SELECT * FROM users LIMIT 50;"));
-                    self.active_tab_idx = self.tabs.len() - 1;
-                }
-
-                ui.add_space(4.0);
-                if ui
-                    .small_button("Rename Tab")
-                    .on_hover_text("Rename active query tab (or double-click tab name)")
-                    .clicked()
-                {
-                    self.renaming_tab_idx = Some(self.active_tab_idx);
-                    if let Some(tab) = self.tabs.get(self.active_tab_idx) {
-                        self.rename_tab_buffer = tab.title.clone();
-                    }
-                }
-                if ui
-                    .small_button("Save (Ctrl+S)")
-                    .on_hover_text("Directly save query to disk and library")
-                    .clicked()
-                {
-                    self.save_active_tab_direct();
-                }
-                if ui
-                    .small_button("Open (Ctrl+O)")
-                    .on_hover_text("Open .sql file from disk into an editor tab")
-                    .clicked()
-                {
-                    self.open_sql_file_dialog();
                 }
             });
             ui.separator();
@@ -206,20 +246,17 @@ impl MysqlRustyApp {
                         RichText::new(rust_i18n::t!("editor.limit_label"))
                             .size(12.0)
                             .strong()
-                            .color(Color32::from_rgb(148, 163, 184)),
+                            .color(editor_palette.muted_text),
                     );
 
                     let active_sql_target = tab.selected_sql.as_deref().unwrap_or(&tab.sql);
                     let current_limit = detect_current_limit(active_sql_target);
 
                     let presets = [
-                        (Some(10), "10"),
                         (Some(50), "50"),
                         (Some(100), "100"),
-                        (Some(250), "250"),
                         (Some(500), "500"),
                         (Some(1000), "1000"),
-                        (Some(5000), "5000"),
                         (None, "All"),
                     ];
 
@@ -230,22 +267,22 @@ impl MysqlRustyApp {
                                 .size(11.0)
                                 .strong()
                                 .color(if is_selected {
-                                    Color32::WHITE
+                                    editor_palette.accent_text
                                 } else {
-                                    Color32::from_rgb(203, 213, 225)
+                                    editor_palette.text_secondary
                                 }),
                         )
                         .fill(if is_selected {
-                            Color32::from_rgb(14, 116, 144)
+                            editor_palette.accent_bg
                         } else {
-                            Color32::from_rgb(20, 27, 41)
+                            editor_palette.card_bg
                         })
                         .stroke(Stroke::new(
                             1.0,
                             if is_selected {
-                                Color32::from_rgb(56, 189, 248)
+                                editor_palette.border_active
                             } else {
-                                Color32::from_rgb(33, 43, 63)
+                                editor_palette.card_border
                             },
                         ))
                         .corner_radius(egui::CornerRadius::same(4));
@@ -306,24 +343,24 @@ impl MysqlRustyApp {
 
                     ui.separator();
                     if in_tx {
-                        ui.label(
-                            RichText::new(format!(
-                                "⚠ IN TX ({} edit{})",
+                        editor_palette.badge(
+                            ui,
+                            &format!(
+                                "IN TX ({} edit{})",
                                 uncommitted_muts,
                                 if uncommitted_muts == 1 { "" } else { "s" }
-                            ))
-                            .size(11.0)
-                            .color(Color32::from_rgb(250, 204, 21))
-                            .strong(),
+                            ),
+                            editor_palette.warning,
+                            editor_palette.warning_bg,
                         );
                         let commit_btn = egui::Button::new(
                             RichText::new("Commit")
                                 .size(11.0)
                                 .strong()
-                                .color(Color32::from_rgb(220, 252, 231)),
+                                .color(editor_palette.success),
                         )
-                        .fill(Color32::from_rgb(22, 101, 52))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(34, 197, 94)))
+                        .fill(editor_palette.success_bg)
+                        .stroke(Stroke::new(1.0, editor_palette.success.gamma_multiply(0.5)))
                         .corner_radius(egui::CornerRadius::same(4));
 
                         if ui
@@ -338,10 +375,10 @@ impl MysqlRustyApp {
                             RichText::new("Rollback")
                                 .size(11.0)
                                 .strong()
-                                .color(Color32::from_rgb(254, 202, 202)),
+                                .color(editor_palette.danger),
                         )
-                        .fill(Color32::from_rgb(153, 27, 27))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                        .fill(editor_palette.danger_bg)
+                        .stroke(Stroke::new(1.0, editor_palette.danger.gamma_multiply(0.5)))
                         .corner_radius(egui::CornerRadius::same(4));
 
                         if ui
@@ -355,10 +392,10 @@ impl MysqlRustyApp {
                         let begin_btn = egui::Button::new(
                             RichText::new("Begin Tx")
                                 .size(11.0)
-                                .color(Color32::from_rgb(203, 213, 225)),
+                                .color(editor_palette.text_secondary),
                         )
-                        .fill(Color32::from_rgb(20, 27, 41))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .fill(editor_palette.card_bg)
+                        .stroke(Stroke::new(1.0, editor_palette.card_border))
                         .corner_radius(egui::CornerRadius::same(4));
 
                         if ui
@@ -380,7 +417,7 @@ impl MysqlRustyApp {
                             RichText::new("Params:")
                                 .size(12.0)
                                 .strong()
-                                .color(Color32::from_rgb(192, 132, 252)),
+                                .color(editor_palette.purple),
                         );
                         for p in &detected_params {
                             let val_entry = tab.query_params.entry(p.clone()).or_default();
@@ -571,21 +608,21 @@ impl MysqlRustyApp {
                     let mut insert_sql: Option<(String, bool)> = None;
 
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(17, 24, 39))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(126, 34, 206)))
+                        .fill(editor_palette.card_bg)
+                        .stroke(Stroke::new(1.0, editor_palette.purple))
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new("Prompt to SQL")
-                                        .color(Color32::from_rgb(192, 132, 252))
+                                        .color(editor_palette.purple)
                                         .strong(),
                                 );
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(&mut tab.nl2sql_prompt)
                                         .hint_text("e.g., Get top 5 customers with highest total orders in the last 30 days")
-                                        .desired_width(ui.available_width() - 150.0),
+                                        .desired_width((ui.available_width() - 150.0).max(120.0)),
                                 );
                                 if tab.nl2sql_autofocus {
                                     resp.request_focus();
@@ -602,7 +639,7 @@ impl MysqlRustyApp {
                                 } else if ui
                                     .add_enabled(
                                         !tab.nl2sql_prompt.trim().is_empty(),
-                                        egui::Button::new("Generate"),
+                                        editor_palette.primary_button("Generate"),
                                     )
                                     .clicked()
                                 {
@@ -614,27 +651,42 @@ impl MysqlRustyApp {
                             });
 
                             if let Some(err) = &tab.nl2sql_error {
-                                ui.colored_label(Color32::from_rgb(248, 113, 113), err);
+                                ui.colored_label(editor_palette.danger, err);
                             }
 
                             if let Some(res) = &tab.nl2sql_result {
                                 ui.separator();
-                                let job = highlight_sql(&res.sql, None, None, 13.0);
+                                let job = highlight_sql_with_palette(
+                                    &res.sql,
+                                    None,
+                                    None,
+                                    13.0,
+                                    &editor_palette,
+                                );
                                 egui::ScrollArea::vertical()
                                     .id_salt("nl2sql_preview_scroll")
                                     .max_height(120.0)
                                     .show(ui, |ui| {
                                         ui.label(job);
                                     });
-                                ui.label(RichText::new(&res.explanation).small().weak());
+                                ui.label(
+                                    RichText::new(&res.explanation)
+                                        .small()
+                                        .color(editor_palette.muted_text),
+                                );
                                 for bullet in &res.assumptions {
                                     ui.label(
-                                        RichText::new(format!("• {bullet}")).small().weak(),
+                                        RichText::new(format!("• {bullet}"))
+                                            .small()
+                                            .color(editor_palette.muted_text),
                                     );
                                 }
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Insert at Cursor").clicked() {
+                                    if ui
+                                        .add(editor_palette.primary_button("Insert at Cursor"))
+                                        .clicked()
+                                    {
                                         insert_sql = Some((res.sql.clone(), false));
                                     }
                                     if ui.button("Insert & Run").clicked() {
@@ -706,16 +758,16 @@ impl MysqlRustyApp {
                     let mut close_find = false;
 
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(15, 23, 42))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .fill(editor_palette.card_bg)
+                        .stroke(Stroke::new(1.0, editor_palette.card_border))
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(6.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let border_color = if tab.find_error.is_some() {
-                                    Color32::from_rgb(239, 68, 68)
+                                    editor_palette.danger
                                 } else {
-                                    Color32::from_rgb(71, 85, 105)
+                                    editor_palette.card_border
                                 };
                                 let edit_frame = egui::Frame::NONE
                                     .stroke(Stroke::new(1.0, border_color))
@@ -1138,6 +1190,42 @@ impl MysqlRustyApp {
                     }
                 }
 
+                // Compact Editor Status Strip (Ln/Col, lines, selection, font size)
+                {
+                    let (prefix_before_cursor, _) =
+                        split_sql_at_cursor(&tab.sql, tab.cursor_index);
+                    let cur_line = prefix_before_cursor.chars().filter(|&c| c == '\n').count() + 1;
+                    let cur_col = prefix_before_cursor
+                        .rsplit('\n')
+                        .next()
+                        .map(|s| s.chars().count() + 1)
+                        .unwrap_or(1);
+                    let total_lines = tab.sql.lines().count().max(1);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Ln {cur_line}, Col {cur_col}  •  {total_lines} lines"
+                            ))
+                            .size(11.0)
+                            .color(editor_palette.muted_text),
+                        );
+                        if let Some(sel) = &tab.selected_sql {
+                            ui.label(
+                                RichText::new(format!("•  {} chars selected", sel.chars().count()))
+                                    .size(11.0)
+                                    .color(editor_palette.accent_text),
+                            );
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("{:.0}px", editor_font_size))
+                                    .size(11.0)
+                                    .color(editor_palette.muted_text),
+                            );
+                        });
+                    });
+                }
+
                 // Inline Autocomplete Bar (Schema tokens + Ghost completion accept button)
                 if !tab.local_suggestions.is_empty() || tab.ghost_completion.is_some() {
                     let mut clicked_new_cursor: Option<usize> = None;
@@ -1145,14 +1233,14 @@ impl MysqlRustyApp {
                         ui.label(
                             RichText::new("Suggestions:")
                                 .small()
-                                .color(Color32::from_rgb(56, 189, 248)),
+                                .color(editor_palette.accent_text),
                         );
                         if let Some(ghost) = tab.ghost_completion.clone() {
                             let preview = ghost.replace('\n', " ↵ ");
                             if ui
                                 .small_button(
                                     RichText::new(format!("[Tab] {preview}"))
-                                        .color(Color32::from_rgb(125, 211, 252)),
+                                        .color(editor_palette.accent_text),
                                 )
                                 .on_hover_text("Insert ghost completion at cursor (Tab)")
                                 .clicked()
@@ -1188,9 +1276,9 @@ impl MysqlRustyApp {
                             let text = if is_selected {
                                 RichText::new(label)
                                     .strong()
-                                    .color(Color32::from_rgb(250, 204, 21))
+                                    .color(editor_palette.warning)
                             } else {
-                                RichText::new(label)
+                                RichText::new(label).color(editor_palette.text_primary)
                             };
                             if ui
                                 .small_button(text)
@@ -1225,7 +1313,7 @@ impl MysqlRustyApp {
                             .small_button(
                                 RichText::new("[Esc] ✕")
                                     .small()
-                                    .color(Color32::from_rgb(148, 163, 184)),
+                                    .color(editor_palette.muted_text),
                             )
                             .on_hover_text("Dismiss suggestions (Esc)")
                             .clicked()
@@ -1252,36 +1340,36 @@ impl MysqlRustyApp {
                 if let Some(err) = &tab.last_error {
                     let mut apply_fix_clicked = false;
                     let mut dismiss_fix_clicked = false;
-                    egui::Frame::group(ui.style())
-                        .fill(Color32::from_rgb(69, 10, 10))
+                    editor_palette
+                        .banner_frame(editor_palette.danger_bg, editor_palette.danger)
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(
-                                    Color32::from_rgb(248, 113, 113),
+                                    editor_palette.danger,
                                     format!("SQL Error: {err}"),
                                 );
                                 if tab.ai_error_fix_loading {
                                     ui.spinner();
                                     ui.colored_label(
-                                        Color32::from_rgb(125, 211, 252),
+                                        editor_palette.accent_text,
                                         "AI suggesting fix...",
                                     );
                                 } else if let Some(fix) = &tab.ai_error_fix {
                                     if !fix.explanation.is_empty() {
                                         ui.colored_label(
-                                            Color32::from_rgb(134, 239, 172),
-                                            format!("💡 {}", fix.explanation),
+                                            editor_palette.success,
+                                            format!("Fix: {}", fix.explanation),
                                         );
                                     }
                                     if ui
-                                        .small_button("✔ Apply Fix (Tab)")
+                                        .small_button("Apply Fix (Tab)")
                                         .on_hover_text("Apply AI correction to editor (Tab)")
                                         .clicked()
                                     {
                                         apply_fix_clicked = true;
                                     }
                                     if ui
-                                        .small_button("✖ Dismiss (Esc)")
+                                        .small_button("Dismiss (Esc)")
                                         .on_hover_text("Dismiss AI suggestion (Esc)")
                                         .clicked()
                                     {
