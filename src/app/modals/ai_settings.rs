@@ -5,337 +5,369 @@ impl MysqlRustyApp {
         if !self.show_ai_settings_modal {
             return;
         }
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_ai_settings_modal;
         let mut should_save = false;
+        let mut cancel_clicked = false;
 
         egui::Window::new("AI Autocomplete & Provider Settings")
             .open(&mut open)
+            .collapsible(false)
             .resizable(false)
-            .default_width(480.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(500.0)
             .show(ctx, |ui| {
-                ui.label("Select AI Provider for Inline Autocomplete & SQL Chat:");
-                egui::ComboBox::from_id_salt("ai_provider_combo")
-                    .selected_text(self.config.ai.provider.label())
-                    .width(340.0)
-                    .show_ui(ui, |ui| {
-                        let providers = [
-                            AiProvider::LocalSchema,
-                            AiProvider::Ollama,
-                            AiProvider::GitHubCopilot,
-                            AiProvider::OpenAiCompatible,
-                            AiProvider::Anthropic,
-                            AiProvider::Gemini,
-                            AiProvider::CliCommand,
-                        ];
-                        for p in providers {
-                            let label = p.label();
-                            ui.selectable_value(&mut self.config.ai.provider, p, label);
-                        }
-                    });
-
-                ui.checkbox(
-                    &mut self.config.ai.enable_inline_autocomplete,
-                    "Enable Copilot-style inline ghost SQL suggestions",
-                );
-                ui.checkbox(
-                    &mut self.config.ai.enable_auto_error_fix,
-                    "Auto-suggest AI fix on SQL error (strikethrough + ghost)",
-                );
-                ui.separator();
-
-                match self.config.ai.provider {
-                    AiProvider::LocalSchema => {
-                        ui.colored_label(
-                            Color32::from_rgb(52, 211, 153),
-                            "⚡ Option 1: Local Schema Native (0ms Latency, 100% Offline)",
-                        );
-                        ui.label(
-                            "Runs instantly in Rust memory without network calls or cloud APIs. \
-                            Generates context-aware ghost continuations for SELECT, JOIN, WHERE, \
-                            ORDER BY, GROUP BY, INSERT, and UPDATE based on your database tables and foreign keys."
-                        );
-                        ui.small("Recommended for max typing speed, zero latency, and private offline schemas.");
-                    }
-                    AiProvider::Ollama => {
-                        ui.colored_label(
-                            Color32::from_rgb(167, 139, 250),
-                            "💻 Option 2: Ollama FIM (Fast Local Code LLM)",
-                        );
-                        ui.label("Ollama Endpoint URL:");
-                        ui.text_edit_singleline(&mut self.config.ai.ollama_endpoint);
-                        ui.label("Model Name (e.g. `qwen2.5-coder:1.5b` [recommended], `0.5b`, `7b`):");
-                        ui.text_edit_singleline(&mut self.config.ai.ollama_model);
-                        ui.checkbox(
-                            &mut self.config.ai.ollama_use_fim,
-                            "⚡ Enable native FIM (Fill-In-The-Middle) prompt mode for code models",
-                        );
-                        ui.small("Tip: `qwen2.5-coder:1.5b` with FIM responds in ~80-150ms on local hardware.");
-                    }
-                    AiProvider::GitHubCopilot => {
-                        ui.colored_label(
-                            Color32::from_rgb(56, 189, 248),
-                            "✨ Option 3: GitHub Copilot (Official Subscription)",
-                        );
-
-                        let is_logged_in = !self.config.ai.copilot_github_token.trim().is_empty();
-                        if is_logged_in {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(Color32::from_rgb(34, 197, 94), "✅ Logged In & Ready");
-                                if ui.button("Disconnect").clicked() {
-                                    self.config.ai.copilot_github_token.clear();
-                                    self.config.ai.copilot_session_token.clear();
-                                    self.config.ai.copilot_token_expires_at = 0;
-                                    self.copilot_auth_status = "Disconnected from GitHub Copilot.".to_string();
+                egui::ScrollArea::vertical()
+                    .id_salt("ai_settings_scroll")
+                    .max_height(520.0)
+                    .show(ui, |ui| {
+                        ui.label("Select AI Provider for Inline Autocomplete & SQL Chat:");
+                        egui::ComboBox::from_id_salt("ai_provider_combo")
+                            .selected_text(self.config.ai.provider.label())
+                            .width(340.0)
+                            .show_ui(ui, |ui| {
+                                let providers = [
+                                    AiProvider::LocalSchema,
+                                    AiProvider::Ollama,
+                                    AiProvider::GitHubCopilot,
+                                    AiProvider::OpenAiCompatible,
+                                    AiProvider::Anthropic,
+                                    AiProvider::Gemini,
+                                    AiProvider::CliCommand,
+                                ];
+                                for p in providers {
+                                    let label = p.label();
+                                    ui.selectable_value(&mut self.config.ai.provider, p, label);
                                 }
                             });
-                            ui.label("Copilot Model Engine:");
-                            egui::ComboBox::from_id_salt("copilot_model_combo")
-                                .selected_text(&self.config.ai.copilot_model)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-4o".to_string(), "gpt-4o (Smartest)");
-                                    ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-3.5-turbo".to_string(), "gpt-3.5-turbo (Ultra-fast)");
-                                    ui.selectable_value(&mut self.config.ai.copilot_model, "claude-3.5-sonnet".to_string(), "claude-3.5-sonnet");
-                                });
-                        } else {
-                            ui.label("Log in using your GitHub account with active Copilot subscription:");
-                            if self.is_copilot_authenticating {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Connecting to GitHub...");
-                                });
-                            } else if let Some(dev) = &self.copilot_device_code_data {
-                                ui.group(|ui| {
-                                    ui.label(RichText::new("Step 1: Open verification page").strong());
-                                    if ui.button("🌐 Open https://github.com/login/device in Browser").clicked() {
-                                        ui.ctx().open_url(egui::OpenUrl::new_tab(&dev.verification_uri));
-                                    }
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new("Step 2: Enter this one-time code:").strong());
+
+                        ui.checkbox(
+                            &mut self.config.ai.enable_inline_autocomplete,
+                            "Enable Copilot-style inline ghost SQL suggestions",
+                        );
+                        ui.checkbox(
+                            &mut self.config.ai.enable_auto_error_fix,
+                            "Auto-suggest AI fix on SQL error (strikethrough + ghost)",
+                        );
+                        ui.separator();
+
+                        match self.config.ai.provider {
+                            AiProvider::LocalSchema => {
+                                ui.colored_label(
+                                    pal.success,
+                                    "Option 1: Local Schema Native (0ms Latency, 100% Offline)",
+                                );
+                                ui.label(
+                                    "Runs instantly in Rust memory without network calls or cloud APIs. \
+                                    Generates context-aware ghost continuations for SELECT, JOIN, WHERE, \
+                                    ORDER BY, GROUP BY, INSERT, and UPDATE based on your database tables and foreign keys."
+                                );
+                                ui.label(
+                                    RichText::new("Recommended for max typing speed, zero latency, and private offline schemas.")
+                                        .small()
+                                        .color(pal.muted_text),
+                                );
+                            }
+                            AiProvider::Ollama => {
+                                ui.colored_label(
+                                    pal.purple,
+                                    "Option 2: Ollama FIM (Fast Local Code LLM)",
+                                );
+                                ui.label("Ollama Endpoint URL:");
+                                ui.text_edit_singleline(&mut self.config.ai.ollama_endpoint);
+                                ui.label("Model Name (e.g. `qwen2.5-coder:1.5b` [recommended], `0.5b`, `7b`):");
+                                ui.text_edit_singleline(&mut self.config.ai.ollama_model);
+                                ui.checkbox(
+                                    &mut self.config.ai.ollama_use_fim,
+                                    "Enable native FIM (Fill-In-The-Middle) prompt mode for code models",
+                                );
+                                ui.label(
+                                    RichText::new("Tip: `qwen2.5-coder:1.5b` with FIM responds in ~80-150ms on local hardware.")
+                                        .small()
+                                        .color(pal.muted_text),
+                                );
+                            }
+                            AiProvider::GitHubCopilot => {
+                                ui.colored_label(
+                                    pal.accent_text,
+                                    "Option 3: GitHub Copilot (Official Subscription)",
+                                );
+
+                                let is_logged_in = !self.config.ai.copilot_github_token.trim().is_empty();
+                                if is_logged_in {
                                     ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(&dev.user_code)
-                                                .size(20.0)
-                                                .strong()
-                                                .color(Color32::from_rgb(251, 191, 36)),
-                                        );
-                                        if ui.button("📋 Copy Code").clicked() {
-                                            ui.ctx().copy_text(dev.user_code.clone());
-                                            self.status_banner = "Copied device code to clipboard!".to_string();
+                                        ui.colored_label(pal.success, "Logged In & Ready");
+                                        if ui.button("Disconnect").clicked() {
+                                            self.config.ai.copilot_github_token.clear();
+                                            self.config.ai.copilot_session_token.clear();
+                                            self.config.ai.copilot_token_expires_at = 0;
+                                            self.copilot_auth_status = "Disconnected from GitHub Copilot.".to_string();
                                         }
                                     });
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new("Step 3: Click once approved in browser:").strong());
-                                    if ui.button("🔄 Check / Confirm Authorization").clicked() {
-                                        let device_code = dev.device_code.clone();
-                                        let tx = self.tx.clone();
+                                    ui.label("Copilot Model Engine:");
+                                    egui::ComboBox::from_id_salt("copilot_model_combo")
+                                        .selected_text(&self.config.ai.copilot_model)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-4o".to_string(), "gpt-4o (Smartest)");
+                                            ui.selectable_value(&mut self.config.ai.copilot_model, "gpt-3.5-turbo".to_string(), "gpt-3.5-turbo (Ultra-fast)");
+                                            ui.selectable_value(&mut self.config.ai.copilot_model, "claude-3.5-sonnet".to_string(), "claude-3.5-sonnet");
+                                        });
+                                } else {
+                                    ui.label("Log in using your GitHub account with active Copilot subscription:");
+                                    if self.is_copilot_authenticating {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("Connecting to GitHub...");
+                                        });
+                                    } else if let Some(dev) = &self.copilot_device_code_data {
+                                        pal.compact_card_frame().show(ui, |ui| {
+                                            ui.label(RichText::new("Step 1: Open verification page").strong());
+                                            if ui.button("Open https://github.com/login/device in Browser").clicked() {
+                                                ui.ctx().open_url(egui::OpenUrl::new_tab(&dev.verification_uri));
+                                            }
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Step 2: Enter this one-time code:").strong());
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(&dev.user_code)
+                                                        .size(20.0)
+                                                        .strong()
+                                                        .color(pal.warning),
+                                                );
+                                                if ui.button("Copy Code").clicked() {
+                                                    ui.ctx().copy_text(dev.user_code.clone());
+                                                    self.status_banner = "Copied device code to clipboard!".to_string();
+                                                }
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Step 3: Click once approved in browser:").strong());
+                                            if ui.button("Check / Confirm Authorization").clicked() {
+                                                let device_code = dev.device_code.clone();
+                                                let tx = self.tx.clone();
+                                                self.is_copilot_authenticating = true;
+                                                self.rt.spawn(async move {
+                                                    let res = crate::ai::poll_copilot_device_token(&device_code).await;
+                                                    let outcome = match res {
+                                                        Ok(Ok(token)) => Ok(token),
+                                                        Ok(Err(err_msg)) => Err(err_msg),
+                                                        Err(e) => Err(format!("{e:#}")),
+                                                    };
+                                                    let _ = tx.send(AsyncEvent::CopilotPollFinished(outcome));
+                                                });
+                                            }
+                                        });
+                                    } else if ui.button("Connect with GitHub (Device Code)").clicked() {
                                         self.is_copilot_authenticating = true;
+                                        let tx = self.tx.clone();
                                         self.rt.spawn(async move {
-                                            let res = crate::ai::poll_copilot_device_token(&device_code).await;
-                                            let outcome = match res {
-                                                Ok(Ok(token)) => Ok(token),
-                                                Ok(Err(err_msg)) => Err(err_msg),
-                                                Err(e) => Err(format!("{e:#}")),
-                                            };
-                                            let _ = tx.send(AsyncEvent::CopilotPollFinished(outcome));
+                                            let res = crate::ai::request_copilot_device_code()
+                                                .await
+                                                .map_err(|e| format!("{e:#}"));
+                                            let _ = tx.send(AsyncEvent::CopilotDeviceCodeReady(res));
                                         });
                                     }
-                                });
-                            } else {
-                                if ui.button("🔗 Connect with GitHub (Device Code)").clicked() {
-                                    self.is_copilot_authenticating = true;
-                                    let tx = self.tx.clone();
-                                    self.rt.spawn(async move {
-                                        let res = crate::ai::request_copilot_device_code()
-                                            .await
-                                            .map_err(|e| format!("{e:#}"));
-                                        let _ = tx.send(AsyncEvent::CopilotDeviceCodeReady(res));
+
+                                    ui.collapsing("Or paste GitHub Token manually", |ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.config.ai.copilot_github_token)
+                                                .password(true)
+                                                .hint_text("ghu_... or personal access token"),
+                                        );
+                                        ui.label(
+                                            RichText::new("Accepts personal token or ghu_ OAuth token with Copilot access.")
+                                                .small()
+                                                .color(pal.muted_text),
+                                        );
                                     });
+
+                                    if !self.copilot_auth_status.is_empty() {
+                                        ui.colored_label(pal.warning, &self.copilot_auth_status);
+                                    }
                                 }
                             }
-
-                            ui.collapsing("Or paste GitHub Token manually", |ui| {
+                            AiProvider::OpenAiCompatible => {
+                                ui.label("Base URL (OpenAI, Groq, OpenRouter, vLLM):");
+                                ui.text_edit_singleline(&mut self.config.ai.openai_base_url);
+                                ui.label("API Key:");
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut self.config.ai.copilot_github_token)
-                                        .password(true)
-                                        .hint_text("ghu_... or personal access token"),
+                                    egui::TextEdit::singleline(&mut self.config.ai.openai_api_key)
+                                        .password(true),
                                 );
-                                ui.small("Accepts personal token or ghu_ OAuth token with Copilot access.");
-                            });
-
-                            if !self.copilot_auth_status.is_empty() {
-                                ui.colored_label(Color32::from_rgb(234, 179, 8), &self.copilot_auth_status);
+                                ui.label("Model Name:");
+                                ui.text_edit_singleline(&mut self.config.ai.openai_model);
+                            }
+                            AiProvider::Anthropic => {
+                                ui.label("Anthropic API Key:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.config.ai.anthropic_api_key)
+                                        .password(true),
+                                );
+                                ui.label("Claude Model:");
+                                ui.text_edit_singleline(&mut self.config.ai.anthropic_model);
+                            }
+                            AiProvider::Gemini => {
+                                ui.label("Google Gemini API Key:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.config.ai.gemini_api_key)
+                                        .password(true),
+                                );
+                                ui.label("Gemini Model:");
+                                ui.text_edit_singleline(&mut self.config.ai.gemini_model);
+                            }
+                            AiProvider::CliCommand => {
+                                ui.label(
+                                    "Local CLI Command (e.g. `agy`, `llm`, `ollama run qwen2.5-coder`):",
+                                );
+                                ui.text_edit_singleline(&mut self.config.ai.cli_command);
+                                ui.checkbox(
+                                    &mut self.config.ai.cli_pass_via_stdin,
+                                    "Pass prompt via STDIN (uncheck to pass as final CLI argument)",
+                                );
                             }
                         }
-                    }
-                    AiProvider::OpenAiCompatible => {
-                        ui.label("Base URL (OpenAI, Groq, OpenRouter, vLLM):");
-                        ui.text_edit_singleline(&mut self.config.ai.openai_base_url);
-                        ui.label("API Key:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.config.ai.openai_api_key)
-                                .password(true),
-                        );
-                        ui.label("Model Name:");
-                        ui.text_edit_singleline(&mut self.config.ai.openai_model);
-                    }
-                    AiProvider::Anthropic => {
-                        ui.label("Anthropic API Key:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.config.ai.anthropic_api_key)
-                                .password(true),
-                        );
-                        ui.label("Claude Model:");
-                        ui.text_edit_singleline(&mut self.config.ai.anthropic_model);
-                    }
-                    AiProvider::Gemini => {
-                        ui.label("Google Gemini API Key:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.config.ai.gemini_api_key)
-                                .password(true),
-                        );
-                        ui.label("Gemini Model:");
-                        ui.text_edit_singleline(&mut self.config.ai.gemini_model);
-                    }
-                    AiProvider::CliCommand => {
+
+                        ui.separator();
+                        ui.label(RichText::new("Performance & Inline Latency").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Debounce Delay:");
+                            ui.add(
+                                egui::Slider::new(&mut self.config.ai.autocomplete_debounce_ms, 50..=600)
+                                    .suffix(" ms"),
+                            );
+                        });
                         ui.label(
-                            "Local CLI Command (e.g. `agy`, `llm`, `ollama run qwen2.5-coder`):",
+                            RichText::new("150–200 ms recommended for fast, natural response while typing.")
+                                .small()
+                                .color(pal.muted_text),
                         );
-                        ui.text_edit_singleline(&mut self.config.ai.cli_command);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Max Completion Tokens:");
+                            ui.add(
+                                egui::Slider::new(&mut self.config.ai.autocomplete_max_tokens, 15..=100)
+                                    .suffix(" tokens"),
+                            );
+                        });
+                        ui.label(
+                            RichText::new("Capping at 25–40 tokens cuts LLM inference time by ~75%.")
+                                .small()
+                                .color(pal.muted_text),
+                        );
+
+                        ui.separator();
+                        ui.label(RichText::new("Query Execution").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Query Timeout (seconds, 0 = none):");
+                            ui.add(
+                                egui::DragValue::new(&mut self.config.query.timeout_secs)
+                                    .range(0..=3600)
+                                    .speed(1.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Max Rows per Result:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.config.query.max_rows)
+                                    .range(100..=1_000_000)
+                                    .speed(100.0),
+                            );
+                        });
                         ui.checkbox(
-                            &mut self.config.ai.cli_pass_via_stdin,
-                            "Pass prompt via STDIN (uncheck to pass as final CLI argument)",
+                            &mut self.config.ui.vim_mode,
+                            "Enable Vim Mode in SQL Editor",
                         );
-                    }
-                }
 
-                ui.separator();
-                ui.label(RichText::new("Performance & Inline Latency").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Debounce Delay:");
-                    ui.add(
-                        egui::Slider::new(&mut self.config.ai.autocomplete_debounce_ms, 50..=600)
-                            .suffix(" ms"),
-                    );
-                });
-                ui.small("150–200 ms recommended for fast, natural response while typing.");
-
-                ui.horizontal(|ui| {
-                    ui.label("Max Completion Tokens:");
-                    ui.add(
-                        egui::Slider::new(&mut self.config.ai.autocomplete_max_tokens, 15..=100)
-                            .suffix(" tokens"),
-                    );
-                });
-                ui.small("Capping at 25–40 tokens cuts LLM inference time by ~75%.");
-
-                ui.separator();
-                ui.label(RichText::new("Query Execution").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Query Timeout (seconds, 0 = none):");
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.query.timeout_secs)
-                            .range(0..=3600)
-                            .speed(1.0),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Max Rows per Result:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.query.max_rows)
-                            .range(100..=1_000_000)
-                            .speed(100.0),
-                    );
-                });
-                ui.checkbox(
-                    &mut self.config.ui.vim_mode,
-                    "Enable Vim Mode in SQL Editor",
-                );
-
-                ui.add_space(6.0);
-                ui.label(RichText::new(rust_i18n::t!("settings.appearance")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("settings.language"));
-                    let lang_label = match self.config.ui.language.as_str() {
-                        "en" => rust_i18n::t!("settings.lang_en"),
-                        "es" => rust_i18n::t!("settings.lang_es"),
-                        _ => rust_i18n::t!("settings.lang_system"),
-                    };
-                    let mut changed = false;
-                    egui::ComboBox::from_id_salt("settings_language_combo")
-                        .selected_text(lang_label)
-                        .show_ui(ui, |ui| {
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.config.ui.language,
-                                    "system".to_string(),
-                                    rust_i18n::t!("settings.lang_system"),
-                                )
-                                .changed();
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.config.ui.language,
-                                    "en".to_string(),
-                                    rust_i18n::t!("settings.lang_en"),
-                                )
-                                .changed();
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.config.ui.language,
-                                    "es".to_string(),
-                                    rust_i18n::t!("settings.lang_es"),
-                                )
-                                .changed();
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(rust_i18n::t!("settings.appearance")).strong());
+                        ui.horizontal(|ui| {
+                            ui.label(rust_i18n::t!("settings.language"));
+                            let lang_label = match self.config.ui.language.as_str() {
+                                "en" => rust_i18n::t!("settings.lang_en"),
+                                "es" => rust_i18n::t!("settings.lang_es"),
+                                _ => rust_i18n::t!("settings.lang_system"),
+                            };
+                            let mut changed = false;
+                            egui::ComboBox::from_id_salt("settings_language_combo")
+                                .selected_text(lang_label)
+                                .show_ui(ui, |ui| {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut self.config.ui.language,
+                                            "system".to_string(),
+                                            rust_i18n::t!("settings.lang_system"),
+                                        )
+                                        .changed();
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut self.config.ui.language,
+                                            "en".to_string(),
+                                            rust_i18n::t!("settings.lang_en"),
+                                        )
+                                        .changed();
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut self.config.ui.language,
+                                            "es".to_string(),
+                                            rust_i18n::t!("settings.lang_es"),
+                                        )
+                                        .changed();
+                                });
+                            if changed {
+                                crate::apply_locale(&self.config.ui.language);
+                            }
                         });
-                    if changed {
-                        crate::apply_locale(&self.config.ui.language);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("settings.theme"));
-                    egui::ComboBox::from_id_salt("settings_theme_combo")
-                        .selected_text(self.config.ui.theme.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.config.ui.theme,
-                                crate::config::ThemePreference::Dark,
-                                "Dark",
-                            );
-                            ui.selectable_value(
-                                &mut self.config.ui.theme,
-                                crate::config::ThemePreference::Light,
-                                "Light",
-                            );
-                            ui.selectable_value(
-                                &mut self.config.ui.theme,
-                                crate::config::ThemePreference::System,
-                                "Follow System",
+                        ui.horizontal(|ui| {
+                            ui.label(rust_i18n::t!("settings.theme"));
+                            egui::ComboBox::from_id_salt("settings_theme_combo")
+                                .selected_text(self.config.ui.theme.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.config.ui.theme,
+                                        crate::config::ThemePreference::Dark,
+                                        "Dark",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.config.ui.theme,
+                                        crate::config::ThemePreference::Light,
+                                        "Light",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.config.ui.theme,
+                                        crate::config::ThemePreference::System,
+                                        "Follow System",
+                                    );
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("UI Scale:");
+                            ui.add(
+                                egui::Slider::new(&mut self.config.ui.ui_scale, 0.75..=2.0)
+                                    .step_by(0.05)
+                                    .suffix("x"),
                             );
                         });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("UI Scale:");
-                    ui.add(
-                        egui::Slider::new(&mut self.config.ui.ui_scale, 0.75..=2.0)
-                            .step_by(0.05)
-                            .suffix("x"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Editor Font Size:");
-                    ui.add(
-                        egui::Slider::new(&mut self.config.ui.editor_font_size, 10.0..=28.0)
-                            .step_by(1.0)
-                            .suffix(" px"),
-                    );
-                });
+                        ui.horizontal(|ui| {
+                            ui.label("Editor Font Size:");
+                            ui.add(
+                                egui::Slider::new(&mut self.config.ui.editor_font_size, 10.0..=28.0)
+                                    .step_by(1.0)
+                                    .suffix(" px"),
+                            );
+                        });
+                    });
 
                 ui.separator();
-                if ui.button("Save Configuration").clicked() {
-                    should_save = true;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(pal.primary_button("Save Configuration")).clicked() {
+                        should_save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                });
             });
 
-        self.show_ai_settings_modal = open;
+        self.show_ai_settings_modal = open && !cancel_clicked;
         if should_save {
             let _ = self.config.save();
             self.show_ai_settings_modal = false;

@@ -745,13 +745,14 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn render_csv_import_modal(&mut self, ctx: &egui::Context) {
+        let pal = self.effective_palette(ctx);
         let Some(wizard) = &mut self.csv_wizard else {
             return;
         };
         let mut close_modal = false;
         let mut trigger_import = false;
 
-        egui::Window::new("📥 CSV Import Wizard")
+        egui::Window::new("CSV Import Wizard")
             .collapsible(false)
             .resizable(true)
             .default_size([650.0, 520.0])
@@ -760,7 +761,7 @@ impl MysqlRustyApp {
                 ui.horizontal(|ui| {
                     ui.heading(
                         RichText::new("Import Data from CSV")
-                            .color(Color32::from_rgb(56, 189, 248))
+                            .color(pal.accent_text)
                             .size(16.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -862,14 +863,14 @@ impl MysqlRustyApp {
                     });
 
                 if let Some(err) = &wizard.error_message {
-                    ui.colored_label(Color32::from_rgb(239, 68, 68), err);
+                    ui.colored_label(pal.danger, err);
                 }
                 if let Some(msg) = &wizard.status_message {
-                    ui.colored_label(Color32::from_rgb(34, 197, 94), msg);
+                    ui.colored_label(pal.success, msg);
                 }
 
                 ui.separator();
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let target_name = if wizard.create_new_table {
                         wizard.new_table_name.trim()
                     } else {
@@ -877,13 +878,10 @@ impl MysqlRustyApp {
                     };
                     let can_import = !target_name.is_empty() && !wizard.is_importing;
 
-                    let btn = egui::Button::new(
-                        RichText::new("🚀 Import Now")
-                            .strong()
-                            .color(Color32::from_rgb(16, 185, 129)),
-                    )
-                    .fill(Color32::from_rgb(6, 78, 59));
-                    if ui.add_enabled(can_import, btn).clicked() {
+                    if ui
+                        .add_enabled(can_import, pal.primary_button("Import Now"))
+                        .clicked()
+                    {
                         trigger_import = true;
                     }
 
@@ -1842,59 +1840,75 @@ impl MysqlRustyApp {
         let Some(sync) = self.pending_db_sync.clone() else {
             return;
         };
+        let pal = self.effective_palette(ctx);
         let mut open = true;
         let mut execute_sync = false;
         let mut cancel_sync = false;
 
-        egui::Window::new(format!("⚡ {}", sync.title))
+        egui::Window::new(sync.title.clone())
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_width(640.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                egui::Frame::group(ui.style())
-                    .fill(Color32::from_rgb(15, 23, 42))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("SOURCE (FROM):").small().strong().color(Color32::from_rgb(56, 189, 248)));
-                            ui.label(RichText::new(&sync.source_label).strong().color(Color32::WHITE));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("TARGET (TO — WILL BE MODIFIED):").small().strong().color(Color32::from_rgb(250, 204, 21)));
-                            ui.label(RichText::new(&sync.target_label).strong().color(Color32::from_rgb(253, 224, 71)));
-                        });
+                pal.compact_card_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "Transactional execution (START TRANSACTION ... COMMIT, {} statement(s))",
-                                sync.statement_count
-                            ))
-                            .small()
-                            .weak(),
+                            RichText::new("SOURCE (FROM):")
+                                .small()
+                                .strong()
+                                .color(pal.accent_text),
+                        );
+                        ui.label(
+                            RichText::new(&sync.source_label)
+                                .strong()
+                                .color(pal.text_primary),
                         );
                     });
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("TARGET (TO — WILL BE MODIFIED):")
+                                .small()
+                                .strong()
+                                .color(pal.warning),
+                        );
+                        ui.label(
+                            RichText::new(&sync.target_label)
+                                .strong()
+                                .color(pal.warning),
+                        );
+                    });
+                    ui.label(
+                        RichText::new(format!(
+                            "Transactional execution (START TRANSACTION ... COMMIT, {} statement(s))",
+                            sync.statement_count
+                        ))
+                        .small()
+                        .color(pal.muted_text),
+                    );
+                });
 
                 ui.add_space(6.0);
                 if !sync.target_is_local {
-                    egui::Frame::group(ui.style())
-                        .fill(Color32::from_rgb(127, 29, 29))
-                        .show(ui, |ui| {
-                            ui.colored_label(
-                                Color32::from_rgb(254, 202, 202),
-                                "🚫 BLOCKED: Target must be a 'local' or 'localhost' server to prevent overwriting dev/uat/prod.",
-                            );
-                        });
+                    pal.banner_frame(pal.danger_bg, pal.danger).show(ui, |ui| {
+                        ui.label(
+                            RichText::new("BLOCKED: Target must be a 'local' or 'localhost' server to prevent overwriting dev/uat/prod.")
+                                .color(pal.text_primary)
+                                .strong(),
+                        );
+                    });
                     ui.add_space(4.0);
                 } else if sync.target_is_read_only {
                     ui.colored_label(
-                        Color32::from_rgb(248, 113, 113),
-                        "🚫 BLOCKED: Target connection is in Read-Only mode.",
+                        pal.danger,
+                        "BLOCKED: Target connection is in Read-Only mode.",
                     );
                     ui.add_space(4.0);
                 } else if sync.target_is_prod {
                     ui.colored_label(
-                        Color32::from_rgb(248, 113, 113),
-                        "⚠ WARNING: Target connection is marked as PRODUCTION.",
+                        pal.danger,
+                        "WARNING: Target connection is marked as PRODUCTION.",
                     );
                     ui.add_space(4.0);
                 }
@@ -1903,6 +1917,7 @@ impl MysqlRustyApp {
                 let mut sql_preview = sync.sql.clone();
                 let sync_sql_h = (ui.available_height() - 68.0).max(140.0);
                 egui::ScrollArea::vertical()
+                    .id_salt("db_sync_confirm_sql_scroll")
                     .auto_shrink([false, false])
                     .max_height(sync_sql_h)
                     .show(ui, |ui| {
@@ -1933,7 +1948,7 @@ impl MysqlRustyApp {
                         RichText::new(current_stmt)
                             .small()
                             .monospace()
-                            .weak(),
+                            .color(pal.muted_text),
                     );
                 } else {
                     let can_run = sync.target_is_local && !sync.target_is_read_only;
@@ -1944,17 +1959,13 @@ impl MysqlRustyApp {
                         );
                     });
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let ready = can_run && self.db_sync_confirm_checked;
                         if ui
                             .add_enabled(
                                 ready,
-                                egui::Button::new(
-                                    RichText::new("⚡ Confirm & Execute on Target")
-                                        .color(Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(Color32::from_rgb(185, 28, 28)),
+                                pal.danger_button("Confirm & Execute on Target"),
                             )
                             .clicked()
                         {
@@ -2524,17 +2535,21 @@ impl MysqlRustyApp {
             .as_ref()
             .is_some_and(|p| p.environment == Environment::Production);
 
+        let pal = self.effective_palette(ctx);
         let databases = self.databases.clone();
         let Some(state) = self.restore_modal.as_mut() else {
             return;
         };
         let mut open = true;
+        let mut close_clicked = false;
         let mut start_restore = false;
         let mut cancel_restore = false;
 
         egui::Window::new("Run SQL File (Streaming Restore)")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .default_width(520.0)
             .show(ctx, |ui| {
                 ui.add_enabled_ui(!state.running, |ui| {
@@ -2583,12 +2598,12 @@ impl MysqlRustyApp {
 
                 if is_read_only {
                     ui.colored_label(
-                        Color32::from_rgb(248, 113, 113),
+                        pal.danger,
                         "Refused: active connection is marked Read-Only.",
                     );
                 } else if is_production && !state.running {
                     ui.colored_label(
-                        Color32::from_rgb(251, 191, 36),
+                        pal.warning,
                         format!(
                             "Production environment: type '{}' to confirm execution:",
                             state.database
@@ -2621,10 +2636,11 @@ impl MysqlRustyApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(format!("Errors (showing {}):", state.errors.len()))
-                            .color(Color32::from_rgb(248, 113, 113))
+                            .color(pal.danger)
                             .strong(),
                     );
                     egui::ScrollArea::vertical()
+                        .id_salt("restore_errors_scroll")
                         .max_height(150.0)
                         .show(ui, |ui| {
                             for err in &state.errors {
@@ -2635,7 +2651,7 @@ impl MysqlRustyApp {
                                     ))
                                     .monospace()
                                     .small()
-                                    .color(Color32::from_rgb(248, 113, 113)),
+                                    .color(pal.danger),
                                 );
                             }
                         });
@@ -2647,22 +2663,27 @@ impl MysqlRustyApp {
                 }
 
                 ui.add_space(6.0);
-                if state.running {
-                    if ui.button("Cancel").clicked() {
-                        cancel_restore = true;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if state.running {
+                        if ui.button("Cancel").clicked() {
+                            cancel_restore = true;
+                        }
+                    } else {
+                        let prod_ok = !is_production
+                            || (!state.database.is_empty()
+                                && state.prod_confirm_input == state.database);
+                        let can_start = !is_read_only && prod_ok && state.file_path.is_some();
+                        if ui
+                            .add_enabled(can_start, pal.primary_button("Start"))
+                            .clicked()
+                        {
+                            start_restore = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close_clicked = true;
+                        }
                     }
-                } else {
-                    let prod_ok = !is_production
-                        || (!state.database.is_empty()
-                            && state.prod_confirm_input == state.database);
-                    let can_start = !is_read_only && prod_ok && state.file_path.is_some();
-                    if ui
-                        .add_enabled(can_start, egui::Button::new("Start"))
-                        .clicked()
-                    {
-                        start_restore = true;
-                    }
-                }
+                });
             });
 
         if cancel_restore
@@ -2697,7 +2718,7 @@ impl MysqlRustyApp {
             });
         }
 
-        if !open && self.restore_modal.as_ref().is_some_and(|m| !m.running) {
+        if (!open || close_clicked) && self.restore_modal.as_ref().is_some_and(|m| !m.running) {
             self.restore_modal = None;
         }
     }

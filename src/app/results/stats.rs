@@ -91,39 +91,38 @@ impl MysqlRustyApp {
             }
         });
 
+        let pal = self.effective_palette(ui.ctx());
         if let Some(err) = &ai_error {
-            ui.colored_label(
-                Color32::from_rgb(248, 113, 113),
-                format!("AI Explain error: {err}"),
-            );
+            ui.colored_label(pal.danger, format!("AI Explain error: {err}"));
         }
 
         if let Some(report) = &ai_report {
             ui.add_space(6.0);
             egui::Frame::new()
-                .fill(Color32::from_rgb(20, 28, 44))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                .fill(pal.card_bg)
+                .stroke(Stroke::new(1.0, pal.accent))
                 .corner_radius(egui::CornerRadius::same(6))
                 .inner_margin(10.0)
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new("AI Query Optimizer Diagnosis")
                             .strong()
-                            .color(Color32::from_rgb(56, 189, 248)),
+                            .color(pal.accent_text),
                     );
                     ui.add_space(4.0);
-                    ui.label(&report.summary);
+                    ui.label(RichText::new(&report.summary).color(pal.text_primary));
 
                     if !report.bottlenecks.is_empty() {
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("Bottlenecks:").strong().small());
+                            ui.label(
+                                RichText::new("Bottlenecks:")
+                                    .strong()
+                                    .small()
+                                    .color(pal.text_secondary),
+                            );
                             for b in &report.bottlenecks {
-                                ui.label(
-                                    RichText::new(format!("[{b}]"))
-                                        .small()
-                                        .color(Color32::from_rgb(251, 191, 36)),
-                                );
+                                pal.badge(ui, b, pal.warning, pal.warning_bg);
                             }
                         });
                     }
@@ -131,7 +130,12 @@ impl MysqlRustyApp {
                     if let Some(rewritten) = &report.rewritten_sql {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Rewritten SQL:").strong().small());
+                            ui.label(
+                                RichText::new("Rewritten SQL:")
+                                    .strong()
+                                    .small()
+                                    .color(pal.text_secondary),
+                            );
                             if ui.small_button("Open in New Tab").clicked() {
                                 self.tabs.push(QueryTab::new("Optimized Query", rewritten));
                                 self.active_tab_idx = self.tabs.len() - 1;
@@ -145,7 +149,12 @@ impl MysqlRustyApp {
 
                     if !report.suggested_indexes.is_empty() {
                         ui.add_space(6.0);
-                        ui.label(RichText::new("Suggested Indexes:").strong().small());
+                        ui.label(
+                            RichText::new("Suggested Indexes:")
+                                .strong()
+                                .small()
+                                .color(pal.text_secondary),
+                        );
                         for ddl in &report.suggested_indexes {
                             ui.horizontal_wrapped(|ui| {
                                 ui.monospace(ddl);
@@ -174,16 +183,60 @@ impl MysqlRustyApp {
             return;
         };
         if let Some(res) = &tab.last_result {
-            ui.label(RichText::new("Last Executed SQL Statement:").strong());
+            ui.label(
+                RichText::new("Last Executed SQL Statement")
+                    .strong()
+                    .color(pal.text_primary),
+            );
             ui.code(&res.sql);
             ui.add_space(6.0);
-            ui.label(format!("• Target Database: `{}`", res.database));
-            ui.label(format!("• Execution Time: `{} ms`", res.duration_ms));
-            ui.label(format!("• Rows Returned: `{}`", res.rows.len()));
-            ui.label(format!("• Rows Affected: `{}`", res.affected_rows));
-            if let Some(last_id) = res.last_insert_id {
-                ui.label(format!("• Last Insert ID: `{last_id}`"));
-            }
+
+            egui::Grid::new("exec_stats_summary_grid")
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Target Database").color(pal.muted_text));
+                    ui.label(
+                        RichText::new(&res.database)
+                            .strong()
+                            .color(pal.text_primary),
+                    );
+                    ui.end_row();
+
+                    ui.label(RichText::new("Execution Time").color(pal.muted_text));
+                    ui.label(
+                        RichText::new(format!("{} ms", res.duration_ms))
+                            .strong()
+                            .color(pal.accent_text),
+                    );
+                    ui.end_row();
+
+                    ui.label(RichText::new("Rows Returned").color(pal.muted_text));
+                    ui.label(
+                        RichText::new(res.rows.len().to_string())
+                            .strong()
+                            .color(pal.text_primary),
+                    );
+                    ui.end_row();
+
+                    ui.label(RichText::new("Rows Affected").color(pal.muted_text));
+                    ui.label(
+                        RichText::new(res.affected_rows.to_string())
+                            .strong()
+                            .color(pal.text_primary),
+                    );
+                    ui.end_row();
+
+                    if let Some(last_id) = res.last_insert_id {
+                        ui.label(RichText::new("Last Insert ID").color(pal.muted_text));
+                        ui.label(
+                            RichText::new(last_id.to_string())
+                                .strong()
+                                .color(pal.text_primary),
+                        );
+                        ui.end_row();
+                    }
+                });
 
             // Visual EXPLAIN Tree (MySQL/MariaDB format)
             let is_postgres = self
@@ -199,7 +252,7 @@ impl MysqlRustyApp {
                 ui.separator();
                 ui.heading(
                     RichText::new("Visual Execution Plan (EXPLAIN Tree)")
-                        .color(Color32::from_rgb(56, 189, 248))
+                        .color(pal.accent_text)
                         .size(15.0),
                 );
                 ui.add_space(4.0);
@@ -249,47 +302,51 @@ impl MysqlRustyApp {
                         .map(|c| c.display_text())
                         .unwrap_or_default();
 
-                    let (type_color, type_badge) = match access_type.to_uppercase().as_str() {
+                    let (type_color, type_bg, type_badge) = match access_type
+                        .to_uppercase()
+                        .as_str()
+                    {
                         "ALL" => {
                             has_full_scan = true;
-                            (Color32::from_rgb(239, 68, 68), "FULL TABLE SCAN [WARN]")
+                            (pal.danger, pal.danger_bg, "FULL TABLE SCAN")
                         }
-                        "INDEX" => (Color32::from_rgb(249, 115, 22), "FULL INDEX SCAN"),
-                        "RANGE" => (Color32::from_rgb(234, 179, 8), "INDEX RANGE SCAN"),
-                        "REF" | "EQ_REF" | "CONST" => {
-                            (Color32::from_rgb(34, 197, 94), "INDEX LOOKUP [OK]")
-                        }
-                        _ => (Color32::from_rgb(148, 163, 184), "SCAN"),
+                        "INDEX" => (pal.warning, pal.warning_bg, "FULL INDEX SCAN"),
+                        "RANGE" => (pal.warning, pal.warning_bg, "INDEX RANGE SCAN"),
+                        "REF" | "EQ_REF" | "CONST" => (pal.success, pal.success_bg, "INDEX LOOKUP"),
+                        _ => (pal.muted_text, pal.badge_bg, "SCAN"),
                     };
 
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(17, 24, 39))
+                        .fill(pal.card_bg)
                         .stroke(Stroke::new(1.0, type_color))
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(10.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(
-                                    RichText::new(format!("Step {}: `{}`", idx + 1, table_name))
+                                    RichText::new(format!("Step {}: {table_name}", idx + 1))
                                         .strong()
-                                        .size(13.0),
+                                        .size(13.0)
+                                        .color(pal.text_primary),
                                 );
-                                ui.colored_label(type_color, format!("[{type_badge}]"));
+                                pal.badge(ui, type_badge, type_color, type_bg);
                                 ui.label(
                                     RichText::new(format!("Est. Rows: {rows_est}"))
                                         .small()
-                                        .weak(),
+                                        .color(pal.muted_text),
                                 );
                             });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(
-                                    RichText::new(format!("Index Used: `{key_used}`"))
+                                    RichText::new(format!("Index Used: {key_used}"))
                                         .small()
-                                        .color(Color32::from_rgb(56, 189, 248)),
+                                        .color(pal.accent_text),
                                 );
                                 if !extra.is_empty() {
                                     ui.label(
-                                        RichText::new(format!("Extra: {extra}")).small().weak(),
+                                        RichText::new(format!("Extra: {extra}"))
+                                            .small()
+                                            .color(pal.muted_text),
                                     );
                                 }
                             });
@@ -298,17 +355,13 @@ impl MysqlRustyApp {
                 }
 
                 if has_full_scan {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(69, 10, 10))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(8.0)
+                    pal.banner_frame(pal.danger_bg, pal.danger)
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(
-                                    "[Optimization Tip] Table performs a FULL TABLE SCAN (`ALL`). Creating an index on the join or WHERE filter columns can drastically reduce query latency.",
+                                    "Optimization Tip: Table performs a FULL TABLE SCAN (ALL). Creating an index on the join or WHERE filter columns can drastically reduce query latency.",
                                 )
-                                .color(Color32::from_rgb(254, 202, 202))
+                                .color(pal.danger)
                                 .small(),
                             );
                         });
@@ -375,31 +428,32 @@ impl MysqlRustyApp {
                 if !advise_index_actions.is_empty() {
                     ui.add_space(6.0);
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(30, 27, 75))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(129, 140, 248)))
+                        .fill(pal.purple_bg)
+                        .stroke(Stroke::new(1.0, pal.purple))
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(10.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("💡 Index Advisor Recommendations")
-                                        .strong()
-                                        .color(Color32::from_rgb(165, 180, 252)),
-                                );
-                            });
+                            ui.label(
+                                RichText::new("Index Advisor Recommendations")
+                                    .strong()
+                                    .color(pal.purple),
+                            );
                             ui.add_space(4.0);
                             for (tbl, ddl) in advise_index_actions {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
-                                        RichText::new(format!("• For `{tbl}`:")).strong().small(),
+                                        RichText::new(format!("• For {tbl}:"))
+                                            .strong()
+                                            .small()
+                                            .color(pal.text_primary),
                                     );
                                     ui.monospace(&ddl);
-                                    if ui.small_button("📋 Copy").clicked() {
+                                    if ui.small_button("Copy").clicked() {
                                         ui.ctx().copy_text(ddl.clone());
                                         self.status_banner =
                                             format!("Copied index DDL for `{tbl}` to clipboard.");
                                     }
-                                    if ui.small_button("⚡ Open in Tab").clicked() {
+                                    if ui.small_button("Open in Tab").clicked() {
                                         self.tabs.push(QueryTab::new(format!("Index {tbl}"), ddl));
                                         self.active_tab_idx = self.tabs.len() - 1;
                                     }
@@ -411,9 +465,20 @@ impl MysqlRustyApp {
         }
         if let Some(schema) = self.schemas.get(&self.active_database) {
             ui.separator();
-            ui.label(RichText::new("AI Schema DDL Context Preview:").strong());
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.code(schema.to_ai_ddl_context());
+            egui::CollapsingHeader::new(
+                RichText::new("AI Schema DDL Context Preview")
+                    .strong()
+                    .color(pal.text_secondary),
+            )
+            .id_salt("stats_ai_ddl_preview")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("stats_ai_ddl_scroll")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        ui.code(schema.to_ai_ddl_context());
+                    });
             });
         }
     }

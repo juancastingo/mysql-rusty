@@ -2,21 +2,40 @@ use super::super::*;
 
 impl MysqlRustyApp {
     pub(crate) fn render_results_grid(&mut self, ui: &mut Ui) {
+        let pal = self.effective_palette(ui.ctx());
         let (is_running, has_result) = match self.tabs.get(self.active_tab_idx) {
             Some(t) => (t.is_running, t.last_result.is_some()),
             None => return,
         };
 
         if is_running {
-            ui.horizontal(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(28.0);
                 ui.spinner();
-                ui.label("Executing SQL query...");
+                ui.add_space(6.0);
+                ui.label(RichText::new("Executing SQL query...").color(pal.text_secondary));
             });
             return;
         }
 
         if !has_result {
-            ui.label(RichText::new("Run a query (Ctrl+Enter) to view results here.").weak());
+            ui.vertical_centered(|ui| {
+                ui.add_space(32.0);
+                ui.label(
+                    RichText::new("No query results yet")
+                        .size(14.0)
+                        .strong()
+                        .color(pal.text_secondary),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Run a query with Ctrl+Enter to inspect rows, charts, and stats here.",
+                    )
+                    .size(12.0)
+                    .color(pal.muted_text),
+                );
+            });
             return;
         }
 
@@ -45,7 +64,7 @@ impl MysqlRustyApp {
                         RichText::new("Result Sets:")
                             .small()
                             .strong()
-                            .color(Color32::from_rgb(56, 189, 248)),
+                            .color(pal.accent_text),
                     );
                     if tab.multi_result_layout == MultiResultLayout::Tabs {
                         for (r_idx, r_item) in tab.multi_results.iter().enumerate() {
@@ -66,11 +85,11 @@ impl MysqlRustyApp {
                                 tab.multi_results.len()
                             ))
                             .small()
-                            .color(Color32::from_rgb(148, 163, 184)),
+                            .color(pal.muted_text),
                         );
                         if tab.multi_result_layout == MultiResultLayout::SideBySide {
                             ui.separator();
-                            ui.label(RichText::new("Cols:").small().weak());
+                            ui.label(RichText::new("Cols:").small().color(pal.muted_text));
                             let current_cols_label = match tab.multi_result_columns {
                                 None => "Auto".to_string(),
                                 Some(c) => format!("{c}"),
@@ -138,26 +157,22 @@ impl MysqlRustyApp {
             }
 
             if result.truncated {
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(66, 46, 10))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(234, 179, 8)))
-                    .corner_radius(egui::CornerRadius::same(4))
-                    .inner_margin(egui::Margin::symmetric(8, 4))
+                pal.banner_frame(pal.warning_bg, pal.warning)
                     .show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 RichText::new(format!(
-                                    "Showing first {} rows (result truncated at max_rows = {})",
+                                    "Showing first {} rows (truncated at max_rows = {})",
                                     result.rows.len(),
                                     result.rows.len()
                                 ))
-                                .color(Color32::from_rgb(253, 224, 71))
+                                .color(pal.warning)
                                 .strong(),
                             );
                             if tab.confirm_load_all {
                                 ui.label(
                                     RichText::new("This may use a lot of memory.")
-                                        .color(Color32::from_rgb(254, 240, 138)),
+                                        .color(pal.text_secondary),
                                 );
                                 if ui.small_button("Confirm Load All").clicked() {
                                     tab.confirm_load_all = false;
@@ -169,7 +184,11 @@ impl MysqlRustyApp {
                             } else if ui.small_button("Load all rows").clicked() {
                                 tab.confirm_load_all = true;
                             }
-                            ui.label(RichText::new("Tip: add a LIMIT clause").weak().size(11.5));
+                            ui.label(
+                                RichText::new("Tip: add a LIMIT clause")
+                                    .color(pal.muted_text)
+                                    .size(11.5),
+                            );
                         });
                     });
                 ui.add_space(4.0);
@@ -177,116 +196,198 @@ impl MysqlRustyApp {
 
             // Results Action Bar (Filter, Pagination, Export, Inline Edit Commit)
             ui.horizontal_wrapped(|ui| {
-            ui.label("Filter:");
-            ui.add(
-                egui::TextEdit::singleline(&mut tab.row_filter)
-                    .desired_width(130.0)
-                    .hint_text("Search text..."),
-            );
+                ui.label(RichText::new("Filter:").color(pal.text_secondary));
+                ui.add(
+                    egui::TextEdit::singleline(&mut tab.row_filter)
+                        .desired_width(130.0)
+                        .hint_text("Search rows..."),
+                );
 
-            let filter_btn_txt = if tab.show_visual_filter { "Hide Filter ▴" } else { "Column Filter ▾" };
-            if ui.small_button(filter_btn_txt).clicked() {
-                tab.show_visual_filter = !tab.show_visual_filter;
-            }
+                let filter_btn_txt = if tab.show_visual_filter {
+                    "Hide Filter ▴"
+                } else {
+                    "Column Filter ▾"
+                };
+                if ui.small_button(filter_btn_txt).clicked() {
+                    tab.show_visual_filter = !tab.show_visual_filter;
+                }
 
-            ui.separator();
-            egui::ComboBox::from_id_salt("results_page_size_combo")
-                .selected_text(if tab.page_size == 0 { "All rows".to_string() } else { format!("{} / page", tab.page_size) })
-                .width(85.0)
-                .show_ui(ui, |ui| {
-                    for ps in [25, 50, 100, 250, 500, 0] {
-                        let label = if ps == 0 { "All".to_string() } else { format!("{ps}") };
-                        if ui.selectable_label(tab.page_size == ps, label).clicked() {
-                            tab.page_size = ps;
-                            tab.current_page = 0;
+                ui.separator();
+                egui::ComboBox::from_id_salt("results_page_size_combo")
+                    .selected_text(if tab.page_size == 0 {
+                        "All rows".to_string()
+                    } else {
+                        format!("{} / page", tab.page_size)
+                    })
+                    .width(85.0)
+                    .show_ui(ui, |ui| {
+                        for ps in [25, 50, 100, 250, 500, 0] {
+                            let label = if ps == 0 {
+                                "All".to_string()
+                            } else {
+                                format!("{ps}")
+                            };
+                            if ui.selectable_label(tab.page_size == ps, label).clicked() {
+                                tab.page_size = ps;
+                                tab.current_page = 0;
+                            }
                         }
+                    });
+
+                ui.separator();
+                ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "Table");
+                ui.selectable_value(&mut tab.view_mode, ResultViewMode::Chart, "Chart");
+
+                ui.separator();
+                if ui
+                    .selectable_label(tab.show_row_inspector, "Inspector")
+                    .on_hover_text("Toggle vertical single-row inspector & FK lookup drawer")
+                    .clicked()
+                {
+                    tab.show_row_inspector = !tab.show_row_inspector;
+                    if tab.show_row_inspector
+                        && tab.row_inspector_row.is_none()
+                        && !result.rows.is_empty()
+                    {
+                        tab.row_inspector_row = Some(0);
+                        tab.row_inspector_buffers = result.rows[0]
+                            .iter()
+                            .map(|c| c.display_text())
+                            .collect();
+                    }
+                }
+
+                if ui
+                    .small_button("Pin Baseline")
+                    .on_hover_text("Save current result set as baseline for comparison")
+                    .clicked()
+                {
+                    tab.baseline_result = Some(result.clone());
+                    tab.show_baseline_compare = false;
+                    copy_banner_msg = Some("Pinned current result as Baseline.".to_string());
+                }
+                if tab.baseline_result.is_some() {
+                    let cmp_lbl = if tab.show_baseline_compare {
+                        "Exit Compare"
+                    } else {
+                        "Compare"
+                    };
+                    if ui
+                        .selectable_label(tab.show_baseline_compare, cmp_lbl)
+                        .clicked()
+                    {
+                        tab.show_baseline_compare = !tab.show_baseline_compare;
+                    }
+                }
+
+                ui.separator();
+                ui.label(
+                    RichText::new(format!(
+                        "{} rows ({} ms)",
+                        result.rows.len(),
+                        result.duration_ms
+                    ))
+                    .strong()
+                    .color(pal.text_primary),
+                );
+
+                if let (Some(tbl), Some(pk)) = (&result.editable_table, &result.primary_key_column)
+                {
+                    pal.badge(ui, &format!("Editable: {tbl} ({pk})"), pal.success, pal.success_bg);
+                }
+
+                if !tab.pending_edits.is_empty() {
+                    let apply_btn = egui::Button::new(
+                        RichText::new(format!("Apply {} Edit(s)", tab.pending_edits.len()))
+                            .color(pal.warning)
+                            .strong(),
+                    )
+                    .fill(pal.warning_bg)
+                    .stroke(Stroke::new(1.0, pal.warning))
+                    .corner_radius(egui::CornerRadius::same(4));
+                    if ui.add(apply_btn).clicked() {
+                        trigger_commit_edits = true;
+                    }
+                    if ui.small_button("Discard").clicked() {
+                        tab.pending_edits.clear();
+                    }
+                }
+
+                ui.separator();
+                ui.menu_button("Export ▾", |ui| {
+                    if ui.button("Export CSV...").clicked()
+                        && let Ok(csv_data) = to_csv_string(&result)
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("query_results.csv")
+                            .save_file()
+                        {
+                            let _ = save_string_to_path(&path, &csv_data);
+                        } else {
+                            ui.ctx().copy_text(csv_data);
+                        }
+                        if result.truncated {
+                            copy_banner_msg = Some(format!(
+                                "Exported CSV. Warning: Export contains only the first {} rows.",
+                                result.rows.len()
+                            ));
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Export JSON...").clicked()
+                        && let Ok(json_data) = to_json_string(&result)
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("query_results.json")
+                            .save_file()
+                        {
+                            let _ = save_string_to_path(&path, &json_data);
+                        } else {
+                            ui.ctx().copy_text(json_data);
+                        }
+                        if result.truncated {
+                            copy_banner_msg = Some(format!(
+                                "Exported JSON. Warning: Export contains only the first {} rows.",
+                                result.rows.len()
+                            ));
+                        }
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Copy Markdown Table").clicked() {
+                        let md = to_markdown_table(&result);
+                        ui.ctx().copy_text(md);
+                        copy_banner_msg = Some(if result.truncated {
+                            format!(
+                                "Copied Markdown. Warning: Export contains only the first {} rows.",
+                                result.rows.len()
+                            )
+                        } else {
+                            "Copied Markdown table to clipboard.".to_string()
+                        });
+                        ui.close();
+                    }
+                    if ui.button("Copy SQL INSERTs").clicked() {
+                        let tbl = result
+                            .editable_table
+                            .as_deref()
+                            .unwrap_or("exported_rows");
+                        let inserts = to_sql_inserts(&result, tbl);
+                        ui.ctx().copy_text(inserts);
+                        copy_banner_msg = Some(if result.truncated {
+                            format!(
+                                "Copied SQL INSERTs. Warning: Export contains only the first {} rows.",
+                                result.rows.len()
+                            )
+                        } else {
+                            "Copied SQL INSERT statements to clipboard.".to_string()
+                        });
+                        ui.close();
                     }
                 });
 
-            ui.separator();
-            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Grid, "Table");
-            ui.selectable_value(&mut tab.view_mode, ResultViewMode::Chart, "Chart");
-
-            ui.separator();
-            if ui
-                .selectable_label(tab.show_row_inspector, "Row Inspector")
-                .on_hover_text("Toggle vertical single-row inspector & FK lookup drawer")
-                .clicked()
-            {
-                tab.show_row_inspector = !tab.show_row_inspector;
-                if tab.show_row_inspector && tab.row_inspector_row.is_none() && !result.rows.is_empty() {
-                    tab.row_inspector_row = Some(0);
-                    tab.row_inspector_buffers = result.rows[0]
-                        .iter()
-                        .map(|c| c.display_text())
-                        .collect();
-                }
-            }
-
-            if ui
-                .small_button("Pin Baseline")
-                .on_hover_text("Save current result set as baseline for comparison")
-                .clicked()
-            {
-                tab.baseline_result = Some(result.clone());
-                tab.show_baseline_compare = false;
-                copy_banner_msg = Some("Pinned current result as Baseline.".to_string());
-            }
-            if tab.baseline_result.is_some() {
-                let cmp_lbl = if tab.show_baseline_compare {
-                    "Exit Compare"
-                } else {
-                    "Compare vs Baseline"
-                };
-                if ui.selectable_label(tab.show_baseline_compare, cmp_lbl).clicked() {
-                    tab.show_baseline_compare = !tab.show_baseline_compare;
-                }
-            }
-
-            ui.separator();
-            ui.label(
-                RichText::new(format!(
-                    "{} rows ({} ms)",
-                    result.rows.len(),
-                    result.duration_ms
-                ))
-                .strong(),
-            );
-
-            if let (Some(tbl), Some(pk)) = (&result.editable_table, &result.primary_key_column) {
-                ui.label(
-                    RichText::new(format!("Editable Table (`{tbl}`, PK `{pk}`) — Double-click cell"))
-                        .small()
-                        .color(Color32::from_rgb(16, 185, 129)),
-                );
-            }
-
-            if !tab.pending_edits.is_empty() {
                 if ui
-                    .button(
-                        RichText::new(format!(
-                            "Apply {} Pending Edit(s)",
-                            tab.pending_edits.len()
-                        ))
-                        .color(Color32::from_rgb(250, 204, 21))
-                        .strong(),
-                    )
-                    .clicked()
-                {
-                    trigger_commit_edits = true;
-                }
-                if ui.small_button("Discard").clicked() {
-                    tab.pending_edits.clear();
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .small_button(
-                        RichText::new("AI Insights")
-                            .color(Color32::from_rgb(192, 132, 252))
-                            .strong(),
-                    )
+                    .small_button(RichText::new("AI Insights").color(pal.purple).strong())
                     .on_hover_text("Analyze these query results with AI")
                     .clicked()
                 {
@@ -309,68 +410,7 @@ impl MysqlRustyApp {
                         preview_rows.join("\n")
                     ));
                 }
-                if ui.small_button("Copy Markdown").clicked() {
-                    let md = to_markdown_table(&result);
-                    ui.ctx().copy_text(md);
-                    if result.truncated {
-                        copy_banner_msg = Some(format!(
-                            "Copied Markdown. Warning: Export contains only the first {} rows.",
-                            result.rows.len()
-                        ));
-                    }
-                }
-                if ui.small_button("Export CSV").clicked()
-                    && let Ok(csv_data) = to_csv_string(&result)
-                {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name("query_results.csv")
-                        .save_file()
-                    {
-                        let _ = save_string_to_path(&path, &csv_data);
-                    } else {
-                        ui.ctx().copy_text(csv_data);
-                    }
-                    if result.truncated {
-                        copy_banner_msg = Some(format!(
-                            "Exported CSV. Warning: Export contains only the first {} rows.",
-                            result.rows.len()
-                        ));
-                    }
-                }
-                if ui.small_button("Export JSON").clicked()
-                    && let Ok(json_data) = to_json_string(&result)
-                {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name("query_results.json")
-                        .save_file()
-                    {
-                        let _ = save_string_to_path(&path, &json_data);
-                    } else {
-                        ui.ctx().copy_text(json_data);
-                    }
-                    if result.truncated {
-                        copy_banner_msg = Some(format!(
-                            "Exported JSON. Warning: Export contains only the first {} rows.",
-                            result.rows.len()
-                        ));
-                    }
-                }
-                if ui.small_button("Copy SQL INSERTs").clicked() {
-                    let tbl = result
-                        .editable_table
-                        .as_deref()
-                        .unwrap_or("exported_rows");
-                    let inserts = to_sql_inserts(&result, tbl);
-                    ui.ctx().copy_text(inserts);
-                    if result.truncated {
-                        copy_banner_msg = Some(format!(
-                            "Copied SQL INSERTs. Warning: Export contains only the first {} rows.",
-                            result.rows.len()
-                        ));
-                    }
-                }
             });
-        });
 
             ui.add_space(2.0);
 
@@ -754,8 +794,20 @@ impl MysqlRustyApp {
             // Render pagination navigation if pages > 1
             if tab.page_size > 0 && total_pages > 1 {
                 ui.horizontal(|ui| {
-                    if ui.small_button("◀ Prev").clicked() && tab.current_page > 0 {
-                        tab.current_page -= 1;
+                    let can_prev = tab.current_page > 0;
+                    let can_next = tab.current_page + 1 < total_pages;
+                    if ui
+                        .add_enabled(can_prev, egui::Button::new("⏮").small())
+                        .on_hover_text("First page")
+                        .clicked()
+                    {
+                        tab.current_page = 0;
+                    }
+                    if ui
+                        .add_enabled(can_prev, egui::Button::new("◀ Prev").small())
+                        .clicked()
+                    {
+                        tab.current_page = tab.current_page.saturating_sub(1);
                     }
                     ui.label(
                         RichText::new(format!(
@@ -771,10 +823,20 @@ impl MysqlRustyApp {
                             total_pages
                         ))
                         .small()
-                        .weak(),
+                        .color(pal.muted_text),
                     );
-                    if ui.small_button("Next ▶").clicked() && tab.current_page + 1 < total_pages {
+                    if ui
+                        .add_enabled(can_next, egui::Button::new("Next ▶").small())
+                        .clicked()
+                    {
                         tab.current_page += 1;
+                    }
+                    if ui
+                        .add_enabled(can_next, egui::Button::new("⏭").small())
+                        .on_hover_text("Last page")
+                        .clicked()
+                    {
+                        tab.current_page = total_pages.saturating_sub(1);
                     }
                 });
                 ui.add_space(2.0);
@@ -1039,16 +1101,22 @@ impl MysqlRustyApp {
                 }
             })
             .body(|body| {
-                body.rows(22.0, page_indices.len(), |mut row| {
+                body.rows(24.0, page_indices.len(), |mut row| {
                     let actual_row_idx = page_indices[row.index()];
                     let row_cells = &result.rows[actual_row_idx];
                     let is_marked_delete = tab
                         .pending_row_deletes
                         .iter()
                         .any(|(idx, _, _)| *idx == actual_row_idx);
+                    let is_selected_row = tab.selected_rows.contains(&actual_row_idx);
 
                     row.col(|ui| {
-                        let mut sel = tab.selected_rows.contains(&actual_row_idx);
+                        if is_marked_delete {
+                            ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_delete_bg);
+                        } else if is_selected_row {
+                            ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_selected_bg);
+                        }
+                        let mut sel = is_selected_row;
                         if ui.checkbox(&mut sel, "").changed() {
                             if sel {
                                 tab.selected_rows.insert(actual_row_idx);
@@ -1060,6 +1128,17 @@ impl MysqlRustyApp {
 
                     for col_idx in 0..result.columns.len() {
                         row.col(|ui| {
+                            let pending = tab.pending_edits.iter().find(|e| {
+                                e.row_idx == actual_row_idx && e.col_idx == col_idx
+                            });
+                            if is_marked_delete {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_delete_bg);
+                            } else if pending.is_some() {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, pal.cell_edited_bg);
+                            } else if is_selected_row {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_selected_bg);
+                            }
+
                             let is_editing = matches!(
                                 &tab.editing_cell,
                                 Some((r, c, _)) if *r == actual_row_idx && *c == col_idx
@@ -1069,52 +1148,71 @@ impl MysqlRustyApp {
                                 let (_, _, mut edit_buf) = tab.editing_cell.clone().unwrap();
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(&mut edit_buf)
-                                        .desired_width(120.0),
+                                        .desired_width(ui.available_width().max(100.0)),
                                 );
-                                if resp.changed() {
-                                    tab.editing_cell =
-                                        Some((actual_row_idx, col_idx, edit_buf.clone()));
+                                if !resp.has_focus() {
+                                    resp.request_focus();
                                 }
-                                if resp.lost_focus()
-                                    || ui.input(|i| i.key_pressed(Key::Enter))
-                                {
-                                    if let (Some(pk_idx), Some(pk_name)) =
-                                        (pk_col_idx, &result.primary_key_column)
-                                    {
-                                        let pk_val = row_cells[pk_idx].display_text();
-                                        let old_val = row_cells[col_idx].display_text();
-                                        if edit_buf != old_val {
-                                            tab.pending_edits.push(PendingCellEdit {
-                                                row_idx: actual_row_idx,
-                                                col_idx,
-                                                column_name: result.columns[col_idx].clone(),
-                                                pk_column: pk_name.clone(),
-                                                pk_value: pk_val,
-                                                new_value: edit_buf,
-                                            });
-                                        }
-                                    }
+                                if ui.input(|i| i.key_pressed(Key::Escape)) {
                                     tab.editing_cell = None;
+                                } else {
+                                    if resp.changed() {
+                                        tab.editing_cell =
+                                            Some((actual_row_idx, col_idx, edit_buf.clone()));
+                                    }
+                                    if resp.lost_focus()
+                                        || ui.input(|i| i.key_pressed(Key::Enter))
+                                    {
+                                        if let (Some(pk_idx), Some(pk_name)) =
+                                            (pk_col_idx, &result.primary_key_column)
+                                        {
+                                            let pk_val = row_cells[pk_idx].display_text();
+                                            let old_val = row_cells[col_idx].display_text();
+                                            if edit_buf != old_val {
+                                                tab.pending_edits.push(PendingCellEdit {
+                                                    row_idx: actual_row_idx,
+                                                    col_idx,
+                                                    column_name: result.columns[col_idx].clone(),
+                                                    pk_column: pk_name.clone(),
+                                                    pk_value: pk_val,
+                                                    new_value: edit_buf,
+                                                });
+                                            }
+                                        }
+                                        tab.editing_cell = None;
+                                    }
                                 }
                             } else {
-                                let pending = tab.pending_edits.iter().find(|e| {
-                                    e.row_idx == actual_row_idx && e.col_idx == col_idx
-                                });
                                 let cell = &row_cells[col_idx];
-                                let text = if let Some(p) = pending {
+                                let mut text = if let Some(p) = pending {
                                     RichText::new(&p.new_value)
-                                        .color(Color32::from_rgb(250, 204, 21))
+                                        .color(pal.warning)
                                         .strong()
                                 } else if cell.is_null() {
                                     RichText::new("NULL")
                                         .italics()
-                                        .color(Color32::from_rgb(100, 116, 139))
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(pal.muted_text)
+                                        .background_color(pal.null_badge_bg)
                                 } else {
-                                    RichText::new(cell.display_text())
+                                    RichText::new(cell.display_text()).color(pal.text_primary)
                                 };
+                                if is_marked_delete {
+                                    text = text.strikethrough().color(pal.danger);
+                                }
 
-                                let label_resp =
-                                    ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                                let label_resp = ui.add(
+                                    egui::Label::new(text)
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                );
+                                if pending.is_some() {
+                                    label_resp.clone().on_hover_text(format!(
+                                        "Edited (original: {})",
+                                        cell.display_text()
+                                    ));
+                                }
                                 if label_resp.double_clicked() {
                                     if pk_col_idx.is_some() {
                                         tab.editing_cell = Some((

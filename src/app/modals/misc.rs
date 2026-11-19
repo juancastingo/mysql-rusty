@@ -5,46 +5,39 @@ impl MysqlRustyApp {
         if !self.show_safety_modal {
             return;
         }
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_safety_modal;
         let mut execute_confirmed = false;
 
         egui::Window::new(rust_i18n::t!("safety_modal.title"))
             .open(&mut open)
+            .collapsible(false)
             .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .default_width(460.0)
             .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(69, 10, 10))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(&self.safety_warning_msg)
-                                .color(Color32::from_rgb(254, 202, 202))
-                                .strong(),
-                        );
-                    });
+                pal.banner_frame(pal.danger_bg, pal.danger).show(ui, |ui| {
+                    ui.label(
+                        RichText::new(&self.safety_warning_msg)
+                            .color(pal.text_primary)
+                            .strong(),
+                    );
+                });
 
                 ui.add_space(8.0);
                 ui.label(RichText::new(rust_i18n::t!("safety_modal.target_stmt")).strong());
                 egui::ScrollArea::vertical()
+                    .id_salt("safety_sql_scroll")
                     .max_height(110.0)
                     .show(ui, |ui| {
                         ui.code(&self.pending_safe_sql);
                     });
 
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                ui.separator();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(rust_i18n::t!("safety_modal.proceed"))
-                                    .color(Color32::from_rgb(239, 68, 68))
-                                    .strong(),
-                            )
-                            .fill(Color32::from_rgb(127, 29, 29)),
-                        )
+                        .add(pal.danger_button(rust_i18n::t!("safety_modal.proceed")))
                         .clicked()
                     {
                         execute_confirmed = true;
@@ -71,12 +64,16 @@ impl MysqlRustyApp {
         if !self.show_save_snippet_modal {
             return;
         }
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_save_snippet_modal;
         let mut save_to_library = false;
         let mut save_as_file = false;
 
         egui::Window::new("Save Query")
             .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .default_width(480.0)
             .show(ctx, |ui| {
                 ui.label(RichText::new("Query Name / Title:").strong());
@@ -126,24 +123,16 @@ impl MysqlRustyApp {
                     ui.add_space(6.0);
                     ui.label(RichText::new("SQL Preview:").strong().small());
                     egui::ScrollArea::vertical()
+                        .id_salt("save_snippet_preview_scroll")
                         .max_height(100.0)
                         .show(ui, |ui| {
                             ui.code(&tab.sql);
                         });
                 }
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
+                ui.separator();
                 ui.horizontal(|ui| {
-                    let save_btn = egui::Button::new(
-                        RichText::new("Save to Library")
-                            .color(Color32::WHITE)
-                            .strong(),
-                    )
-                    .fill(Color32::from_rgb(14, 116, 144));
-                    if ui.add(save_btn).clicked() {
-                        save_to_library = true;
-                    }
-
                     if ui
                         .button("Save as .sql File...")
                         .on_hover_text("Save query as a standalone .sql file on disk")
@@ -152,9 +141,14 @@ impl MysqlRustyApp {
                         save_as_file = true;
                     }
 
-                    if ui.button("Cancel").clicked() {
-                        self.show_save_snippet_modal = false;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(pal.primary_button("Save to Library")).clicked() {
+                            save_to_library = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_save_snippet_modal = false;
+                        }
+                    });
                 });
             });
 
@@ -194,10 +188,13 @@ impl MysqlRustyApp {
         let Some(inspector) = &self.cell_inspector else {
             return;
         };
+        let pal = self.effective_palette(ctx);
+        let mut open = true;
         let mut close_modal = false;
         let mut copy_val: Option<String> = None;
 
-        egui::Window::new("🔍 Cell Value & JSON Inspector")
+        egui::Window::new("Cell Value & JSON Inspector")
+            .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_size([580.0, 420.0])
@@ -207,19 +204,17 @@ impl MysqlRustyApp {
                     ui.label(
                         RichText::new(format!("Column: `{}`", inspector.column_name))
                             .strong()
-                            .color(Color32::from_rgb(56, 189, 248)),
+                            .color(pal.accent_text),
                     );
                     if let Some(tbl) = &inspector.table_name {
-                        ui.label(RichText::new(format!("Table: `{tbl}`")).weak());
+                        ui.label(RichText::new(format!("Table: `{tbl}`")).color(pal.muted_text));
                     }
-                    ui.label(RichText::new(format!("Row: #{}", inspector.row_index + 1)).weak());
+                    ui.label(
+                        RichText::new(format!("Row: #{}", inspector.row_index + 1))
+                            .color(pal.muted_text),
+                    );
                     if inspector.formatted_json.is_some() {
-                        ui.label(
-                            RichText::new("[VALID JSON]")
-                                .color(Color32::from_rgb(34, 197, 94))
-                                .strong()
-                                .small(),
-                        );
+                        pal.badge(ui, "VALID JSON", pal.success_bg, pal.success);
                     }
                 });
                 ui.separator();
@@ -235,15 +230,15 @@ impl MysqlRustyApp {
                     ui.label(
                         RichText::new(format!(
                             "Length: {} chars ({} bytes){}",
-                            display_text.len(),
+                            display_text.chars().count(),
                             display_text.len(),
                             if is_json { " (Prettified JSON)" } else { "" }
                         ))
                         .small()
-                        .weak(),
+                        .color(pal.muted_text),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("📋 Copy Value").clicked() {
+                        if ui.button("Copy Value").clicked() {
                             copy_val = Some(display_text.clone());
                         }
                     });
@@ -252,6 +247,7 @@ impl MysqlRustyApp {
 
                 let inspector_h = (ui.available_height() - 40.0).max(140.0);
                 egui::ScrollArea::both()
+                    .id_salt("cell_inspector_scroll")
                     .auto_shrink([false, false])
                     .max_height(inspector_h)
                     .show(ui, |ui| {
@@ -264,12 +260,16 @@ impl MysqlRustyApp {
                     });
 
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         close_modal = true;
                     }
                 });
             });
+
+        if !open {
+            close_modal = true;
+        }
 
         if let Some(val) = copy_val {
             ctx.copy_text(val);
@@ -485,6 +485,7 @@ impl MysqlRustyApp {
             None
         };
 
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_command_palette;
         egui::Window::new("Command Palette")
             .open(&mut open)
@@ -510,23 +511,29 @@ impl MysqlRustyApp {
                 if filtered.is_empty() {
                     ui.label(
                         RichText::new("No matching commands, tables, or snippets.")
-                            .color(Color32::GRAY)
+                            .color(pal.muted_text)
                             .italics(),
                     );
                 } else {
                     egui::ScrollArea::vertical()
+                        .id_salt("command_palette_scroll")
                         .max_height(320.0)
                         .show(ui, |ui| {
                             for (idx, item) in filtered.iter().enumerate() {
                                 let is_selected = idx == self.command_palette_selected;
                                 let bg = if is_selected {
-                                    Color32::from_rgb(30, 58, 138)
+                                    pal.accent_bg
                                 } else {
                                     Color32::TRANSPARENT
                                 };
                                 let frame = egui::Frame::NONE
                                     .fill(bg)
-                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .stroke(if is_selected {
+                                        Stroke::new(1.0, pal.border_active)
+                                    } else {
+                                        Stroke::NONE
+                                    })
+                                    .corner_radius(egui::CornerRadius::same(6))
                                     .inner_margin(egui::Margin::symmetric(8, 5));
 
                                 let row_resp = frame
@@ -534,9 +541,9 @@ impl MysqlRustyApp {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
                                             let badge_color = match item.category {
-                                                "Table" => Color32::from_rgb(56, 189, 248),
-                                                "Snippet" => Color32::from_rgb(250, 204, 21),
-                                                _ => Color32::from_rgb(52, 211, 153),
+                                                "Table" => pal.accent_text,
+                                                "Snippet" => pal.warning,
+                                                _ => pal.success,
                                             };
                                             ui.label(
                                                 RichText::new(format!("[{}]", item.category))
@@ -544,14 +551,18 @@ impl MysqlRustyApp {
                                                     .strong()
                                                     .color(badge_color),
                                             );
-                                            ui.label(RichText::new(&item.label).strong());
+                                            ui.label(
+                                                RichText::new(&item.label)
+                                                    .strong()
+                                                    .color(pal.text_primary),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     ui.label(
-                                                        RichText::new(&item.detail).small().color(
-                                                            Color32::from_rgb(148, 163, 184),
-                                                        ),
+                                                        RichText::new(&item.detail)
+                                                            .small()
+                                                            .color(pal.muted_text),
                                                     );
                                                 },
                                             );
@@ -697,6 +708,7 @@ impl MysqlRustyApp {
             return;
         }
 
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_shortcuts_modal;
         egui::Window::new("Keyboard Shortcuts")
             .open(&mut open)
@@ -712,6 +724,9 @@ impl MysqlRustyApp {
                             .hint_text("Filter actions or shortcuts...")
                             .desired_width(280.0),
                     );
+                    if !self.shortcuts_filter.is_empty() && ui.small_button("×").clicked() {
+                        self.shortcuts_filter.clear();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Reset to defaults").clicked() {
                             self.keymap.reset_to_defaults();
@@ -725,11 +740,7 @@ impl MysqlRustyApp {
 
                 if let Some(msg) = &self.rebind_conflict_msg {
                     ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(msg)
-                            .small()
-                            .color(Color32::from_rgb(248, 113, 113)),
-                    );
+                    ui.label(RichText::new(msg).small().color(pal.danger));
                 }
 
                 ui.separator();
@@ -737,6 +748,7 @@ impl MysqlRustyApp {
                 let filter_lower = self.shortcuts_filter.trim().to_lowercase();
                 let shortcuts_h = ui.available_height().max(180.0);
                 egui::ScrollArea::vertical()
+                    .id_salt("shortcuts_help_scroll")
                     .auto_shrink([false, false])
                     .max_height(shortcuts_h)
                     .show(ui, |ui| {
@@ -769,7 +781,7 @@ impl MysqlRustyApp {
                                     ui.label(
                                         RichText::new(action.category())
                                             .small()
-                                            .color(Color32::from_rgb(148, 163, 184)),
+                                            .color(pal.muted_text),
                                     );
                                     ui.label(action.label());
 
@@ -778,7 +790,7 @@ impl MysqlRustyApp {
                                         ui.label(
                                             RichText::new("Press new key...")
                                                 .strong()
-                                                .color(Color32::from_rgb(250, 204, 21)),
+                                                .color(pal.warning),
                                         );
                                         if ui.button("Cancel").clicked() {
                                             self.rebinding_action = None;
@@ -829,6 +841,7 @@ impl MysqlRustyApp {
     }
 
     pub(crate) fn render_onboarding_overlay(&mut self, ctx: &egui::Context) {
+        let pal = self.effective_palette(ctx);
         if self.tour.show_welcome {
             let mut start = false;
             let mut skip = false;
@@ -844,9 +857,10 @@ impl MysqlRustyApp {
                     ui.add_space(8.0);
                     ui.label("Take a quick 5-step guided tour using the offline Demo Sandbox, or jump straight into your workspace.");
                     ui.add_space(12.0);
-                    ui.horizontal(|ui| {
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .button(RichText::new("Start 5-Step Tour (Demo Sandbox)").strong())
+                            .add(pal.primary_button("Start 5-Step Tour (Demo Sandbox)"))
                             .clicked()
                         {
                             start = true;
@@ -882,7 +896,7 @@ impl MysqlRustyApp {
             painter.rect_stroke(
                 rect.expand(2.0),
                 egui::CornerRadius::same(6),
-                Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                Stroke::new(2.5, pal.accent),
                 egui::StrokeKind::Outside,
             );
         }
@@ -906,12 +920,13 @@ impl MysqlRustyApp {
             ui.add_space(4.0);
             ui.label(step.body);
             ui.add_space(10.0);
+            ui.separator();
             ui.horizontal(|ui| {
                 if step.index > 0 && ui.button("Back").clicked() {
                     go_back = true;
                 }
                 if ui
-                    .button(RichText::new(if is_last { "Finish" } else { "Next" }).strong())
+                    .add(pal.primary_button(if is_last { "Finish" } else { "Next" }))
                     .clicked()
                 {
                     go_next = true;

@@ -5,14 +5,17 @@ impl MysqlRustyApp {
         if !self.show_connection_modal {
             return;
         }
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_connection_modal;
         let mut save_and_connect = false;
         let mut save_only = false;
 
         egui::Window::new(rust_i18n::t!("conn_modal.title"))
             .open(&mut open)
+            .collapsible(false)
             .resizable(false)
-            .default_width(480.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(500.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(rust_i18n::t!("conn_modal.engine"));
@@ -296,54 +299,48 @@ impl MysqlRustyApp {
                         ui.spinner();
                         ui.label(
                             RichText::new("Testing connection (handshake, SSH tunnel & auth)...")
-                                .color(Color32::from_rgb(56, 189, 248)),
+                                .color(pal.accent_text),
                         );
                     });
                 } else if let Some(res) = &self.test_connection_result {
                     ui.add_space(8.0);
                     match res {
                         Ok(msg) => {
-                            egui::Frame::group(ui.style())
-                                .fill(Color32::from_rgb(6, 78, 59))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(16, 185, 129)))
-                                .inner_margin(8.0)
+                            pal.banner_frame(pal.success_bg, pal.success)
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             RichText::new("[OK]")
-                                                .color(Color32::from_rgb(16, 185, 129))
+                                                .color(pal.success)
                                                 .strong(),
                                         );
                                         ui.label(
                                             RichText::new(msg)
-                                                .color(Color32::from_rgb(209, 250, 229))
+                                                .color(pal.text_primary)
                                                 .small(),
                                         );
                                     });
                                 });
                         }
                         Err(err) => {
-                            egui::Frame::group(ui.style())
-                                .fill(Color32::from_rgb(69, 10, 10))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
-                                .inner_margin(8.0)
+                            pal.banner_frame(pal.danger_bg, pal.danger)
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| {
                                         ui.label(
                                             RichText::new("[FAIL] Connection Failed")
-                                                .color(Color32::from_rgb(239, 68, 68))
+                                                .color(pal.danger)
                                                 .strong(),
                                         );
                                         ui.label(
                                             RichText::new(err)
-                                                .color(Color32::from_rgb(254, 202, 202))
+                                                .color(pal.text_primary)
                                                 .small(),
                                         );
                                         if err.contains("Permission denied") || err.contains("SSH") {
                                             ui.add_space(2.0);
                                             ui.label(
                                                 RichText::new("Tip: For AWS EC2 / Amazon Linux bastion, SSH User is usually 'ec2-user' (not 'ubuntu'). Verify key file path and permissions.")
-                                                    .color(Color32::from_rgb(253, 224, 71))
+                                                    .color(pal.warning)
                                                     .small(),
                                             );
                                         }
@@ -401,14 +398,7 @@ impl MysqlRustyApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                RichText::new("Save & Connect")
-                                    .color(Color32::from_rgb(56, 189, 248))
-                                    .strong(),
-                            )
-                            .clicked()
-                        {
+                        if ui.add(pal.primary_button("Save & Connect")).clicked() {
                             save_and_connect = true;
                         }
                         if ui.button("Save").clicked() {
@@ -464,11 +454,12 @@ impl MysqlRustyApp {
             return;
         }
 
+        let pal = self.effective_palette(ctx);
         let mut open = true;
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new("⚠ Move Connection to Recycle Bin")
+        egui::Window::new("Move Connection to Recycle Bin")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -485,17 +476,12 @@ impl MysqlRustyApp {
                 ui.label(
                     RichText::new("You can restore it later from the Recycle Bin.")
                         .small()
-                        .color(Color32::from_rgb(148, 163, 184)),
+                        .color(pal.muted_text),
                 );
                 ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    let del_btn = egui::Button::new(
-                        RichText::new("Move to Trash")
-                            .strong()
-                            .color(Color32::WHITE),
-                    )
-                    .fill(Color32::from_rgb(185, 28, 28));
-                    if ui.add(del_btn).clicked() {
+                ui.separator();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(pal.danger_button("Move to Trash")).clicked() {
                         confirmed = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -533,6 +519,7 @@ impl MysqlRustyApp {
             return;
         }
 
+        let pal = self.effective_palette(ctx);
         let mut open = self.show_connection_trash_modal;
         let mut restore_idx: Option<usize> = None;
         let mut purge_idx: Option<usize> = None;
@@ -546,11 +533,15 @@ impl MysqlRustyApp {
             .default_width(520.0)
             .show(ctx, |ui| {
                 if self.config.trashed_connections.is_empty() {
-                    ui.label(
-                        RichText::new("Recycle Bin is empty.")
-                            .italics()
-                            .color(Color32::GRAY),
-                    );
+                    ui.add_space(16.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("Recycle Bin is empty.")
+                                .italics()
+                                .color(pal.muted_text),
+                        );
+                    });
+                    ui.add_space(16.0);
                     return;
                 }
 
@@ -561,14 +552,10 @@ impl MysqlRustyApp {
                             self.config.trashed_connections.len()
                         ))
                         .small()
-                        .color(Color32::from_rgb(148, 163, 184)),
+                        .color(pal.muted_text),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let empty_btn = egui::Button::new(
-                            RichText::new("Empty Trash").small().color(Color32::WHITE),
-                        )
-                        .fill(Color32::from_rgb(153, 27, 27));
-                        if ui.add(empty_btn).clicked() {
+                        if ui.add(pal.danger_button("Empty Trash")).clicked() {
                             empty_all = true;
                         }
                     });
@@ -577,51 +564,51 @@ impl MysqlRustyApp {
 
                 let trash_h = ui.available_height().max(160.0);
                 egui::ScrollArea::vertical()
+                    .id_salt("connection_trash_scroll")
                     .auto_shrink([false, false])
                     .max_height(trash_h)
                     .show(ui, |ui| {
                         for (idx, item) in self.config.trashed_connections.iter().enumerate() {
-                            egui::Frame::group(ui.style())
-                                .fill(Color32::from_rgb(17, 24, 39))
-                                .corner_radius(egui::CornerRadius::same(6))
-                                .inner_margin(egui::Margin::same(8))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(RichText::new(&item.profile.name).strong());
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{}@{}:{}/{} • deleted {}",
-                                                    item.profile.user,
-                                                    item.profile.host,
-                                                    item.profile.port,
-                                                    item.profile.default_database,
-                                                    item.deleted_at
-                                                ))
-                                                .small()
-                                                .color(Color32::from_rgb(148, 163, 184)),
-                                            );
-                                        });
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if ui.small_button("Delete Forever").clicked() {
-                                                    purge_idx = Some(idx);
-                                                }
-                                                let restore_btn = egui::Button::new(
-                                                    RichText::new("Restore")
-                                                        .small()
-                                                        .strong()
-                                                        .color(Color32::WHITE),
-                                                )
-                                                .fill(Color32::from_rgb(16, 185, 129));
-                                                if ui.add(restore_btn).clicked() {
-                                                    restore_idx = Some(idx);
-                                                }
-                                            },
+                            pal.compact_card_frame().show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            RichText::new(&item.profile.name)
+                                                .strong()
+                                                .color(pal.text_primary),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{}@{}:{}/{} • deleted {}",
+                                                item.profile.user,
+                                                item.profile.host,
+                                                item.profile.port,
+                                                item.profile.default_database,
+                                                item.deleted_at
+                                            ))
+                                            .small()
+                                            .color(pal.muted_text),
                                         );
                                     });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .small_button(
+                                                    RichText::new("Delete Forever")
+                                                        .color(pal.danger),
+                                                )
+                                                .clicked()
+                                            {
+                                                purge_idx = Some(idx);
+                                            }
+                                            if ui.add(pal.primary_button("Restore")).clicked() {
+                                                restore_idx = Some(idx);
+                                            }
+                                        },
+                                    );
                                 });
+                            });
                             ui.add_space(4.0);
                         }
                     });

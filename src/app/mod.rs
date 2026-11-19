@@ -42,9 +42,9 @@ use crate::export::{
 use crate::schema_diff::{SchemaDiffReport, diff_schemas};
 use crate::syntax::{
     apply_limit_to_sql, detect_current_limit, expand_sql_macro_with_cursor, extract_sql_parameters,
-    extract_statement_at_cursor, format_sql_pretty, highlight_sql, is_potentially_destructive,
-    is_write_query, replace_at_cursor, split_sql_at_cursor, split_sql_statements,
-    substitute_sql_parameters,
+    extract_statement_at_cursor, format_sql_pretty, highlight_sql_with_palette,
+    is_potentially_destructive, is_write_query, replace_at_cursor, split_sql_at_cursor,
+    split_sql_statements, substitute_sql_parameters,
 };
 use crate::table_designer::{TableDesignerAction, TableDraft};
 use chrono::Local;
@@ -278,7 +278,7 @@ pub struct MysqlRustyApp {
 
 impl MysqlRustyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: Arc<Runtime>) -> Self {
-        configure_modern_dark_theme(&cc.egui_ctx);
+        configure_fonts(&cc.egui_ctx);
         let (tx, rx) = unbounded_channel();
         let mut config = AppConfig::load();
         crate::apply_locale(&config.ui.language);

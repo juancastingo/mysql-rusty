@@ -85,10 +85,15 @@ impl MysqlRustyApp {
         max_table_height: &mut f32,
         collapsed: &mut bool,
     ) -> Option<usize> {
+        let pal = if ui.visuals().dark_mode {
+            crate::theme::dark_palette()
+        } else {
+            crate::theme::light_palette()
+        };
         let mut focus_clicked = false;
         let frame = egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(15, 22, 34))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(38, 50, 72)))
+            .fill(pal.card_bg)
+            .stroke(Stroke::new(1.0, pal.card_border))
             .corner_radius(egui::CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8));
 
@@ -110,27 +115,33 @@ impl MysqlRustyApp {
                 ui.label(
                     RichText::new(format!("Result #{}", idx + 1))
                         .strong()
-                        .color(Color32::from_rgb(56, 189, 248)),
+                        .color(pal.accent_text),
                 );
                 ui.label(
                     RichText::new(format!("{} rows • {} ms", res.rows.len(), res.duration_ms))
                         .small()
-                        .color(Color32::from_rgb(148, 163, 184)),
+                        .color(pal.muted_text),
                 );
                 let sql_preview: String = res.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-                let short_sql = if sql_preview.len() > 36 {
-                    format!("{}...", &sql_preview[..36])
+                let short_sql = if sql_preview.chars().count() > 36 {
+                    let prefix: String = sql_preview.chars().take(36).collect();
+                    format!("{prefix}...")
                 } else {
                     sql_preview.clone()
                 };
                 if !short_sql.is_empty() {
-                    ui.label(RichText::new(short_sql).small().monospace().weak())
-                        .on_hover_text(&res.sql);
+                    ui.label(
+                        RichText::new(short_sql)
+                            .small()
+                            .monospace()
+                            .color(pal.muted_text),
+                    )
+                    .on_hover_text(&res.sql);
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .small_button("🔍 Tab")
+                        .small_button("Focus Tab")
                         .on_hover_text("Focus this result in single-tab view")
                         .clicked()
                     {
@@ -155,7 +166,7 @@ impl MysqlRustyApp {
                         }
                     }
                     if ui
-                        .small_button("📋 CSV")
+                        .small_button("Copy CSV")
                         .on_hover_text("Copy this result as CSV")
                         .clicked()
                         && let Ok(csv_text) = to_csv_string(res)
@@ -175,7 +186,7 @@ impl MysqlRustyApp {
                 ui.label(
                     RichText::new(&res.status_message)
                         .small()
-                        .color(Color32::from_rgb(52, 211, 153)),
+                        .color(pal.success),
                 );
                 return;
             }
@@ -202,7 +213,7 @@ impl MysqlRustyApp {
                                             RichText::new(col_name)
                                                 .small()
                                                 .strong()
-                                                .color(Color32::from_rgb(203, 213, 225)),
+                                                .color(pal.text_secondary),
                                         );
                                     });
                                 }
@@ -225,9 +236,11 @@ impl MysqlRustyApp {
                                                 RichText::new("NULL")
                                                     .small()
                                                     .italics()
-                                                    .color(Color32::GRAY)
+                                                    .monospace()
+                                                    .color(pal.muted_text)
+                                                    .background_color(pal.null_badge_bg)
                                             } else {
-                                                RichText::new(&txt).small()
+                                                RichText::new(&txt).small().color(pal.text_primary)
                                             };
                                             if ui
                                                 .add(

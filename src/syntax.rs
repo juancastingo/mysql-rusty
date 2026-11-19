@@ -457,6 +457,7 @@ pub fn replace_at_cursor(
 
 /// Builds a syntax-highlighted `LayoutJob` for SQL code, optionally appending an inline
 /// Copilot-style ghost completion when the cursor is at the end of the buffer.
+#[allow(dead_code)]
 pub fn highlight_sql(
     text: &str,
     ghost_suffix: Option<&str>,
