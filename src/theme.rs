@@ -60,14 +60,10 @@ impl Palette {
         } else {
             Color32::from_rgb(2, 132, 199) // Sky 600
         };
-        egui::Button::new(
-            RichText::new(text.into())
-                .color(Color32::WHITE)
-                .strong(),
-        )
-        .fill(fill)
-        .stroke(Stroke::new(1.0, self.accent))
-        .corner_radius(CornerRadius::same(6))
+        egui::Button::new(RichText::new(text.into()).color(Color32::WHITE).strong())
+            .fill(fill)
+            .stroke(Stroke::new(1.0, self.accent))
+            .corner_radius(CornerRadius::same(6))
     }
 
     pub fn danger_button(&self, text: impl Into<String>) -> egui::Button<'static> {
@@ -76,14 +72,10 @@ impl Palette {
         } else {
             Color32::from_rgb(220, 38, 38) // Red 600
         };
-        egui::Button::new(
-            RichText::new(text.into())
-                .color(Color32::WHITE)
-                .strong(),
-        )
-        .fill(fill)
-        .stroke(Stroke::new(1.0, self.danger))
-        .corner_radius(CornerRadius::same(6))
+        egui::Button::new(RichText::new(text.into()).color(Color32::WHITE).strong())
+            .fill(fill)
+            .stroke(Stroke::new(1.0, self.danger))
+            .corner_radius(CornerRadius::same(6))
     }
 
     pub fn subtle_button(&self, text: impl Into<String>) -> egui::Button<'static> {
@@ -156,28 +148,28 @@ pub fn dark_palette() -> Palette {
         is_dark: true,
 
         // Syntax highlighting
-        keyword: Color32::from_rgb(56, 189, 248),     // Sky 400
-        function: Color32::from_rgb(192, 132, 252),   // Purple 400
-        type_: Color32::from_rgb(45, 212, 191),       // Teal 400
-        string: Color32::from_rgb(163, 230, 53),      // Lime 400
-        number: Color32::from_rgb(251, 146, 60),      // Orange 400
-        comment: Color32::from_rgb(100, 116, 139),    // Slate 500
-        operator: Color32::from_rgb(148, 163, 184),   // Slate 400
+        keyword: Color32::from_rgb(56, 189, 248), // Sky 400
+        function: Color32::from_rgb(192, 132, 252), // Purple 400
+        type_: Color32::from_rgb(45, 212, 191),   // Teal 400
+        string: Color32::from_rgb(163, 230, 53),  // Lime 400
+        number: Color32::from_rgb(251, 146, 60),  // Orange 400
+        comment: Color32::from_rgb(100, 116, 139), // Slate 500
+        operator: Color32::from_rgb(148, 163, 184), // Slate 400
         identifier: Color32::from_rgb(226, 232, 240), // Slate 200
         punctuation: Color32::from_rgb(148, 163, 184),
 
         // Semantic accent & status
-        accent: Color32::from_rgb(56, 189, 248),      // Sky 400
-        accent_bg: Color32::from_rgb(15, 39, 68),     // Deep sky tint
-        accent_text: Color32::from_rgb(125, 211, 252),// Sky 300
-        success: Color32::from_rgb(52, 211, 153),     // Emerald 400
-        success_bg: Color32::from_rgb(6, 78, 59),     // Emerald 900
-        warning: Color32::from_rgb(251, 191, 36),     // Amber 400
-        warning_bg: Color32::from_rgb(66, 46, 10),    // Deep amber
-        danger: Color32::from_rgb(248, 113, 113),     // Red 400
-        danger_bg: Color32::from_rgb(69, 10, 10),     // Red 950
-        purple: Color32::from_rgb(192, 132, 252),     // Purple 400
-        purple_bg: Color32::from_rgb(59, 7, 100),     // Purple 950
+        accent: Color32::from_rgb(56, 189, 248),  // Sky 400
+        accent_bg: Color32::from_rgb(15, 39, 68), // Deep sky tint
+        accent_text: Color32::from_rgb(125, 211, 252), // Sky 300
+        success: Color32::from_rgb(52, 211, 153), // Emerald 400
+        success_bg: Color32::from_rgb(6, 78, 59), // Emerald 900
+        warning: Color32::from_rgb(251, 191, 36), // Amber 400
+        warning_bg: Color32::from_rgb(66, 46, 10), // Deep amber
+        danger: Color32::from_rgb(248, 113, 113), // Red 400
+        danger_bg: Color32::from_rgb(69, 10, 10), // Red 950
+        purple: Color32::from_rgb(192, 132, 252), // Purple 400
+        purple_bg: Color32::from_rgb(59, 7, 100), // Purple 950
 
         // Surfaces & borders
         panel_bg: Color32::from_rgb(13, 18, 28),
@@ -189,9 +181,9 @@ pub fn dark_palette() -> Palette {
         border_active: Color32::from_rgb(56, 189, 248),
 
         // Text
-        text_primary: Color32::from_rgb(241, 245, 249),   // Slate 100
+        text_primary: Color32::from_rgb(241, 245, 249), // Slate 100
         text_secondary: Color32::from_rgb(203, 213, 225), // Slate 300
-        muted_text: Color32::from_rgb(148, 163, 184),     // Slate 400
+        muted_text: Color32::from_rgb(148, 163, 184),   // Slate 400
 
         // Chrome, tabs & grid
         tab_active_bg: Color32::from_rgb(15, 39, 68),
@@ -209,47 +201,47 @@ pub fn light_palette() -> Palette {
         is_dark: false,
 
         // Syntax highlighting (WCAG AA on light surfaces)
-        keyword: Color32::from_rgb(3, 105, 161),      // Sky 700
-        function: Color32::from_rgb(109, 40, 217),    // Violet 700
-        type_: Color32::from_rgb(15, 118, 110),       // Teal 700
-        string: Color32::from_rgb(21, 128, 61),       // Green 700
-        number: Color32::from_rgb(194, 65, 12),       // Orange 700
-        comment: Color32::from_rgb(100, 116, 139),    // Slate 500
-        operator: Color32::from_rgb(71, 85, 105),     // Slate 600
-        identifier: Color32::from_rgb(15, 23, 42),    // Slate 900
+        keyword: Color32::from_rgb(3, 105, 161),   // Sky 700
+        function: Color32::from_rgb(109, 40, 217), // Violet 700
+        type_: Color32::from_rgb(15, 118, 110),    // Teal 700
+        string: Color32::from_rgb(21, 128, 61),    // Green 700
+        number: Color32::from_rgb(194, 65, 12),    // Orange 700
+        comment: Color32::from_rgb(100, 116, 139), // Slate 500
+        operator: Color32::from_rgb(71, 85, 105),  // Slate 600
+        identifier: Color32::from_rgb(15, 23, 42), // Slate 900
         punctuation: Color32::from_rgb(71, 85, 105),
 
         // Semantic accent & status (high contrast on light surfaces)
-        accent: Color32::from_rgb(2, 132, 199),       // Sky 600
-        accent_bg: Color32::from_rgb(224, 242, 254),  // Sky 100
-        accent_text: Color32::from_rgb(3, 105, 161),  // Sky 700
-        success: Color32::from_rgb(21, 128, 61),      // Green 700
+        accent: Color32::from_rgb(2, 132, 199),      // Sky 600
+        accent_bg: Color32::from_rgb(224, 242, 254), // Sky 100
+        accent_text: Color32::from_rgb(3, 105, 161), // Sky 700
+        success: Color32::from_rgb(21, 128, 61),     // Green 700
         success_bg: Color32::from_rgb(220, 252, 231), // Green 100
-        warning: Color32::from_rgb(161, 98, 7),       // Yellow 700
+        warning: Color32::from_rgb(161, 98, 7),      // Yellow 700
         warning_bg: Color32::from_rgb(254, 249, 195), // Yellow 100
-        danger: Color32::from_rgb(185, 28, 28),       // Red 700
-        danger_bg: Color32::from_rgb(254, 226, 226),  // Red 100
-        purple: Color32::from_rgb(126, 34, 206),      // Purple 700
-        purple_bg: Color32::from_rgb(243, 232, 255),  // Purple 100
+        danger: Color32::from_rgb(185, 28, 28),      // Red 700
+        danger_bg: Color32::from_rgb(254, 226, 226), // Red 100
+        purple: Color32::from_rgb(126, 34, 206),     // Purple 700
+        purple_bg: Color32::from_rgb(243, 232, 255), // Purple 100
 
         // Surfaces & borders
-        panel_bg: Color32::from_rgb(248, 250, 252),   // Slate 50
+        panel_bg: Color32::from_rgb(248, 250, 252), // Slate 50
         surface_bg: Color32::from_rgb(241, 245, 249), // Slate 100
-        card_bg: Color32::from_rgb(255, 255, 255),    // White
+        card_bg: Color32::from_rgb(255, 255, 255),  // White
         card_hover_bg: Color32::from_rgb(241, 245, 249),
-        card_border: Color32::from_rgb(203, 213, 225),// Slate 300
+        card_border: Color32::from_rgb(203, 213, 225), // Slate 300
         border_subtle: Color32::from_rgb(226, 232, 240), // Slate 200
-        border_active: Color32::from_rgb(2, 132, 199),// Sky 600
+        border_active: Color32::from_rgb(2, 132, 199), // Sky 600
 
         // Text
-        text_primary: Color32::from_rgb(15, 23, 42),      // Slate 900
-        text_secondary: Color32::from_rgb(51, 65, 85),    // Slate 700
-        muted_text: Color32::from_rgb(100, 116, 139),     // Slate 500
+        text_primary: Color32::from_rgb(15, 23, 42), // Slate 900
+        text_secondary: Color32::from_rgb(51, 65, 85), // Slate 700
+        muted_text: Color32::from_rgb(100, 116, 139), // Slate 500
 
         // Chrome, tabs & grid
-        tab_active_bg: Color32::from_rgb(224, 242, 254),  // Sky 100
-        tab_inactive_bg: Color32::from_rgb(241, 245, 249),// Slate 100
-        badge_bg: Color32::from_rgb(226, 232, 240),       // Slate 200
+        tab_active_bg: Color32::from_rgb(224, 242, 254), // Sky 100
+        tab_inactive_bg: Color32::from_rgb(241, 245, 249), // Slate 100
+        badge_bg: Color32::from_rgb(226, 232, 240),      // Slate 200
         null_badge_bg: Color32::from_rgb(226, 232, 240),
         row_selected_bg: Color32::from_rgba_unmultiplied(14, 165, 233, 38),
         row_delete_bg: Color32::from_rgba_unmultiplied(220, 38, 38, 35),

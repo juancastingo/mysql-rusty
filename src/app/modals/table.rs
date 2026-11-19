@@ -161,9 +161,7 @@ impl MysqlRustyApp {
                                     );
                                     if !col.is_nullable {
                                         ui.label(
-                                            RichText::new("NOT NULL")
-                                                .small()
-                                                .color(pal.muted_text),
+                                            RichText::new("NOT NULL").small().color(pal.muted_text),
                                         );
                                     }
                                     if let Some(def) = &col.default_value {
@@ -179,8 +177,7 @@ impl MysqlRustyApp {
                         1 => {
                             if tbl.foreign_keys.is_empty() {
                                 ui.label(
-                                    RichText::new("No foreign keys defined.")
-                                        .color(pal.muted_text),
+                                    RichText::new("No foreign keys defined.").color(pal.muted_text),
                                 );
                             } else {
                                 for fk in &tbl.foreign_keys {

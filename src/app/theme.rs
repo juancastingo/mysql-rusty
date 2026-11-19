@@ -138,8 +138,7 @@ pub(crate) fn configure_modern_light_theme(ctx: &egui::Context) {
 
     visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
     visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(248, 250, 252);
-    visuals.widgets.noninteractive.bg_stroke =
-        Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(51, 65, 85));
 
     visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);

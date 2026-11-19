@@ -13,10 +13,7 @@ impl MysqlRustyApp {
                 ui.add_space(28.0);
                 ui.spinner();
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Executing SQL query...")
-                        .color(pal.text_secondary),
-                );
+                ui.label(RichText::new("Executing SQL query...").color(pal.text_secondary));
             });
             return;
         }
@@ -32,9 +29,11 @@ impl MysqlRustyApp {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Run a query with Ctrl+Enter to inspect rows, charts, and stats here.")
-                        .size(12.0)
-                        .color(pal.muted_text),
+                    RichText::new(
+                        "Run a query with Ctrl+Enter to inspect rows, charts, and stats here.",
+                    )
+                    .size(12.0)
+                    .color(pal.muted_text),
                 );
             });
             return;

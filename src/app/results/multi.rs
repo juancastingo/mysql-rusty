@@ -240,9 +240,7 @@ impl MysqlRustyApp {
                                                     .color(pal.muted_text)
                                                     .background_color(pal.null_badge_bg)
                                             } else {
-                                                RichText::new(&txt)
-                                                    .small()
-                                                    .color(pal.text_primary)
+                                                RichText::new(&txt).small().color(pal.text_primary)
                                             };
                                             if ui
                                                 .add(

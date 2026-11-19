@@ -196,7 +196,11 @@ impl MysqlRustyApp {
                 .spacing([16.0, 4.0])
                 .show(ui, |ui| {
                     ui.label(RichText::new("Target Database").color(pal.muted_text));
-                    ui.label(RichText::new(&res.database).strong().color(pal.text_primary));
+                    ui.label(
+                        RichText::new(&res.database)
+                            .strong()
+                            .color(pal.text_primary),
+                    );
                     ui.end_row();
 
                     ui.label(RichText::new("Execution Time").color(pal.muted_text));
@@ -298,7 +302,9 @@ impl MysqlRustyApp {
                         .map(|c| c.display_text())
                         .unwrap_or_default();
 
-                    let (type_color, type_bg, type_badge) = match access_type.to_uppercase().as_str()
+                    let (type_color, type_bg, type_badge) = match access_type
+                        .to_uppercase()
+                        .as_str()
                     {
                         "ALL" => {
                             has_full_scan = true;

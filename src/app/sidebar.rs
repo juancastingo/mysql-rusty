@@ -89,17 +89,18 @@ impl MysqlRustyApp {
 
         // Search filter with clear button
         ui.horizontal(|ui| {
-            let clear_w = if self.schema_filter.is_empty() { 0.0 } else { 24.0 };
+            let clear_w = if self.schema_filter.is_empty() {
+                0.0
+            } else {
+                24.0
+            };
             ui.add(
                 egui::TextEdit::singleline(&mut self.schema_filter)
                     .hint_text("Filter tables or columns...")
                     .desired_width((ui.available_width() - clear_w).max(80.0)),
             );
             if !self.schema_filter.is_empty()
-                && ui
-                    .small_button("×")
-                    .on_hover_text("Clear filter")
-                    .clicked()
+                && ui.small_button("×").on_hover_text("Clear filter").clicked()
             {
                 self.schema_filter.clear();
             }
@@ -939,10 +940,7 @@ impl MysqlRustyApp {
                     .desired_width((ui.available_width() - clear_w).max(80.0)),
             );
             if !self.snippet_search_filter.is_empty()
-                && ui
-                    .small_button("×")
-                    .on_hover_text("Clear search")
-                    .clicked()
+                && ui.small_button("×").on_hover_text("Clear search").clicked()
             {
                 self.snippet_search_filter.clear();
             }
@@ -1214,10 +1212,7 @@ impl MysqlRustyApp {
                 self.history_last_input = Some(std::time::Instant::now());
             }
             if !self.history_search_filter.is_empty()
-                && ui
-                    .small_button("×")
-                    .on_hover_text("Clear search")
-                    .clicked()
+                && ui.small_button("×").on_hover_text("Clear search").clicked()
             {
                 self.history_search_filter.clear();
                 self.history_limit = 100;
@@ -1313,7 +1308,10 @@ impl MysqlRustyApp {
                                 }
                                 ui.label(RichText::new(short_ts).small().color(pal.muted_text));
                                 if !entry.database.is_empty() {
-                                    ui.colored_label(pal.accent_text, format!("[{}]", entry.database));
+                                    ui.colored_label(
+                                        pal.accent_text,
+                                        format!("[{}]", entry.database),
+                                    );
                                 }
                                 ui.label(
                                     RichText::new(format!(

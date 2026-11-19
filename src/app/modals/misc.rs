@@ -16,14 +16,13 @@ impl MysqlRustyApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .default_width(460.0)
             .show(ctx, |ui| {
-                pal.banner_frame(pal.danger_bg, pal.danger)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(&self.safety_warning_msg)
-                                .color(pal.text_primary)
-                                .strong(),
-                        );
-                    });
+                pal.banner_frame(pal.danger_bg, pal.danger).show(ui, |ui| {
+                    ui.label(
+                        RichText::new(&self.safety_warning_msg)
+                            .color(pal.text_primary)
+                            .strong(),
+                    );
+                });
 
                 ui.add_space(8.0);
                 ui.label(RichText::new(rust_i18n::t!("safety_modal.target_stmt")).strong());

@@ -115,7 +115,8 @@ impl MysqlRustyApp {
                                                 }
                                             });
                                         });
-                                    let tab_resp = frame_resp.response.interact(egui::Sense::click());
+                                    let tab_resp =
+                                        frame_resp.response.interact(egui::Sense::click());
                                     if tab_resp.clicked() {
                                         switch_target = Some(idx);
                                     }
@@ -126,7 +127,9 @@ impl MysqlRustyApp {
 
                                 if ui
                                     .small_button("+")
-                                    .on_hover_text(rust_i18n::t!("connections_bar.new_conn_tooltip"))
+                                    .on_hover_text(rust_i18n::t!(
+                                        "connections_bar.new_conn_tooltip"
+                                    ))
                                     .clicked()
                                 {
                                     self.switch_to_workspace(None);
@@ -300,8 +303,8 @@ impl MysqlRustyApp {
                             self.execute_current_tab_query(None);
                         }
 
-                        if self.connection_lost.is_some() {
-                            if ui
+                        if self.connection_lost.is_some()
+                            && ui
                                 .add(pal.danger_button("Reconnect"))
                                 .on_hover_text(
                                     self.connection_lost
@@ -309,38 +312,36 @@ impl MysqlRustyApp {
                                         .unwrap_or("Connection lost — click to reconnect"),
                                 )
                                 .clicked()
-                            {
-                                self.auto_retry_attempted = false;
-                                self.reconnect_active_session();
-                            }
+                        {
+                            self.auto_retry_attempted = false;
+                            self.reconnect_active_session();
                         }
 
-                        if is_running {
-                            if ui
+                        if is_running
+                            && ui
                                 .add(pal.danger_button("■ Stop"))
                                 .on_hover_text("Abort running query execution")
                                 .clicked()
-                            {
-                                if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                                    if let Some(handle) = tab.task_abort_handle.take() {
-                                        handle.abort();
-                                    }
-                                    tab.is_running = false;
-                                    tab.last_error = Some("Query cancelled by user".to_string());
+                        {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                                if let Some(handle) = tab.task_abort_handle.take() {
+                                    handle.abort();
                                 }
-                                if let Some(session) = self.active_session.clone()
-                                    && let Some(conn_id) = session.editor_connection_id()
-                                {
-                                    self.rt.spawn(async move {
-                                        if let Err(err) = session.kill_query(conn_id).await {
-                                            tracing::warn!(conn_id, error = %err, "Failed to KILL QUERY on server");
-                                        } else {
-                                            tracing::info!(conn_id, "Cancelled query on server via KILL QUERY");
-                                        }
-                                    });
-                                }
-                                self.status_banner = "Query cancelled by user.".to_string();
+                                tab.is_running = false;
+                                tab.last_error = Some("Query cancelled by user".to_string());
                             }
+                            if let Some(session) = self.active_session.clone()
+                                && let Some(conn_id) = session.editor_connection_id()
+                            {
+                                self.rt.spawn(async move {
+                                    if let Err(err) = session.kill_query(conn_id).await {
+                                        tracing::warn!(conn_id, error = %err, "Failed to KILL QUERY on server");
+                                    } else {
+                                        tracing::info!(conn_id, "Cancelled query on server via KILL QUERY");
+                                    }
+                                });
+                            }
+                            self.status_banner = "Query cancelled by user.".to_string();
                         }
 
                         if !has_selection {
