@@ -2,13 +2,13 @@ Package: mysql-rusty
 Version: 0.1.0-1
 Architecture: amd64
 Maintainer: juancastingo
-Installed-Size: 30090
-Depends: libc6 (>= 2.43)
+Installed-Size: 29968
+Depends: libc6 (>= 2.35)
 Filename: pool/main/mysql-rusty_0.1.0-1_amd64.deb
-Size: 9772864
-MD5sum: 88bd3ec746eed60c5e72f259b6348dd8
-SHA1: eaa1aa65c79e39df507ec02d76a23017a228a604
-SHA256: 26a06c0a157220d314fe6d6eae14a2a778cfa8f8cc03f75c36198e643734c543
+Size: 9729412
+MD5sum: 4628bc844d88027e9f6a9b107de9a867
+SHA1: e673bc92d2e5cfa2fc95cb69ea540d16e5f3b0f0
+SHA256: 2bc6a7fcdd60d127781014cb57a360e332534bf274ee8f11c66f1a87dd09d602
 Section: database
 Priority: optional
 Homepage: https://github.com/juancastingo/mysql-rusty
