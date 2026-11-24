@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Tue, 24 Nov 2026 17:39:52 +0000
+Label: mysql-rusty
+Origin: mysql-rusty
+Suite: stable
+MD5Sum:
+ a7877821a14fb83ce4d96abafaaf7a64              146 Release
+ a0fc5c39857ff7aac907fc9742e23400            13118 main/binary-amd64/Packages
+ c0daed7643d0ecf4f92d401e855347e1             6173 main/binary-amd64/Packages.gz
+SHA1:
+ a4ad1b9daf8d4afd2111cfbec6e381162051e56b              146 Release
+ ffbe83e64db138317c75931855862c7e4edc1307            13118 main/binary-amd64/Packages
+ c3b0996c3315c173cc85af27449d29ac2fcebf7f             6173 main/binary-amd64/Packages.gz
+SHA256:
+ dead6ead30a747436d8e72daf8db29985cf47519d9c97035821665b928e2ed12              146 Release
+ f80e81996d716bcd4de4cc31132565f8840007a61296547bb7eadb0bed43d85d            13118 main/binary-amd64/Packages
+ d8d56e0c271bd0740bbffb4231514fe02c4762bc36c849a179399b4e797b10c1             6173 main/binary-amd64/Packages.gz
+SHA512:
+ c31dd85fdba5a05c34056784c422d5c8c97dffb3a143924bb077f3c164def4b192d0225bf0f509cfbd1065e4f80a84c3bb3bfb3ecfcc64b67c59c8b7fe572842              146 Release
+ 14f93bfd915fa6b44c199726ccd4c730c738b82d7ef167d4d25d380bd208f7b533acfc6bc5bb1206102b89cf0320feaebe3ee8538d424a92c8d3d937ba2eca44            13118 main/binary-amd64/Packages
+ f2829f9e2b87e7a30b4f19988f664b44e434eadfa2982a96314154d0e7d204f7eff8769db4d6235395ea682c8feca29389accdaadcb83374f3a58bcf808ac569             6173 main/binary-amd64/Packages.gz
