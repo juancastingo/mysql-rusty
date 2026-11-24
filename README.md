@@ -86,6 +86,16 @@ Every push to `main` automatically builds and publishes ready-to-run installers 
 | **Windows (x86_64)** | `.exe` / `.zip` | Download and run `mysql-rusty-windows-x86_64.exe` |
 | **macOS (Apple Silicon)** | `.dmg` | Open `mysql-rusty-macos-arm64.dmg` and drag `MySQL-Rusty.app` to Applications |
 
+### Install via APT Repository (Ubuntu / Debian)
+Once the APT repository is published on GitHub Pages, you can install and receive updates directly with `apt`:
+
+```bash
+curl -fsSL https://juancastingo.github.io/mysql-rusty/KEY.gpg | sudo gpg --dearmor -o /usr/share/keyrings/mysql-rusty.gpg
+echo "deb [signed-by=/usr/share/keyrings/mysql-rusty.gpg] https://juancastingo.github.io/mysql-rusty stable main" | sudo tee /etc/apt/sources.list.d/mysql-rusty.list
+sudo apt update
+sudo apt install mysql-rusty
+```
+
 ---
 
 ## 🚀 Building & Running on Ubuntu

@@ -136,3 +136,98 @@ jobs:
           prerelease: true
           overwrite_files: true
           files: release-files/*
+
+  publish-apt:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check GPG secret
+        id: check
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::warning::APT_GPG_PRIVATE_KEY secret is not configured. Skipping APT repository publishing."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: incoming-debs
+
+      - name: Install APT & GPG tools
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: Import GPG key
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_FP=$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
+          echo "KEY_FP=$KEY_FP" >> "$GITHUB_ENV"
+          if [ -n "$APT_GPG_PASSPHRASE" ]; then
+            echo "$APT_GPG_PASSPHRASE" > /tmp/gpg-passphrase
+          fi
+
+      - name: Build and push APT repository to gh-pages
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages
+            git checkout -B gh-pages origin/gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p pool/main dists/stable/main/binary-amd64
+          cp incoming-debs/*.deb pool/main/
+
+          dpkg-scanpackages --multiversion pool/ > dists/stable/main/binary-amd64/Packages
+          gzip -k -f dists/stable/main/binary-amd64/Packages
+
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="mysql-rusty" \
+            -o APT::FTPArchive::Release::Label="mysql-rusty" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            release dists/stable > dists/stable/Release
+
+          GPG_OPTS=(--batch --yes --pinentry-mode loopback)
+          if [ -f /tmp/gpg-passphrase ]; then
+            GPG_OPTS+=(--passphrase-file /tmp/gpg-passphrase)
+          fi
+
+          gpg "${GPG_OPTS[@]}" --local-user "$KEY_FP" --armor --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+          gpg "${GPG_OPTS[@]}" --local-user "$KEY_FP" --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes --armor --export "$KEY_FP" > KEY.gpg
+
+          rm -rf incoming-debs /tmp/gpg-passphrase
+
+          git add pool dists KEY.gpg
+          if ! git diff --cached --quiet; then
+            git commit -m "Update APT repository"
+            git push origin gh-pages
+          else
+            echo "No changes to APT repository."
+          fi
+
