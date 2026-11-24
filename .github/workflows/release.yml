@@ -14,15 +14,18 @@ env:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev libgtk-3-dev \
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y curl ca-certificates git build-essential pkg-config libssl-dev libgtk-3-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
             libfontconfig1-dev libwayland-dev libx11-dev libgl1-mesa-dev libdbus-1-dev
+
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
