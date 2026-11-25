@@ -504,7 +504,7 @@ impl MysqlRustyApp {
                 return;
             }
 
-            // #10 Result Snapshot Compare vs Baseline
+            // #10 Result Snapshot Compare vs Baseline (cached per baseline/result pair)
             if tab.show_baseline_compare
                 && let Some(baseline) = &tab.baseline_result
             {
@@ -518,56 +518,70 @@ impl MysqlRustyApp {
                             .position(|c| c.eq_ignore_ascii_case(pk))
                     })
                     .unwrap_or(0);
-                let report = compute_data_diff(baseline, &result, key_idx);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "Baseline Compare: {} modified | {} added | {} removed | {} unchanged",
-                            report.modified_count,
-                            report.right_only_count,
-                            report.left_only_count,
-                            report.same_count
-                        ))
-                        .strong()
-                        .color(Color32::from_rgb(56, 189, 248)),
-                    );
-                });
-                ui.separator();
-                egui::ScrollArea::both().show(ui, |ui| {
-                    for entry in &report.entries {
-                        if entry.status == RowDiffStatus::Same {
-                            continue;
-                        }
-                        let (badge, color) = match entry.status {
-                            RowDiffStatus::OnlyInRight => {
-                                ("+ ADDED", Color32::from_rgb(52, 211, 153))
+                let cache_key = (
+                    Arc::as_ptr(baseline) as usize,
+                    Arc::as_ptr(&result) as usize,
+                    key_idx,
+                );
+                if tab.cached_baseline_key != cache_key || tab.cached_baseline_diff.is_none() {
+                    tab.cached_baseline_diff = Some(compute_data_diff(baseline, &result, key_idx));
+                    tab.cached_baseline_key = cache_key;
+                }
+                if let Some(report) = &tab.cached_baseline_diff {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Baseline Compare: {} modified | {} added | {} removed | {} unchanged",
+                                report.modified_count,
+                                report.right_only_count,
+                                report.left_only_count,
+                                report.same_count
+                            ))
+                            .strong()
+                            .color(Color32::from_rgb(56, 189, 248)),
+                        );
+                    });
+                    ui.separator();
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        for entry in &report.entries {
+                            if entry.status == RowDiffStatus::Same {
+                                continue;
                             }
-                            RowDiffStatus::OnlyInLeft => {
-                                ("- REMOVED", Color32::from_rgb(248, 113, 113))
-                            }
-                            RowDiffStatus::Modified => {
-                                ("~ MODIFIED", Color32::from_rgb(250, 204, 21))
-                            }
-                            RowDiffStatus::Same => ("SAME", Color32::GRAY),
-                        };
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(badge).small().strong().color(color));
-                            ui.label(RichText::new(format!("Key: {}", entry.key_display)).strong());
-                            if let Some(r) = &entry.right_row {
-                                ui.label(RichText::new(format!("New: {}", r.join(" | "))).small());
-                            }
-                            if entry.status == RowDiffStatus::Modified
-                                && let Some(l) = &entry.left_row
-                            {
+                            let (badge, color) = match entry.status {
+                                RowDiffStatus::OnlyInRight => {
+                                    ("+ ADDED", Color32::from_rgb(52, 211, 153))
+                                }
+                                RowDiffStatus::OnlyInLeft => {
+                                    ("- REMOVED", Color32::from_rgb(248, 113, 113))
+                                }
+                                RowDiffStatus::Modified => {
+                                    ("~ MODIFIED", Color32::from_rgb(250, 204, 21))
+                                }
+                                RowDiffStatus::Same => ("SAME", Color32::GRAY),
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(badge).small().strong().color(color));
                                 ui.label(
-                                    RichText::new(format!("(Was: {})", l.join(" | ")))
-                                        .small()
-                                        .weak(),
+                                    RichText::new(format!("Key: {}", entry.key_display)).strong(),
                                 );
-                            }
-                        });
-                    }
-                });
+                                if let Some(r) = &entry.right_row {
+                                    ui.label(
+                                        RichText::new(format!("New: {}", r.join(" | "))).small(),
+                                    );
+                                }
+                                if entry.status == RowDiffStatus::Modified
+                                    && let Some(l) = &entry.left_row
+                                {
+                                    ui.label(
+                                        RichText::new(format!("(Was: {})", l.join(" | ")))
+                                            .small()
+                                            .weak(),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                }
                 return;
             }
 
@@ -674,97 +688,120 @@ impl MysqlRustyApp {
                 ui.add_space(2.0);
             }
 
-            // Filter & sort rows
-            let filter_lower = tab.row_filter.to_lowercase();
-            let val_filter_lower = tab.visual_filter_val.to_lowercase();
-            let mut filtered_indices: Vec<usize> = (0..result.rows.len())
-                .filter(|&r_idx| {
-                    let row = &result.rows[r_idx];
-                    if !filter_lower.is_empty()
-                        && !row
-                            .iter()
-                            .any(|c| c.display_text().to_lowercase().contains(&filter_lower))
-                    {
-                        return false;
-                    }
-                    if let Some(col_idx) = tab.visual_filter_col {
-                        if let Some(cell) = row.get(col_idx) {
-                            let text = cell.display_text();
-                            let text_lower = text.to_lowercase();
+            // Filter & sort rows (cached per result/filter/sort key)
+            let filter_key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (Arc::as_ptr(&result) as usize).hash(&mut h);
+                result.rows.len().hash(&mut h);
+                tab.row_filter.hash(&mut h);
+                tab.visual_filter_col.hash(&mut h);
+                (tab.visual_filter_op as u8).hash(&mut h);
+                tab.visual_filter_val.hash(&mut h);
+                tab.sort_column.hash(&mut h);
+                h.finish()
+            };
+
+            if tab.cached_filter_key != filter_key {
+                let filter_lower = tab.row_filter.to_lowercase();
+                let val_filter_lower = tab.visual_filter_val.to_lowercase();
+                let mut computed: Vec<usize> = (0..result.rows.len())
+                    .filter(|&r_idx| {
+                        let row = &result.rows[r_idx];
+                        if !filter_lower.is_empty()
+                            && !row
+                                .iter()
+                                .any(|c| c.display_text().to_lowercase().contains(&filter_lower))
+                        {
+                            return false;
+                        }
+                        if let Some(col_idx) = tab.visual_filter_col {
+                            if let Some(cell) = row.get(col_idx) {
+                                let text = cell.display_text();
+                                let text_lower = text.to_lowercase();
+                                match tab.visual_filter_op {
+                                    VisualFilterOp::Contains => {
+                                        text_lower.contains(&val_filter_lower)
+                                    }
+                                    VisualFilterOp::Equals => {
+                                        text.eq_ignore_ascii_case(&tab.visual_filter_val)
+                                    }
+                                    VisualFilterOp::NotEquals => {
+                                        !text.eq_ignore_ascii_case(&tab.visual_filter_val)
+                                    }
+                                    VisualFilterOp::StartsWith => {
+                                        text_lower.starts_with(&val_filter_lower)
+                                    }
+                                    VisualFilterOp::GreaterThan => {
+                                        if let (Ok(n1), Ok(n2)) = (
+                                            text.parse::<f64>(),
+                                            tab.visual_filter_val.parse::<f64>(),
+                                        ) {
+                                            n1 > n2
+                                        } else {
+                                            text > tab.visual_filter_val
+                                        }
+                                    }
+                                    VisualFilterOp::LessThan => {
+                                        if let (Ok(n1), Ok(n2)) = (
+                                            text.parse::<f64>(),
+                                            tab.visual_filter_val.parse::<f64>(),
+                                        ) {
+                                            n1 < n2
+                                        } else {
+                                            text < tab.visual_filter_val
+                                        }
+                                    }
+                                    VisualFilterOp::IsNull => text.is_empty() || text == "NULL",
+                                    VisualFilterOp::IsNotNull => !text.is_empty() && text != "NULL",
+                                }
+                            } else {
+                                false
+                            }
+                        } else if !val_filter_lower.is_empty() {
                             match tab.visual_filter_op {
-                                VisualFilterOp::Contains => text_lower.contains(&val_filter_lower),
-                                VisualFilterOp::Equals => {
-                                    text.eq_ignore_ascii_case(&tab.visual_filter_val)
-                                }
-                                VisualFilterOp::NotEquals => {
-                                    !text.eq_ignore_ascii_case(&tab.visual_filter_val)
-                                }
-                                VisualFilterOp::StartsWith => {
-                                    text_lower.starts_with(&val_filter_lower)
-                                }
-                                VisualFilterOp::GreaterThan => {
-                                    if let (Ok(n1), Ok(n2)) =
-                                        (text.parse::<f64>(), tab.visual_filter_val.parse::<f64>())
-                                    {
-                                        n1 > n2
-                                    } else {
-                                        text > tab.visual_filter_val
-                                    }
-                                }
-                                VisualFilterOp::LessThan => {
-                                    if let (Ok(n1), Ok(n2)) =
-                                        (text.parse::<f64>(), tab.visual_filter_val.parse::<f64>())
-                                    {
-                                        n1 < n2
-                                    } else {
-                                        text < tab.visual_filter_val
-                                    }
-                                }
-                                VisualFilterOp::IsNull => text.is_empty() || text == "NULL",
-                                VisualFilterOp::IsNotNull => !text.is_empty() && text != "NULL",
+                                VisualFilterOp::Contains => row.iter().any(|c| {
+                                    c.display_text().to_lowercase().contains(&val_filter_lower)
+                                }),
+                                VisualFilterOp::Equals => row.iter().any(|c| {
+                                    c.display_text()
+                                        .eq_ignore_ascii_case(&tab.visual_filter_val)
+                                }),
+                                VisualFilterOp::NotEquals => !row.iter().any(|c| {
+                                    c.display_text()
+                                        .eq_ignore_ascii_case(&tab.visual_filter_val)
+                                }),
+                                VisualFilterOp::StartsWith => row.iter().any(|c| {
+                                    c.display_text()
+                                        .to_lowercase()
+                                        .starts_with(&val_filter_lower)
+                                }),
+                                _ => true,
                             }
                         } else {
-                            false
+                            true
                         }
-                    } else if !val_filter_lower.is_empty() {
-                        match tab.visual_filter_op {
-                            VisualFilterOp::Contains => row.iter().any(|c| {
-                                c.display_text().to_lowercase().contains(&val_filter_lower)
-                            }),
-                            VisualFilterOp::Equals => row.iter().any(|c| {
-                                c.display_text()
-                                    .eq_ignore_ascii_case(&tab.visual_filter_val)
-                            }),
-                            VisualFilterOp::NotEquals => !row.iter().any(|c| {
-                                c.display_text()
-                                    .eq_ignore_ascii_case(&tab.visual_filter_val)
-                            }),
-                            VisualFilterOp::StartsWith => row.iter().any(|c| {
-                                c.display_text()
-                                    .to_lowercase()
-                                    .starts_with(&val_filter_lower)
-                            }),
-                            _ => true,
-                        }
-                    } else {
-                        true
-                    }
-                })
-                .collect();
+                    })
+                    .collect();
 
-            if let Some((sort_col, asc)) = tab.sort_column {
-                filtered_indices.sort_by(|&a, &b| {
-                    let va = result.rows[a]
-                        .get(sort_col)
-                        .map(|c| c.display_text())
-                        .unwrap_or_default();
-                    let vb = result.rows[b]
-                        .get(sort_col)
-                        .map(|c| c.display_text())
-                        .unwrap_or_default();
-                    if asc { va.cmp(&vb) } else { vb.cmp(&va) }
-                });
+                if let Some((sort_col, asc)) = tab.sort_column {
+                    computed.sort_by(|&a, &b| {
+                        let va = result.rows[a]
+                            .get(sort_col)
+                            .map(|c| c.display_text())
+                            .unwrap_or_default();
+                        let vb = result.rows[b]
+                            .get(sort_col)
+                            .map(|c| c.display_text())
+                            .unwrap_or_default();
+                        if asc { va.cmp(&vb) } else { vb.cmp(&va) }
+                    });
+                }
+
+                tab.cached_filtered_indices = computed;
+                tab.cached_filter_key = filter_key;
             }
+            let filtered_indices = &tab.cached_filtered_indices;
 
             let total_matching = filtered_indices.len();
             let total_pages = if tab.page_size == 0 {
@@ -1085,13 +1122,13 @@ impl MysqlRustyApp {
                         }
                         hdr_resp.context_menu(|ui| {
                             if ui.button("📋 Copy Column as SQL IN (...)").clicked() {
-                                let in_clause = format_column_as_sql_in(&result, col_idx, &filtered_indices);
+                                let in_clause = format_column_as_sql_in(&result, col_idx, filtered_indices);
                                 ui.ctx().copy_text(in_clause);
                                 copy_banner_msg = Some(format!("Copied `{col_name}` as SQL IN (...) clause."));
                                 ui.close();
                             }
                             if ui.button("📋 Copy Column as JS/TS Array").clicked() {
-                                let js_arr = format_column_as_js_array(&result, col_idx, &filtered_indices);
+                                let js_arr = format_column_as_js_array(&result, col_idx, filtered_indices);
                                 ui.ctx().copy_text(js_arr);
                                 copy_banner_msg = Some(format!("Copied `{col_name}` as JS/TS array."));
                                 ui.close();

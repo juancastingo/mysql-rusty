@@ -715,9 +715,11 @@ impl MysqlRustyApp {
                             .schemas
                             .get(&self.active_database)
                             .cloned()
-                            .unwrap_or_else(|| crate::db::DatabaseSchema {
-                                name: self.active_database.clone(),
-                                ..Default::default()
+                            .unwrap_or_else(|| {
+                                Arc::new(crate::db::DatabaseSchema {
+                                    name: self.active_database.clone(),
+                                    ..Default::default()
+                                })
                             });
                         let ai_cfg = self.config.ai.clone();
                         let tab_id = tab.id.clone();
@@ -938,12 +940,18 @@ impl MysqlRustyApp {
                             if count > 0 {
                                 tab.sql = new_sql;
                                 tab.is_dirty = true;
+                                tab.sql_version = tab.sql_version.wrapping_add(1);
                                 tab.last_edit_instant = Some(std::time::Instant::now());
                             }
                             recompute = true;
                         }
 
-                        if recompute || tab.last_edit_instant.is_some() {
+                        if recompute
+                            || tab.sql_version != tab.find_cached_version
+                            || tab.find_opts != tab.find_cached_opts
+                        {
+                            tab.find_cached_version = tab.sql_version;
+                            tab.find_cached_opts = tab.find_opts.clone();
                             match crate::find::find_matches(&tab.sql, &tab.find_opts) {
                                 Ok(m) => {
                                     tab.find_matches = m;
@@ -1030,14 +1038,26 @@ impl MysqlRustyApp {
                 {
                     let mut vim_changed = false;
                     let mut cur = tab.cursor_index;
+                    let sql_before_vim = tab.sql.clone();
                     ui.input_mut(|i| {
                         let mut remaining = Vec::with_capacity(i.events.len());
                         for ev in i.events.drain(..) {
                             let is_insert = tab.vim_state.mode == crate::vim::Mode::Insert;
-                            let vim_key = match &ev {
-                                egui::Event::Text(t) if !is_insert => {
-                                    t.chars().next().map(crate::vim::VimKey::Char)
+                            if let egui::Event::Text(t) = &ev
+                                && !is_insert
+                            {
+                                for ch in t.chars() {
+                                    if tab.vim_state.handle_key(
+                                        crate::vim::VimKey::Char(ch),
+                                        &mut tab.sql,
+                                        &mut cur,
+                                    ) {
+                                        vim_changed = true;
+                                    }
                                 }
+                                continue;
+                            }
+                            let vim_key = match &ev {
                                 egui::Event::Key {
                                     key,
                                     pressed: true,
@@ -1045,7 +1065,9 @@ impl MysqlRustyApp {
                                     ..
                                 } => match key {
                                     egui::Key::Escape => Some(crate::vim::VimKey::Esc),
-                                    egui::Key::Enter if !is_insert && !modifiers.ctrl && !modifiers.command => {
+                                    egui::Key::Enter
+                                        if !is_insert && !modifiers.ctrl && !modifiers.command =>
+                                    {
                                         Some(crate::vim::VimKey::Enter)
                                     }
                                     egui::Key::Backspace if !is_insert => {
@@ -1086,14 +1108,16 @@ impl MysqlRustyApp {
                                 vim_changed = true;
                                 continue;
                             }
-                            if !is_insert && matches!(ev, egui::Event::Text(_)) {
-                                continue;
-                            }
                             remaining.push(ev);
                         }
                         i.events = remaining;
                     });
                     if vim_changed {
+                        if tab.sql != sql_before_vim {
+                            tab.is_dirty = true;
+                            tab.sql_version = tab.sql_version.wrapping_add(1);
+                            tab.last_edit_instant = Some(std::time::Instant::now());
+                        }
                         tab.cursor_index = cur;
                         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
                             let range = if let Some((s, e)) =
@@ -1175,16 +1199,17 @@ impl MysqlRustyApp {
                     tab.ai_error_fix = None;
                     tab.ai_error_fix_loading = false;
                     tab.ai_error_fix_req_id += 1;
+                    tab.sql_version = tab.sql_version.wrapping_add(1);
                     tab.last_edit_instant = Some(std::time::Instant::now());
                     let (sql_prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
                     let (prefix, suggestions) =
-                        compute_local_completions(sql_prefix, schema.as_ref(), 8);
+                        compute_local_completions(sql_prefix, schema.as_deref(), 8);
                     tab.current_token_prefix = prefix;
                     tab.local_suggestions = suggestions;
                     tab.selected_suggestion_idx = 0;
                     if enable_ghost {
                         tab.ghost_completion =
-                            compute_heuristic_ghost_completion(sql_prefix, schema.as_ref());
+                            compute_heuristic_ghost_completion(sql_prefix, schema.as_deref());
                     } else {
                         tab.ghost_completion = None;
                     }

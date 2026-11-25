@@ -41,7 +41,8 @@ pub fn format_column_def(c: &ColumnInfo) -> String {
             {
                 def.push_str(&format!(" DEFAULT {val}"));
             } else {
-                def.push_str(&format!(" DEFAULT '{val}'"));
+                let escaped = val.replace('\\', "\\\\").replace('\'', "''");
+                def.push_str(&format!(" DEFAULT '{escaped}'"));
             }
         }
     }

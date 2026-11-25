@@ -305,7 +305,7 @@ impl MysqlRustyApp {
 
                         if self.connection_lost.is_some()
                             && ui
-                                .add(pal.danger_button("Reconnect"))
+                                .add(pal.danger_button(rust_i18n::t!("toolbar.reconnect").trim()))
                                 .on_hover_text(
                                     self.connection_lost
                                         .as_deref()

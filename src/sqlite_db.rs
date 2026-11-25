@@ -98,7 +98,12 @@ pub fn introspect_database(conn: &Mutex<Connection>, database: &str) -> Result<D
             let q_idx = Dialect::Sqlite.quote_ident(&idx_name);
             let mut info_stmt = guard.prepare(&format!("PRAGMA index_info({q_idx})"))?;
             let cols: Vec<String> = info_stmt
-                .query_map([], |row| row.get::<_, String>(2))?
+                .query_map([], |row| row.get::<_, Option<String>>(2))?
+                .filter_map(|r| match r {
+                    Ok(Some(col)) => Some(Ok(col)),
+                    Ok(None) => None, // Expression index column
+                    Err(e) => Some(Err(e)),
+                })
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             for col in cols {
                 indexes.push(IndexInfo {
@@ -110,10 +115,14 @@ pub fn introspect_database(conn: &Mutex<Connection>, database: &str) -> Result<D
             }
         }
 
+        // Read approximate row count from sqlite_stat1 if ANALYZE has been run,
+        // avoiding full-table COUNT(*) scans on every table during introspection.
         let approx_rows: u64 = guard
-            .query_row(&format!("SELECT COUNT(*) FROM {q_tbl}"), [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT CAST(stat AS INTEGER) FROM sqlite_stat1 WHERE tbl = ?1 LIMIT 1",
+                [&tbl_name],
+                |row| row.get::<_, i64>(0),
+            )
             .unwrap_or(0)
             .max(0) as u64;
 
@@ -355,5 +364,18 @@ mod tests {
 
         let ddl = show_create(&conn, "TABLE", "users").unwrap();
         assert!(ddl.contains("CREATE TABLE users"));
+    }
+
+    #[test]
+    fn test_sqlite_introspection_handles_expression_index() {
+        let raw = Connection::open_in_memory().unwrap();
+        raw.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE INDEX idx_users_lower_name ON users(lower(name));",
+        )
+        .unwrap();
+        let conn = Arc::new(Mutex::new(raw));
+        let schema = introspect_database(&conn, "main").unwrap();
+        assert!(schema.tables.iter().any(|t| t.name == "users"));
     }
 }

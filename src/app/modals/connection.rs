@@ -382,11 +382,25 @@ impl MysqlRustyApp {
                                         (Some(ver), None) => format!("\n• TLS: {ver}"),
                                         _ => "\n• TLS: Disabled / Plaintext".to_string(),
                                     };
-                                    match session.execute_query("", "SELECT VERSION(), CURRENT_USER();", None, None).await {
+                                    let (version_sql, engine_label) = match session.dialect() {
+                                        crate::dialect::Dialect::MySql => (
+                                            "SELECT VERSION(), CURRENT_USER();",
+                                            "MySQL/MariaDB Version",
+                                        ),
+                                        crate::dialect::Dialect::Postgres => (
+                                            "SELECT version(), current_user;",
+                                            "PostgreSQL Version",
+                                        ),
+                                        crate::dialect::Dialect::Sqlite => (
+                                            "SELECT sqlite_version(), 'local';",
+                                            "SQLite Version",
+                                        ),
+                                    };
+                                    match session.execute_query("", version_sql, None, None).await {
                                         Ok(qr) => {
                                             let v = qr.rows.first().and_then(|r| r.first()).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
                                             let u = qr.rows.first().and_then(|r| r.get(1)).map(|val| val.display_text()).unwrap_or_else(|| "Unknown".to_string());
-                                            Ok(format!("Connection successful!\n• MySQL Version: {v}\n• Authenticated User: {u}{tls_line}"))
+                                            Ok(format!("Connection successful!\n• {engine_label}: {v}\n• Authenticated User: {u}{tls_line}"))
                                         }
                                         Err(_) => Ok(format!("Connection successful (handshake & auth succeeded)!{tls_line}")),
                                     }

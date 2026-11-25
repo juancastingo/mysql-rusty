@@ -154,39 +154,39 @@ fn main() -> eframe::Result<()> {
 mod i18n_tests {
     use std::collections::BTreeSet;
 
-    fn collect_keys(val: &serde_yaml::Value, prefix: &str, out: &mut BTreeSet<String>) {
-        if let serde_yaml::Value::Mapping(map) = val {
-            for (k, v) in map {
-                if let Some(ks) = k.as_str() {
-                    if ks == "_version" {
-                        continue;
-                    }
-                    let full = if prefix.is_empty() {
-                        ks.to_string()
-                    } else {
-                        format!("{prefix}.{ks}")
-                    };
-                    if v.is_mapping() {
-                        collect_keys(v, &full, out);
-                    } else {
-                        out.insert(full);
-                    }
+    fn collect_yaml_keys(content: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let mut stack: Vec<(usize, String)> = Vec::new();
+        for raw_line in content.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = raw_line.len() - raw_line.trim_start().len();
+            if let Some((key, val)) = trimmed.split_once(':') {
+                let key = key.trim();
+                if key == "_version" {
+                    continue;
+                }
+                while stack.last().is_some_and(|(ind, _)| *ind >= indent) {
+                    stack.pop();
+                }
+                if val.trim().is_empty() {
+                    stack.push((indent, key.to_string()));
+                } else {
+                    let mut parts: Vec<&str> = stack.iter().map(|(_, k)| k.as_str()).collect();
+                    parts.push(key);
+                    out.insert(parts.join("."));
                 }
             }
         }
+        out
     }
 
     #[test]
     fn test_locale_yaml_key_parity() {
-        let en: serde_yaml::Value =
-            serde_yaml::from_str(include_str!("../locales/en.yml")).expect("valid en.yml");
-        let es: serde_yaml::Value =
-            serde_yaml::from_str(include_str!("../locales/es.yml")).expect("valid es.yml");
-
-        let mut en_keys = BTreeSet::new();
-        let mut es_keys = BTreeSet::new();
-        collect_keys(&en, "", &mut en_keys);
-        collect_keys(&es, "", &mut es_keys);
+        let en_keys = collect_yaml_keys(include_str!("../locales/en.yml"));
+        let es_keys = collect_yaml_keys(include_str!("../locales/es.yml"));
 
         assert!(!en_keys.is_empty());
         assert_eq!(

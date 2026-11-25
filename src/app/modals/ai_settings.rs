@@ -339,7 +339,7 @@ impl MysqlRustyApp {
                                 });
                         });
                         ui.horizontal(|ui| {
-                            ui.label("UI Scale:");
+                            ui.label(rust_i18n::t!("settings.ui_scale"));
                             ui.add(
                                 egui::Slider::new(&mut self.config.ui.ui_scale, 0.75..=2.0)
                                     .step_by(0.05)
@@ -347,7 +347,7 @@ impl MysqlRustyApp {
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Editor Font Size:");
+                            ui.label(rust_i18n::t!("settings.editor_font_size"));
                             ui.add(
                                 egui::Slider::new(&mut self.config.ui.editor_font_size, 10.0..=28.0)
                                     .step_by(1.0)

@@ -366,12 +366,21 @@ async fn handle_tool_call(
             match validate_mcp_sql(sql, false) {
                 Ok(stmt) => {
                     let db = resolve_db_arg(&args, default_db).unwrap_or_default();
-                    let explain_sql = format!("EXPLAIN FORMAT=JSON {stmt}");
+                    let explain_sql = match session.dialect() {
+                        crate::dialect::Dialect::MySql => format!("EXPLAIN FORMAT=JSON {stmt}"),
+                        crate::dialect::Dialect::Postgres => {
+                            format!("EXPLAIN (FORMAT JSON) {stmt}")
+                        }
+                        crate::dialect::Dialect::Sqlite => format!("EXPLAIN QUERY PLAN {stmt}"),
+                    };
                     session
-                        .execute_query(&db, &explain_sql, None, Some(10))
+                        .execute_query(&db, &explain_sql, None, Some(100))
                         .await
                         .map(|res| {
-                            if let Some(first_row) = res.rows.first()
+                            if matches!(
+                                session.dialect(),
+                                crate::dialect::Dialect::MySql | crate::dialect::Dialect::Postgres
+                            ) && let Some(first_row) = res.rows.first()
                                 && let Some(first_cell) = first_row.first()
                             {
                                 first_cell.display_text()
@@ -497,21 +506,55 @@ pub fn run_mcp_cli(args: &[String]) -> Result<()> {
         .context("Failed to initialize Tokio runtime for MCP server")?;
 
     rt.block_on(async move {
-        let session = ActiveSession::connect(profile.clone()).await?;
-        let read_only = !cfg.allow_writes || profile.read_only;
-        if read_only && matches!(session, ActiveSession::RealMysql { .. }) {
-            let db = profile.default_database.as_str();
-            session
-                .execute_query(db, "SET SESSION TRANSACTION READ ONLY", None, None)
-                .await
-                .context("Failed to enforce READ ONLY session")?;
-            let _ = session
-                .execute_query(db, "SET SESSION max_execution_time = 30000", None, None)
-                .await;
+        let mut effective_profile = profile.clone();
+        let read_only = !cfg.allow_writes || effective_profile.read_only;
+        effective_profile.read_only = read_only;
+        let session = ActiveSession::connect(effective_profile.clone()).await?;
+        if read_only {
+            let db = effective_profile.default_database.as_str();
+            match &session {
+                ActiveSession::RealMysql { .. } => {
+                    session
+                        .execute_query(db, "SET SESSION TRANSACTION READ ONLY", None, None)
+                        .await
+                        .context("Failed to enforce READ ONLY session on MySQL")?;
+                    let _ = session
+                        .execute_query(db, "SET SESSION max_execution_time = 30000", None, None)
+                        .await;
+                }
+                ActiveSession::Postgres { .. } => {
+                    session
+                        .execute_query(
+                            db,
+                            "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
+                            None,
+                            None,
+                        )
+                        .await
+                        .context("Failed to enforce READ ONLY session on PostgreSQL")?;
+                    let _ = session
+                        .execute_query(db, "SET statement_timeout = 30000", None, None)
+                        .await;
+                }
+                ActiveSession::Sqlite { .. } => {
+                    session
+                        .execute_query(db, "PRAGMA query_only = ON", None, None)
+                        .await
+                        .context("Failed to enforce READ ONLY session on SQLite")?;
+                }
+                ActiveSession::DemoSandbox { .. } => {}
+            }
         }
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
-        serve_stdio_with(&session, &cfg, &profile, stdin.lock(), stdout.lock()).await
+        serve_stdio_with(
+            &session,
+            &cfg,
+            &effective_profile,
+            stdin.lock(),
+            stdout.lock(),
+        )
+        .await
     })
 }
 

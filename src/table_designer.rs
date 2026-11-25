@@ -95,7 +95,8 @@ impl TableDraft {
                 {
                     def.push_str(&format!(" DEFAULT {val}"));
                 } else {
-                    def.push_str(&format!(" DEFAULT '{val}'"));
+                    let escaped = val.replace('\\', "\\\\").replace('\'', "''");
+                    def.push_str(&format!(" DEFAULT '{escaped}'"));
                 }
             }
         }
@@ -118,27 +119,45 @@ impl TableDraft {
             .columns
             .iter()
             .filter(|c| c.is_primary_key)
-            .map(|c| format!("`{}`", c.name))
+            .map(|c| format!("`{}`", c.name.replace('`', "``")))
             .collect();
 
         if !pks.is_empty() {
             elements.push(format!("  PRIMARY KEY ({})", pks.join(", ")));
         }
 
+        // Group composite indexes by index_name while preserving order
+        let mut grouped_indexes: Vec<(String, bool, Vec<String>)> = Vec::new();
         for idx in &self.indexes {
             if idx.index_name.eq_ignore_ascii_case("PRIMARY") {
                 continue;
             }
-            if !idx.non_unique {
-                elements.push(format!(
-                    "  UNIQUE KEY `{}` (`{}`)",
-                    idx.index_name, idx.column_name
-                ));
+            if let Some(entry) = grouped_indexes
+                .iter_mut()
+                .find(|(name, _, _)| name == &idx.index_name)
+            {
+                if !entry.2.contains(&idx.column_name) {
+                    entry.2.push(idx.column_name.clone());
+                }
             } else {
-                elements.push(format!(
-                    "  KEY `{}` (`{}`)",
-                    idx.index_name, idx.column_name
+                grouped_indexes.push((
+                    idx.index_name.clone(),
+                    idx.non_unique,
+                    vec![idx.column_name.clone()],
                 ));
+            }
+        }
+        for (idx_name, non_unique, cols) in grouped_indexes {
+            let q_name = idx_name.replace('`', "``");
+            let q_cols = cols
+                .iter()
+                .map(|c| format!("`{}`", c.replace('`', "``")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !non_unique {
+                elements.push(format!("  UNIQUE KEY `{q_name}` ({q_cols})"));
+            } else {
+                elements.push(format!("  KEY `{q_name}` ({q_cols})"));
             }
         }
 

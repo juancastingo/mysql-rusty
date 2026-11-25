@@ -806,75 +806,174 @@ pub fn extract_statement_at_cursor(sql: &str, cursor_char_idx: usize) -> (String
     (first.text.clone(), (first.trimmed_start, first.trimmed_end))
 }
 
-/// Checks if an SQL statement is potentially destructive (DROP, TRUNCATE, or UPDATE/DELETE without a WHERE clause).
-pub fn is_potentially_destructive(sql: &str) -> Option<&'static str> {
-    let trimmed = sql.trim();
-    if trimmed.is_empty() {
-        return None;
+/// Extracts uppercase SQL keyword/identifier tokens outside of comments (`--`, `#`, `/*...*/`)
+/// and quoted literals/identifiers (`'...'`, `"..."`, `` `...` ``).
+fn extract_sql_words(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut words = Vec::new();
+    let mut i = 0;
+
+    while i < n {
+        let b = bytes[i];
+        // Line comment: `--`
+        if b == b'-' && i + 1 < n && bytes[i + 1] == b'-' {
+            i += 2;
+            while i < n && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Line comment: `#`
+        if b == b'#' {
+            i += 1;
+            while i < n && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment: `/* ... */`
+        if b == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        // Quoted strings / identifiers
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < n {
+                if bytes[i] == b'\\' && quote != b'`' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    if i + 1 < n && bytes[i + 1] == quote {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Dollar-quoted PostgreSQL string: `$tag$...$tag$`
+        if b == b'$' {
+            let mut j = i + 1;
+            while j < n && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j < n && bytes[j] == b'$' {
+                let tag = &bytes[i..=j];
+                i = j + 1;
+                while i + tag.len() <= n {
+                    if &bytes[i..i + tag.len()] == tag {
+                        i += tag.len();
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Word token
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            words.push(sql[start..i].to_ascii_uppercase());
+            continue;
+        }
+        i += 1;
     }
 
-    let upper = trimmed.to_uppercase();
+    words
+}
 
-    if upper.starts_with("DROP TABLE")
-        || upper.starts_with("DROP DATABASE")
-        || upper.starts_with("DROP SCHEMA")
-    {
+/// Checks if an SQL statement is potentially destructive (DROP, TRUNCATE, or UPDATE/DELETE without a WHERE clause).
+pub fn is_potentially_destructive(sql: &str) -> Option<&'static str> {
+    let words = extract_sql_words(sql);
+    let first = words.first()?.as_str();
+    let second = words.get(1).map(|s| s.as_str());
+
+    if first == "DROP" && matches!(second, Some("TABLE" | "DATABASE" | "SCHEMA")) {
         return Some("DROP statement permanently removes schemas or tables.");
     }
 
-    if upper.starts_with("TRUNCATE") {
+    if first == "TRUNCATE" {
         return Some("TRUNCATE statement empties the entire table immediately.");
     }
 
-    if upper.starts_with("ALTER TABLE") && upper.contains(" DROP ") {
+    if first == "ALTER" && second == Some("TABLE") && words.iter().skip(2).any(|w| w == "DROP") {
         return Some(
             "ALTER TABLE with DROP column/constraint deletes schema structures permanently.",
         );
     }
 
-    if upper.starts_with("UPDATE ")
-        || upper.starts_with("UPDATE\n")
-        || upper.starts_with("UPDATE\t")
-    {
-        let has_where = upper
-            .split_whitespace()
-            .any(|word| word == "WHERE" || word.starts_with("WHERE;"));
-        if !has_where {
-            return Some(
-                "UPDATE without a WHERE clause will overwrite EVERY single row in the table!",
-            );
-        }
+    if first == "UPDATE" && !words.iter().skip(1).any(|w| w == "WHERE") {
+        return Some("UPDATE without a WHERE clause will overwrite EVERY single row in the table!");
     }
 
-    if upper.starts_with("DELETE ")
-        || upper.starts_with("DELETE\n")
-        || upper.starts_with("DELETE\t")
-    {
-        let has_where = upper
-            .split_whitespace()
-            .any(|word| word == "WHERE" || word.starts_with("WHERE;"));
-        if !has_where {
-            return Some(
-                "DELETE without a WHERE clause will delete EVERY single row in the table!",
-            );
-        }
+    if first == "DELETE" && !words.iter().skip(1).any(|w| w == "WHERE") {
+        return Some("DELETE without a WHERE clause will delete EVERY single row in the table!");
     }
 
     None
 }
 
-/// Checks if an SQL statement is a write/mutation query.
+/// Checks if an SQL statement is a write/mutation/side-effect query.
+/// Uses a comment- and string-aware allowlist so leading comments, writable CTEs,
+/// `SELECT ... INTO OUTFILE`, `EXPLAIN ANALYZE`, and DCL/session-mutating statements
+/// cannot bypass read-only guards.
 pub fn is_write_query(sql: &str) -> bool {
-    let trimmed = sql.trim();
-    let upper = trimmed.to_uppercase();
-    upper.starts_with("INSERT ")
-        || upper.starts_with("UPDATE ")
-        || upper.starts_with("DELETE ")
-        || upper.starts_with("DROP ")
-        || upper.starts_with("ALTER ")
-        || upper.starts_with("TRUNCATE ")
-        || upper.starts_with("CREATE ")
-        || upper.starts_with("REPLACE ")
+    let words = extract_sql_words(sql);
+    let Some(first) = words.first().map(|s| s.as_str()) else {
+        return false;
+    };
+
+    let allowed_read_start = matches!(
+        first,
+        "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "WITH" | "VALUES" | "TABLE"
+    );
+    if !allowed_read_start {
+        return true;
+    }
+
+    // `EXPLAIN ANALYZE` actually executes the underlying statement (and can mutate data).
+    if first == "EXPLAIN" && words.get(1).is_some_and(|w| w == "ANALYZE") {
+        return true;
+    }
+
+    // Reject file-output / row-locking clauses in SELECT statements.
+    for pair in words.windows(2) {
+        if (pair[0] == "INTO" && matches!(pair[1].as_str(), "OUTFILE" | "DUMPFILE"))
+            || (pair[0] == "FOR" && matches!(pair[1].as_str(), "UPDATE" | "SHARE"))
+        {
+            return true;
+        }
+    }
+    for triple in words.windows(3) {
+        if triple[0] == "LOCK" && triple[1] == "IN" && triple[2] == "SHARE" {
+            return true;
+        }
+    }
+
+    // Reject write/DDL/admin keywords anywhere in the statement (e.g., writable CTEs).
+    const FORBIDDEN_KEYWORDS: &[&str] = &[
+        "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "CREATE", "ALTER", "DROP", "TRUNCATE",
+        "RENAME", "GRANT", "REVOKE", "CALL", "DO", "LOAD", "SET", "FLUSH", "KILL", "COPY",
+        "VACUUM", "ATTACH", "DETACH", "PRAGMA", "LOCK", "UNLOCK",
+    ];
+    words
+        .iter()
+        .skip(1)
+        .any(|w| FORBIDDEN_KEYWORDS.contains(&w.as_str()))
 }
 
 struct TerminalLimitInfo {
@@ -999,15 +1098,21 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
     let limit_char_idx = last_limit_pos?;
     let after_limit_chars = &chars[limit_char_idx + 5..];
     let after_limit_str: String = after_limit_chars.iter().collect();
-    let trimmed_after = after_limit_str.trim_end();
-    let trimmed_without_semi = trimmed_after.trim_end_matches(';').trim_end();
+
+    // Strip any trailing SQL comments (`-- ...`, `# ...`, `/* ... */`) from after_limit_str
+    // so queries like `SELECT * FROM t LIMIT 10 -- note` are detected properly.
+    let after_no_comments = strip_trailing_sql_comments(&after_limit_str);
+    let trimmed_without_semi = after_no_comments
+        .trim_end()
+        .trim_end_matches(';')
+        .trim_end();
 
     let upper_after = trimmed_without_semi.to_uppercase();
     if upper_after.contains(')') {
         return None;
     }
     for kw in &[
-        "WHERE", "ORDER BY", "GROUP BY", "HAVING", "JOIN", "UNION", "SELECT", "FROM",
+        "WHERE", "ORDER", "GROUP", "HAVING", "JOIN", "UNION", "SELECT", "FROM",
     ] {
         if upper_after.split_whitespace().any(|w| w == *kw) {
             return None;
@@ -1023,7 +1128,7 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
 
     let last_char_idx = limit_char_idx
         + 5
-        + after_limit_str
+        + after_no_comments
             .trim_end()
             .trim_end_matches(';')
             .chars()
@@ -1075,6 +1180,36 @@ fn find_terminal_limit(sql: &str) -> Option<TerminalLimitInfo> {
     None
 }
 
+/// Strips trailing SQL comments (`-- ...`, `# ...`, `/* ... */`) from a SQL fragment.
+fn strip_trailing_sql_comments(s: &str) -> &str {
+    let mut cur = s.trim_end();
+    loop {
+        if let Some(without_end) = cur.strip_suffix("*/")
+            && let Some(open_pos) = without_end.rfind("/*")
+        {
+            cur = without_end[..open_pos].trim_end();
+            continue;
+        }
+        // Check last line for `--` or `#` comment
+        let line_start = cur.rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let last_line = &cur[line_start..];
+        let mut cut: Option<usize> = None;
+        if let Some(pos) = last_line.find("--") {
+            cut = Some(line_start + pos);
+        }
+        if let Some(pos) = last_line.find('#') {
+            let abs = line_start + pos;
+            cut = Some(cut.map_or(abs, |c| c.min(abs)));
+        }
+        if let Some(pos) = cut {
+            cur = cur[..pos].trim_end();
+            continue;
+        }
+        break;
+    }
+    cur
+}
+
 /// Detects the currently applied terminal LIMIT count from an SQL query, if one exists.
 pub fn detect_current_limit(sql: &str) -> Option<usize> {
     find_terminal_limit(sql).and_then(|info| info.current_limit)
@@ -1124,7 +1259,13 @@ pub fn apply_limit_to_sql(sql: &str, new_limit: Option<usize>) -> String {
         match new_limit {
             Some(n) => {
                 let base = trimmed.trim_end_matches(';').trim_end();
-                format!("{base} LIMIT {n};")
+                let last_line = base.rsplit('\n').next().unwrap_or(base);
+                let ends_with_line_comment = last_line.contains("--") || last_line.contains('#');
+                if ends_with_line_comment {
+                    format!("{base}\nLIMIT {n};")
+                } else {
+                    format!("{base} LIMIT {n};")
+                }
             }
             None => sql.to_string(),
         }
@@ -1397,11 +1538,13 @@ pub fn substitute_sql_parameters(
                     let trimmed = val.trim();
                     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
                         out.push_str("NULL");
-                    } else if trimmed.parse::<i64>().is_ok() || trimmed.parse::<f64>().is_ok() {
+                    } else if trimmed.parse::<i64>().is_ok()
+                        || trimmed.parse::<f64>().is_ok_and(|f| f.is_finite())
+                    {
                         out.push_str(trimmed);
                     } else {
                         out.push('\'');
-                        out.push_str(&trimmed.replace('\'', "''"));
+                        out.push_str(&trimmed.replace('\\', "\\\\").replace('\'', "''"));
                         out.push('\'');
                     }
                     i = j - 1;
@@ -1709,14 +1852,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bug: is_potentially_destructive does not strip leading SQL comments"]
     fn test_is_potentially_destructive_leading_comments() {
         assert!(is_potentially_destructive("-- comment\nDROP TABLE users;").is_some());
         assert!(is_potentially_destructive("/* c */ TRUNCATE TABLE logs;").is_some());
+        assert!(is_potentially_destructive("DELETE FROM users -- WHERE id = 1").is_some());
     }
 
     #[test]
-    #[ignore = "bug: is_potentially_destructive checks WHERE via substring and misses WHERE inside string literals"]
     fn test_is_potentially_destructive_where_inside_string_literal() {
         assert!(is_potentially_destructive("UPDATE t SET note = 'where';").is_some());
     }
@@ -1726,6 +1868,7 @@ mod tests {
     #[test]
     fn test_is_write_query_reads_and_writes() {
         assert!(!is_write_query("SELECT * FROM users"));
+        assert!(!is_write_query("/* ok */ SELECT * FROM users"));
         assert!(is_write_query("INSERT INTO users VALUES (1)"));
         assert!(is_write_query("REPLACE INTO users VALUES (1)"));
         assert!(is_write_query("ALTER TABLE users ADD COLUMN x INT"));
@@ -1734,14 +1877,22 @@ mod tests {
         assert!(is_write_query("DELETE FROM users WHERE id = 1"));
         assert!(is_write_query("DROP TABLE users"));
         assert!(is_write_query("TRUNCATE TABLE users"));
+        // Security bypasses that must be blocked
+        assert!(is_write_query(
+            "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d"
+        ));
+        assert!(is_write_query("SELECT * FROM users INTO OUTFILE '/tmp/x'"));
+        assert!(is_write_query("EXPLAIN ANALYZE SELECT * FROM users"));
+        assert!(is_write_query("DELETE\nFROM users WHERE id = 1"));
+        assert!(is_write_query("SELECT * FROM users FOR UPDATE"));
     }
 
     #[test]
-    #[ignore = "bug: is_write_query misses GRANT/SET/CALL and leading comments"]
     fn test_is_write_query_dcl_and_comments() {
         assert!(is_write_query("GRANT SELECT ON db.* TO 'u'@'%'"));
         assert!(is_write_query("SET @a = 1"));
         assert!(is_write_query("/* run */ CALL my_proc()"));
+        assert!(is_write_query("SET SESSION TRANSACTION READ WRITE"));
     }
 
     // --- detect_current_limit / apply_limit_to_sql ---
@@ -1802,9 +1953,26 @@ mod tests {
         let sql = "SELECT * FROM t WHERE id = :id AND name = :name AND note = :note AND e = :empty";
         let out = substitute_sql_parameters(sql, &vals);
         assert!(out.contains("id = 42"));
-        assert!(out.contains("name = 'O''Brien\\test'"));
+        assert!(out.contains("name = 'O''Brien\\\\test'"));
         assert!(out.contains("note = NULL"));
         assert!(out.contains("e = NULL"));
+
+        // Non-finite floats must be quoted as strings, never emitted bare
+        let mut special = HashMap::new();
+        special.insert("a".to_string(), "NaN".to_string());
+        special.insert("b".to_string(), "inf".to_string());
+        let out2 = substitute_sql_parameters("SELECT :a, :b", &special);
+        assert_eq!(out2, "SELECT 'NaN', 'inf'");
+
+        // LIMIT detection & injection with trailing comments
+        assert_eq!(
+            detect_current_limit("SELECT * FROM users LIMIT 10 -- note"),
+            Some(10)
+        );
+        assert_eq!(
+            apply_limit_to_sql("SELECT * FROM users -- note", Some(25)),
+            "SELECT * FROM users -- note\nLIMIT 25;"
+        );
     }
 
     // Additional focused unit tests to reach >= 60 total tests

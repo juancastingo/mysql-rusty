@@ -143,35 +143,43 @@ impl DatabaseSchema {
     /// plus directly related foreign-key tables (1-hop). This keeps prompt token count minimal and speeds up TTFT.
     pub fn to_pruned_ai_ddl_context(&self, sql_query: &str) -> String {
         let sql_lower = sql_query.to_lowercase();
+        let sql_tokens: std::collections::HashSet<&str> = sql_lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .collect();
         let mut relevant_tables: Vec<&TableSchema> = Vec::new();
-        let mut mentioned_names: Vec<String> = Vec::new();
+        let mut mentioned_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for t in &self.tables {
             let name_lower = t.name.to_lowercase();
             // Check if table name appears in query as a distinct token or with backticks
-            if sql_lower.contains(&format!("`{name_lower}`"))
-                || sql_lower
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .any(|w| w == name_lower)
+            if sql_tokens.contains(name_lower.as_str())
+                || sql_lower.contains(&format!("`{name_lower}`"))
             {
                 relevant_tables.push(t);
-                mentioned_names.push(t.name.clone());
+                mentioned_names.insert(name_lower);
             }
         }
 
         // Include 1-hop foreign key related tables
         if !mentioned_names.is_empty() {
+            let referenced_by_mentioned: std::collections::HashSet<String> = relevant_tables
+                .iter()
+                .flat_map(|rt| {
+                    rt.foreign_keys
+                        .iter()
+                        .map(|fk| fk.referenced_table.to_lowercase())
+                })
+                .collect();
             for t in &self.tables {
-                if !mentioned_names.contains(&t.name) {
+                let t_lower = t.name.to_lowercase();
+                if !mentioned_names.contains(&t_lower) {
                     let links_to_mentioned = t
                         .foreign_keys
                         .iter()
-                        .any(|fk| mentioned_names.contains(&fk.referenced_table));
-                    let mentioned_links_to_this = relevant_tables.iter().any(|rt| {
-                        rt.foreign_keys
-                            .iter()
-                            .any(|fk| fk.referenced_table.eq_ignore_ascii_case(&t.name))
-                    });
+                        .any(|fk| mentioned_names.contains(&fk.referenced_table.to_lowercase()));
+                    let mentioned_links_to_this = referenced_by_mentioned.contains(&t_lower);
                     if links_to_mentioned || mentioned_links_to_this {
                         relevant_tables.push(t);
                     }
@@ -234,7 +242,10 @@ impl CellValue {
         match val {
             Value::NULL => Self::Null,
             Value::Int(i) => Self::Integer(i),
-            Value::UInt(u) => Self::Integer(u as i64),
+            Value::UInt(u) => match i64::try_from(u) {
+                Ok(i) => Self::Integer(i),
+                Err(_) => Self::Text(u.to_string()),
+            },
             Value::Float(f) => Self::Float(f as f64),
             Value::Double(d) => Self::Float(d),
             Value::Bytes(bytes) => match String::from_utf8(bytes) {
@@ -313,6 +324,7 @@ impl SshTunnelGuard {
 impl Drop for SshTunnelGuard {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        let _ = self.child.try_wait();
     }
 }
 
@@ -343,6 +355,7 @@ pub enum ActiveSession {
         editor_conn: Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>,
         editor_current_db: Arc<tokio::sync::Mutex<Option<String>>>,
         editor_conn_id: Arc<std::sync::atomic::AtomicU64>,
+        read_only: bool,
         _ssh_guard: Option<Arc<Mutex<SshTunnelGuard>>>,
     },
     DemoSandbox {
@@ -431,13 +444,30 @@ impl ActiveSession {
                 }
             };
 
-            let forward_spec = format!("{}:{}:{}", local_port, profile.host.trim(), profile.port);
+            let db_host = profile.host.trim();
+            let ssh_user = profile.ssh.ssh_user.trim();
+            let valid_ssh_token = |s: &str| {
+                !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+            };
+            if !valid_ssh_token(&ssh_host)
+                || !valid_ssh_token(ssh_user)
+                || !valid_ssh_token(db_host)
+            {
+                return Err(anyhow!(
+                    "Invalid SSH host, user, or target DB host (must not start with '-' or contain whitespace)."
+                ));
+            }
+
+            let forward_spec = format!("{}:{}:{}", local_port, db_host, profile.port);
             let mut cmd = Command::new("ssh");
-            cmd.arg("-N")
+            cmd.kill_on_drop(true)
+                .arg("-N")
                 .arg("-L")
                 .arg(&forward_spec)
                 .arg("-p")
                 .arg(ssh_port.to_string())
+                .arg("-o")
+                .arg("BatchMode=yes")
                 .arg("-o")
                 .arg("ExitOnForwardFailure=yes")
                 .arg("-o")
@@ -448,12 +478,13 @@ impl ActiveSession {
                 cmd.arg("-i").arg(expanded);
             }
 
-            let target = if profile.ssh.ssh_user.trim().is_empty() {
+            let target = if ssh_user.is_empty() {
                 ssh_host
             } else {
-                format!("{}@{}", profile.ssh.ssh_user.trim(), ssh_host)
+                format!("{ssh_user}@{ssh_host}")
             };
-            cmd.arg(target)
+            cmd.arg("--")
+                .arg(target)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped());
@@ -617,7 +648,10 @@ impl ActiveSession {
             }
         };
 
-        let editor = pool.get_conn().await?;
+        let mut editor = pool.get_conn().await?;
+        if profile.read_only {
+            let _ = editor.query_drop("SET SESSION TRANSACTION READ ONLY").await;
+        }
         let editor_id = u64::from(editor.id());
         tracing::info!(editor_conn_id = editor_id, host = %profile.host, port = profile.port, "Connected to MySQL/MariaDB");
 
@@ -626,6 +660,7 @@ impl ActiveSession {
             editor_conn: Arc::new(tokio::sync::Mutex::new(Some(editor))),
             editor_current_db: Arc::new(tokio::sync::Mutex::new(None)),
             editor_conn_id: Arc::new(std::sync::atomic::AtomicU64::new(editor_id)),
+            read_only: profile.read_only,
             _ssh_guard: ssh_guard,
         })
     }
@@ -636,12 +671,27 @@ impl ActiveSession {
 
     pub async fn ping(&self) -> Result<()> {
         match self {
-            Self::DemoSandbox { .. } | Self::Sqlite { .. } | Self::Postgres(_) => Ok(()),
+            Self::DemoSandbox { .. } => Ok(()),
+            Self::Sqlite { conn, .. } => {
+                let conn = Arc::clone(conn);
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let guard = conn
+                        .lock()
+                        .map_err(|_| anyhow!("SQLite connection mutex poisoned"))?;
+                    guard.execute_batch("SELECT 1;")?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| anyhow!("SQLite ping task failed: {e}"))?
+            }
+            Self::Postgres(pg) => crate::pg_db::ping(pg).await,
             Self::RealMysql {
                 pool, _ssh_guard, ..
             } => {
                 if let Some(guard) = _ssh_guard {
-                    let mut locked = guard.lock().unwrap();
+                    let mut locked = guard
+                        .lock()
+                        .map_err(|_| anyhow!("SSH tunnel mutex poisoned"))?;
                     locked.check_alive()?;
                 }
                 let mut conn = pool.get_conn().await?;
@@ -666,6 +716,7 @@ impl ActiveSession {
         slot: &'a Arc<tokio::sync::Mutex<Option<mysql_async::Conn>>>,
         current_db: &Arc<tokio::sync::Mutex<Option<String>>>,
         conn_id_atomic: &Arc<std::sync::atomic::AtomicU64>,
+        read_only: bool,
     ) -> Result<tokio::sync::MutexGuard<'a, Option<mysql_async::Conn>>> {
         let mut guard = slot.lock().await;
         let needs_reconnect = match guard.as_mut() {
@@ -676,7 +727,10 @@ impl ActiveSession {
             *guard = None;
             *current_db.lock().await = None;
             conn_id_atomic.store(0, std::sync::atomic::Ordering::Relaxed);
-            let conn = pool.get_conn().await?;
+            let mut conn = pool.get_conn().await?;
+            if read_only {
+                conn.query_drop("SET SESSION TRANSACTION READ ONLY").await?;
+            }
             conn_id_atomic.store(u64::from(conn.id()), std::sync::atomic::Ordering::Relaxed);
             *guard = Some(conn);
         }
@@ -978,12 +1032,18 @@ impl ActiveSession {
                 editor_conn,
                 editor_current_db,
                 editor_conn_id,
+                read_only,
                 ..
             } => {
                 let start = Instant::now();
-                let mut guard =
-                    Self::lock_editor_conn(pool, editor_conn, editor_current_db, editor_conn_id)
-                        .await?;
+                let mut guard = Self::lock_editor_conn(
+                    pool,
+                    editor_conn,
+                    editor_current_db,
+                    editor_conn_id,
+                    *read_only,
+                )
+                .await?;
                 let conn = guard.as_mut().expect("editor_conn initialized");
 
                 let db_trimmed = database.trim();
@@ -1133,7 +1193,10 @@ impl ActiveSession {
             }
             Self::Postgres(pg) => crate::pg_db::apply_cell_edits(pg, database, table, edits).await,
             Self::DemoSandbox { store, .. } => {
-                let mut guard = store.tables.lock().unwrap();
+                let mut guard = store
+                    .tables
+                    .lock()
+                    .map_err(|_| anyhow!("Demo table store poisoned"))?;
                 if let Some(tbl) = guard.get_mut(table) {
                     let mut count = 0;
                     for edit in edits {
@@ -1144,7 +1207,9 @@ impl ActiveSession {
                                 *cell = CellValue::Null;
                             } else if let Ok(i) = edit.new_value.parse::<i64>() {
                                 *cell = CellValue::Integer(i);
-                            } else if let Ok(f) = edit.new_value.parse::<f64>() {
+                            } else if let Ok(f) = edit.new_value.parse::<f64>()
+                                && f.is_finite()
+                            {
                                 *cell = CellValue::Float(f);
                             } else {
                                 *cell = CellValue::Text(edit.new_value.clone());
@@ -1161,11 +1226,17 @@ impl ActiveSession {
                 editor_conn,
                 editor_current_db,
                 editor_conn_id,
+                read_only,
                 ..
             } => {
-                let mut guard =
-                    Self::lock_editor_conn(pool, editor_conn, editor_current_db, editor_conn_id)
-                        .await?;
+                let mut guard = Self::lock_editor_conn(
+                    pool,
+                    editor_conn,
+                    editor_current_db,
+                    editor_conn_id,
+                    *read_only,
+                )
+                .await?;
                 let conn = guard.as_mut().expect("editor_conn initialized");
                 let mut total_affected = 0;
                 for edit in edits {
@@ -1855,6 +1926,35 @@ impl ActiveSession {
             ));
         }
 
+        match self.dialect() {
+            crate::dialect::Dialect::Sqlite => {
+                let explain_qp = format!("EXPLAIN QUERY PLAN {target_sql}");
+                let res = self
+                    .execute_query(database, &explain_qp, None, Some(200))
+                    .await?;
+                return Ok(crate::export::to_markdown_table(&res));
+            }
+            crate::dialect::Dialect::Postgres => {
+                let explain_analyze = format!("EXPLAIN (ANALYZE, FORMAT JSON) {target_sql}");
+                if let Ok(res) = self
+                    .execute_query(database, &explain_analyze, None, Some(200))
+                    .await
+                    && let Some(cell) = res.rows.first().and_then(|r| r.first())
+                {
+                    return Ok(cell.display_text());
+                }
+                let explain_json = format!("EXPLAIN (FORMAT JSON) {target_sql}");
+                let res = self
+                    .execute_query(database, &explain_json, None, Some(200))
+                    .await?;
+                if let Some(cell) = res.rows.first().and_then(|r| r.first()) {
+                    return Ok(cell.display_text());
+                }
+                return Ok(crate::export::to_markdown_table(&res));
+            }
+            crate::dialect::Dialect::MySql => {}
+        }
+
         let explain_analyze = format!("EXPLAIN ANALYZE {target_sql}");
         if let Ok(res) = self
             .execute_query(database, &explain_analyze, None, Some(200))
@@ -2108,11 +2208,49 @@ pub fn build_create_user_sql(user: &str, host: &str, password: &str, auth_plugin
     });
     let p = escape_sql_str(password);
     let plugin = auth_plugin.trim();
-    if plugin.is_empty() {
+    let plugin_valid = !plugin.is_empty()
+        && plugin
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !plugin_valid {
         format!("CREATE USER '{u}'@'{h}' IDENTIFIED BY '{p}'")
     } else {
         format!("CREATE USER '{u}'@'{h}' IDENTIFIED WITH {plugin} BY '{p}'")
     }
+}
+
+fn sanitize_grant_scope(scope: &str) -> String {
+    let s = scope.trim();
+    if s.is_empty() || s == "*.*" {
+        return "*.*".to_string();
+    }
+    let quote_part = |part: &str| {
+        let p = part.trim().trim_matches('`');
+        if p == "*" || p.is_empty() {
+            "*".to_string()
+        } else {
+            format!("`{}`", p.replace('`', "``"))
+        }
+    };
+    if let Some((db, tbl)) = s.split_once('.') {
+        format!("{}.{}", quote_part(db), quote_part(tbl))
+    } else {
+        format!("{}.*", quote_part(s))
+    }
+}
+
+fn filter_valid_privileges(privs: &[String]) -> Vec<String> {
+    privs
+        .iter()
+        .map(|p| p.trim().to_ascii_uppercase())
+        .filter(|p| {
+            p == "ALL"
+                || p == "ALL PRIVILEGES"
+                || ALL_PRIVILEGES
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(p))
+        })
+        .collect()
 }
 
 pub fn build_grant_revoke_sql(
@@ -2128,22 +2266,20 @@ pub fn build_grant_revoke_sql(
     } else {
         host.trim()
     });
-    let sc = if scope.trim().is_empty() {
-        "*.*"
-    } else {
-        scope.trim()
-    };
+    let sc = sanitize_grant_scope(scope);
+    let valid_grants = filter_valid_privileges(grants);
+    let valid_revokes = filter_valid_privileges(revokes);
     let mut stmts = Vec::new();
-    if !grants.is_empty() {
+    if !valid_grants.is_empty() {
         stmts.push(format!(
             "GRANT {} ON {sc} TO '{u}'@'{h}'",
-            grants.join(", ")
+            valid_grants.join(", ")
         ));
     }
-    if !revokes.is_empty() {
+    if !valid_revokes.is_empty() {
         stmts.push(format!(
             "REVOKE {} ON {sc} FROM '{u}'@'{h}'",
-            revokes.join(", ")
+            valid_revokes.join(", ")
         ));
     }
     stmts

@@ -20,13 +20,25 @@ impl MysqlRustyApp {
                         .map(|c| (c.name.clone(), c.environment.color_rgb()))
                         .unwrap_or_else(|| ("Connection".to_string(), (56, 189, 248)));
 
-                    let mut schemas_map = HashMap::new();
+                    let mut schemas_map: HashMap<String, Arc<DatabaseSchema>> = HashMap::new();
                     let active_db = if let Some(schema) = initial_schema {
                         let name = schema.name.clone();
-                        schemas_map.insert(name.clone(), schema);
+                        schemas_map.insert(name.clone(), Arc::new(schema));
                         name
                     } else {
                         databases.first().cloned().unwrap_or_default()
+                    };
+
+                    let dialect = session.dialect();
+                    let fallback_list_sql = match dialect {
+                        crate::dialect::Dialect::MySql => "SHOW TABLES;".to_string(),
+                        crate::dialect::Dialect::Postgres => {
+                            "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
+                                .to_string()
+                        }
+                        crate::dialect::Dialect::Sqlite => {
+                            "SELECT name FROM sqlite_master WHERE type = 'table';".to_string()
+                        }
                     };
 
                     // Keep scratchpad tabs for the very first workspace; start fresh tab for extra connections
@@ -37,25 +49,30 @@ impl MysqlRustyApp {
                         {
                             if let Some(schema) = schemas_map.get(&active_db) {
                                 if let Some(first_tbl) = schema.tables.first() {
-                                    tab.sql =
-                                        format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name);
+                                    tab.sql = format!(
+                                        "SELECT * FROM {} LIMIT 100;",
+                                        dialect.quote_ident(&first_tbl.name)
+                                    );
                                 } else {
-                                    tab.sql = "SHOW TABLES;".to_string();
+                                    tab.sql = fallback_list_sql.clone();
                                 }
                             } else {
-                                tab.sql = "SHOW TABLES;".to_string();
+                                tab.sql = fallback_list_sql.clone();
                             }
                         }
                         tabs_clone
                     } else {
                         let starter_sql = if let Some(schema) = schemas_map.get(&active_db) {
                             if let Some(first_tbl) = schema.tables.first() {
-                                format!("SELECT * FROM `{}` LIMIT 100;", first_tbl.name)
+                                format!(
+                                    "SELECT * FROM {} LIMIT 100;",
+                                    dialect.quote_ident(&first_tbl.name)
+                                )
                             } else {
-                                "SHOW TABLES;".to_string()
+                                fallback_list_sql
                             }
                         } else {
-                            "SHOW TABLES;".to_string()
+                            fallback_list_sql
                         };
                         vec![QueryTab::new("Query 1", starter_sql)]
                     };
@@ -118,7 +135,7 @@ impl MysqlRustyApp {
                         schema.name,
                         schema.tables.len()
                     );
-                    self.schemas.insert(schema.name.clone(), schema);
+                    self.schemas.insert(schema.name.clone(), Arc::new(schema));
                 }
                 AsyncEvent::QueryFinished {
                     tab_id,
@@ -167,7 +184,7 @@ impl MysqlRustyApp {
                                 let hist_sql = res.sql.clone();
                                 let hist_dur = res.duration_ms;
                                 let hist_rows = res.rows.len() as u64;
-                                tab.last_result = Some(res);
+                                tab.last_result = Some(Arc::new(res));
                                 tab.multi_results.clear();
                                 tab.active_result_idx = 0;
                                 tab.last_error = None;
@@ -241,7 +258,7 @@ impl MysqlRustyApp {
                         let mut first_err = None;
                         for r in results {
                             match r {
-                                Ok(res) => tab.multi_results.push(res),
+                                Ok(res) => tab.multi_results.push(Arc::new(res)),
                                 Err(e) => {
                                     if first_err.is_none() {
                                         first_err = Some(e);
@@ -308,7 +325,8 @@ impl MysqlRustyApp {
                             }
                             Err(err) => {
                                 // Fallback to heuristic completion so the user still gets a smart suggestion
-                                let schema = self.schemas.get(&self.active_database);
+                                let schema =
+                                    self.schemas.get(&self.active_database).map(|s| s.as_ref());
                                 let (prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
                                 tab.ghost_completion =
                                     compute_heuristic_ghost_completion(prefix, schema);
@@ -324,7 +342,7 @@ impl MysqlRustyApp {
                     req_id,
                     result,
                 } => {
-                    let schema = self.schemas.get(&self.active_database);
+                    let schema = self.schemas.get(&self.active_database).map(|s| s.as_ref());
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         if tab.ai_error_fix_req_id != req_id || tab.last_error.is_none() {
                             continue;
@@ -535,9 +553,10 @@ impl MysqlRustyApp {
                     self.diff_loading_schemas = false;
                     match schema {
                         Ok(s) => {
+                            let s = Arc::new(s);
                             let resolved = ws_idx.or(self.active_workspace_idx);
                             if resolved == self.active_workspace_idx {
-                                self.schemas.insert(db.clone(), s.clone());
+                                self.schemas.insert(db.clone(), Arc::clone(&s));
                             }
                             if let Some(idx) = resolved
                                 && let Some(ws) = self.open_workspaces.get_mut(idx)

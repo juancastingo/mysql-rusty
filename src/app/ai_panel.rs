@@ -15,7 +15,7 @@ impl MysqlRustyApp {
 
         // Opción 1: Local Schema Native runs in 0ms without async network spawning
         if self.config.ai.provider == AiProvider::LocalSchema {
-            let schema = self.schemas.get(&self.active_database);
+            let schema = self.schemas.get(&self.active_database).map(|s| s.as_ref());
             tab.ghost_completion = compute_heuristic_ghost_completion(&sql_prefix, schema);
             return;
         }
@@ -70,7 +70,7 @@ impl MysqlRustyApp {
         let schema = self.schemas.get(&self.active_database).cloned();
         if self.config.ai.provider == AiProvider::LocalSchema {
             if let Some(mut fix) =
-                crate::ai::compute_heuristic_sql_error_fix(&failed_sql, err_msg, schema.as_ref())
+                crate::ai::compute_heuristic_sql_error_fix(&failed_sql, err_msg, schema.as_deref())
             {
                 align_fix_to_tab_sql(&tab.sql, &mut fix);
                 tab.ai_error_fix = Some(fix);
@@ -103,7 +103,7 @@ impl MysqlRustyApp {
                 &failed_sql,
                 &err_owned,
                 &ddl,
-                schema.as_ref(),
+                schema.as_deref(),
             )
             .await
             .map_err(|e| format!("{e:#}"));

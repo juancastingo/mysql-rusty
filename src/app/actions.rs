@@ -657,7 +657,7 @@ impl MysqlRustyApp {
                         &session,
                         &db,
                         &stmt,
-                        schema.as_ref(),
+                        schema.as_deref(),
                         timeout_secs,
                         max_rows,
                     )
@@ -676,9 +676,15 @@ impl MysqlRustyApp {
                     is_connection_error: any_conn_err,
                 });
             } else {
-                let res =
-                    run_with_timeout(&session, &db, &sql, schema.as_ref(), timeout_secs, max_rows)
-                        .await;
+                let res = run_with_timeout(
+                    &session,
+                    &db,
+                    &sql,
+                    schema.as_deref(),
+                    timeout_secs,
+                    max_rows,
+                )
+                .await;
                 let (result, is_connection_error) = match res {
                     Ok(r) => (Ok(r), false),
                     Err((msg, is_conn)) => (Err(msg), is_conn),
@@ -695,7 +701,11 @@ impl MysqlRustyApp {
 
     pub fn start_transaction(&mut self) {
         self.status_banner = "Starting transaction...".to_string();
-        self.execute_sql_forced("START TRANSACTION;".to_string());
+        let begin_sql = match self.active_session.as_ref().map(|s| s.dialect()) {
+            Some(crate::dialect::Dialect::Sqlite) => "BEGIN TRANSACTION;",
+            _ => "START TRANSACTION;",
+        };
+        self.execute_sql_forced(begin_sql.to_string());
     }
 
     pub fn commit_transaction(&mut self) {

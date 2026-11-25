@@ -4,6 +4,7 @@ impl MysqlRustyApp {
     pub(crate) fn parse_hex_color(&self, hex: &str) -> Color32 {
         let clean = hex.trim_start_matches('#');
         if clean.len() == 6
+            && clean.is_ascii()
             && let (Ok(r), Ok(g), Ok(b)) = (
                 u8::from_str_radix(&clean[0..2], 16),
                 u8::from_str_radix(&clean[2..4], 16),

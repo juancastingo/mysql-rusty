@@ -76,7 +76,7 @@ impl MysqlRustyApp {
                             &ai_config,
                             &tab_sql,
                             &plan_out,
-                            schema.as_ref(),
+                            schema.as_deref(),
                         )
                         .await
                         .map_err(|e| format!("{e:#}")),
