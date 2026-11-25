@@ -72,6 +72,7 @@ pub fn to_sql_inserts(result: &QueryResult, target_table: &str) -> String {
     } else {
         target_table
     };
+    let q_tbl = crate::dialect::Dialect::MySql.quote_ident(tbl);
     let cols = result
         .columns
         .iter()
@@ -81,18 +82,8 @@ pub fn to_sql_inserts(result: &QueryResult, target_table: &str) -> String {
 
     let mut out = String::new();
     for row in &result.rows {
-        let vals = row
-            .iter()
-            .map(|c| match c {
-                CellValue::Null => "NULL".to_string(),
-                CellValue::Integer(i) => i.to_string(),
-                CellValue::Float(f) => f.to_string(),
-                CellValue::Text(s) => format!("'{}'", s.replace('\'', "''")),
-                CellValue::Bytes(_) => format!("'{}'", c.display_text()),
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        out.push_str(&format!("INSERT INTO `{tbl}` ({cols}) VALUES ({vals});\n"));
+        let vals = row.iter().map(sql_literal).collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("INSERT INTO {q_tbl} ({cols}) VALUES ({vals});\n"));
     }
     out
 }
@@ -102,7 +93,7 @@ pub fn save_string_to_path(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parses a CSV string into a MySQL multi-row batch `INSERT INTO ... VALUES (...)` statement.
+/// Parses a CSV string into MySQL multi-row batch `INSERT INTO ... VALUES (...)` statement(s).
 pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<String> {
     let trimmed = csv_content.trim();
     if trimmed.is_empty() {
@@ -119,7 +110,7 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
         return Err(anyhow::anyhow!("CSV headers are empty."));
     }
 
-    let clean_table = table.trim().trim_matches('`');
+    let q_table = crate::dialect::Dialect::MySql.quote_ident(table.trim().trim_matches('`'));
     let cols_escaped = headers
         .iter()
         .map(|h| crate::dialect::Dialect::MySql.quote_ident(h.trim()))
@@ -135,9 +126,11 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
             if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
                 row_vals.push("NULL".to_string());
             } else if field_trimmed.parse::<i64>().is_ok()
-                || (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
+                || (field_trimmed.parse::<f64>().is_ok_and(|f| f.is_finite())
+                    && !field_trimmed.starts_with('0'))
                 || field_trimmed == "0"
-                || field_trimmed.starts_with("0.")
+                || (field_trimmed.starts_with("0.")
+                    && field_trimmed.parse::<f64>().is_ok_and(|f| f.is_finite()))
             {
                 row_vals.push(field_trimmed.to_string());
             } else if field_trimmed.eq_ignore_ascii_case("true") {
@@ -145,7 +138,8 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
             } else if field_trimmed.eq_ignore_ascii_case("false") {
                 row_vals.push("0".to_string());
             } else {
-                row_vals.push(format!("'{}'", field_trimmed.replace('\'', "''")));
+                let escaped = field_trimmed.replace('\\', "\\\\").replace('\'', "''");
+                row_vals.push(format!("'{escaped}'"));
             }
         }
         value_rows.push(format!("  ({})", row_vals.join(", ")));
@@ -155,10 +149,16 @@ pub fn parse_csv_to_batch_insert(table: &str, csv_content: &str) -> Result<Strin
         return Err(anyhow::anyhow!("CSV contains no data rows."));
     }
 
-    Ok(format!(
-        "INSERT INTO `{clean_table}` ({cols_escaped}) VALUES\n{};",
-        value_rows.join(",\n")
-    ))
+    let stmts: Vec<String> = value_rows
+        .chunks(200)
+        .map(|chunk| {
+            format!(
+                "INSERT INTO {q_table} ({cols_escaped}) VALUES\n{};",
+                chunk.join(",\n")
+            )
+        })
+        .collect();
+    Ok(stmts.join("\n\n"))
 }
 
 /// Inspects a CSV content string and returns its headers, first N sample rows, and total row count.
@@ -203,7 +203,7 @@ pub fn generate_csv_import_sql(
     create_table: bool,
 ) -> Result<String> {
     let mut stmts = Vec::new();
-    let clean_table = target_table.trim().trim_matches('`');
+    let q_table = crate::dialect::Dialect::MySql.quote_ident(target_table.trim().trim_matches('`'));
 
     let active_mappings: Vec<(usize, &String)> = mappings
         .iter()
@@ -224,17 +224,18 @@ pub fn generate_csv_import_sql(
         let mut col_defs = Vec::new();
         col_defs.push("  `id` INT AUTO_INCREMENT PRIMARY KEY".to_string());
         for (_, db_col) in &active_mappings {
-            col_defs.push(format!("  `{}` TEXT NULL", db_col.trim_matches('`')));
+            let q_col = crate::dialect::Dialect::MySql.quote_ident(db_col.trim_matches('`'));
+            col_defs.push(format!("  {q_col} TEXT NULL"));
         }
         stmts.push(format!(
-            "CREATE TABLE IF NOT EXISTS `{clean_table}` (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
+            "CREATE TABLE IF NOT EXISTS {q_table} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
             col_defs.join(",\n")
         ));
     }
 
     let col_names = active_mappings
         .iter()
-        .map(|(_, db_col)| format!("`{}`", db_col.trim_matches('`')))
+        .map(|(_, db_col)| crate::dialect::Dialect::MySql.quote_ident(db_col.trim_matches('`')))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -252,9 +253,11 @@ pub fn generate_csv_import_sql(
             if field_trimmed.is_empty() || field_trimmed.eq_ignore_ascii_case("null") {
                 row_vals.push("NULL".to_string());
             } else if field_trimmed.parse::<i64>().is_ok()
-                || (field_trimmed.parse::<f64>().is_ok() && !field_trimmed.starts_with('0'))
+                || (field_trimmed.parse::<f64>().is_ok_and(|f| f.is_finite())
+                    && !field_trimmed.starts_with('0'))
                 || field_trimmed == "0"
-                || field_trimmed.starts_with("0.")
+                || (field_trimmed.starts_with("0.")
+                    && field_trimmed.parse::<f64>().is_ok_and(|f| f.is_finite()))
             {
                 row_vals.push(field_trimmed.to_string());
             } else if field_trimmed.eq_ignore_ascii_case("true") {
@@ -262,7 +265,8 @@ pub fn generate_csv_import_sql(
             } else if field_trimmed.eq_ignore_ascii_case("false") {
                 row_vals.push("0".to_string());
             } else {
-                row_vals.push(format!("'{}'", field_trimmed.replace('\'', "''")));
+                let escaped = field_trimmed.replace('\\', "\\\\").replace('\'', "''");
+                row_vals.push(format!("'{escaped}'"));
             }
         }
         value_rows.push(format!("  ({})", row_vals.join(", ")));
@@ -275,7 +279,7 @@ pub fn generate_csv_import_sql(
     // Chunk into batches of 200 rows per INSERT statement for safe execution
     for chunk in value_rows.chunks(200) {
         stmts.push(format!(
-            "INSERT INTO `{clean_table}` ({col_names}) VALUES\n{};",
+            "INSERT INTO {q_table} ({col_names}) VALUES\n{};",
             chunk.join(",\n")
         ));
     }
@@ -501,12 +505,14 @@ fn format_sql_cell_literal(cell: &CellValue) -> String {
     match cell {
         CellValue::Integer(n) => n.to_string(),
         CellValue::Float(f) => f.to_string(),
+        CellValue::Bytes(_) => sql_literal(cell),
         _ => {
             let text = cell.display_text();
-            if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() {
+            if text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok_and(|f| f.is_finite()) {
                 text
             } else {
-                format!("'{}'", text.replace('\'', "''"))
+                let escaped = text.replace('\\', "\\\\").replace('\'', "''");
+                format!("'{escaped}'")
             }
         }
     }

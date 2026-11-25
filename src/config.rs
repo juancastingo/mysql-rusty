@@ -102,7 +102,7 @@ pub struct ConnectionProfile {
     pub password: String,
     pub default_database: String,
     pub ssl_mode: SslMode,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub ssl_accept_invalid_certs: bool,
     #[serde(default)]
     pub ssl_ca_path: String,
@@ -545,6 +545,9 @@ impl AppConfig {
         if let Some(k) = get_secret("gemini_api_key") {
             cfg.ai.gemini_api_key = k;
         }
+        if let Some(k) = get_secret("copilot_github_token") {
+            cfg.ai.copilot_github_token = k;
+        }
 
         cfg
     }
@@ -553,6 +556,11 @@ impl AppConfig {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
         }
 
         let mut config_to_save = self.clone();
@@ -573,6 +581,11 @@ impl AppConfig {
             }
         }
 
+        // Never persist plaintext passwords for trashed connections
+        for trashed in &mut config_to_save.trashed_connections {
+            trashed.profile.password.clear();
+        }
+
         let _ = set_secret("openai_api_key", &self.ai.openai_api_key);
         if get_secret("openai_api_key").as_deref() == Some(&self.ai.openai_api_key) {
             config_to_save.ai.openai_api_key.clear();
@@ -588,8 +601,32 @@ impl AppConfig {
             config_to_save.ai.gemini_api_key.clear();
         }
 
+        let _ = set_secret("copilot_github_token", &self.ai.copilot_github_token);
+        if get_secret("copilot_github_token").as_deref() == Some(&self.ai.copilot_github_token) {
+            config_to_save.ai.copilot_github_token.clear();
+        }
+        // Ephemeral Copilot session tokens should never be written to disk
+        config_to_save.ai.copilot_session_token.clear();
+        config_to_save.ai.copilot_token_expires_at = 0;
+
         let json = serde_json::to_string_pretty(&config_to_save)?;
-        fs::write(path, json)?;
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.write_all(json.as_bytes())?;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, json)?;
+        }
         Ok(())
     }
 }

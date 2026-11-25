@@ -67,7 +67,7 @@ pub struct MysqlRustyApp {
     active_session: Option<Arc<ActiveSession>>,
     databases: Vec<String>,
     active_database: String,
-    schemas: HashMap<String, DatabaseSchema>,
+    schemas: HashMap<String, Arc<DatabaseSchema>>,
     schema_filter: String,
 
     tabs: Vec<QueryTab>,
@@ -166,6 +166,7 @@ pub struct MysqlRustyApp {
 
     // Scratchpad auto-save
     last_scratchpad_save: std::time::Instant,
+    last_scratchpad_hash: u64,
 
     // Multi-connection workspaces (Workbench-style top tabs)
     open_workspaces: Vec<OpenConnectionWorkspace>,
@@ -437,6 +438,7 @@ impl MysqlRustyApp {
             copilot_auth_status: String::new(),
             is_copilot_authenticating: false,
             last_scratchpad_save: std::time::Instant::now(),
+            last_scratchpad_hash: 0,
             open_workspaces: Vec::new(),
             active_workspace_idx: None,
             fk_lookup_cache: HashMap::new(),
@@ -543,27 +545,38 @@ impl eframe::App for MysqlRustyApp {
             }
         }
 
-        // Periodic Scratchpad Auto-Save (every 5 seconds)
+        // Periodic Scratchpad Auto-Save (every 5 seconds, only when tabs actually changed)
         if self.last_scratchpad_save.elapsed().as_secs() >= 5 {
             self.last_scratchpad_save = std::time::Instant::now();
-            self.config.scratchpads = self
-                .tabs
-                .iter()
-                .map(|t| SavedScratchpad {
-                    title: t.title.clone(),
-                    sql: t.sql.clone(),
-                    file_path: t
-                        .file_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned()),
-                })
-                .collect();
-            let _ = self.config.save();
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            self.tabs.len().hash(&mut hasher);
+            for t in &self.tabs {
+                t.title.hash(&mut hasher);
+                t.sql.hash(&mut hasher);
+                t.file_path.hash(&mut hasher);
+            }
+            let current_hash = hasher.finish();
+            if current_hash != self.last_scratchpad_hash {
+                self.last_scratchpad_hash = current_hash;
+                self.config.scratchpads = self
+                    .tabs
+                    .iter()
+                    .map(|t| SavedScratchpad {
+                        title: t.title.clone(),
+                        sql: t.sql.clone(),
+                        file_path: t
+                            .file_path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned()),
+                    })
+                    .collect();
+                let _ = self.config.save();
+            }
         }
 
         // Global keyboard shortcuts (#27)
-        let is_modal_open =
-            self.show_connection_modal || self.show_ai_settings_modal || self.show_shortcuts_modal;
+        let is_modal_open = self.is_any_modal_open();
         if !is_modal_open {
             let mut global_run_stmt = false;
             let mut global_run_query = false;
@@ -653,18 +666,22 @@ impl eframe::App for MysqlRustyApp {
         }
 
         // Debounced automatic inline AI completion (new edits supersede in-flight requests via inline_req_id)
-        if self.config.ai.enable_inline_autocomplete
-            && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
             && let Some(instant) = tab.last_edit_instant
         {
-            let debounce =
-                std::time::Duration::from_millis(self.config.ai.autocomplete_debounce_ms.max(50));
-            if instant.elapsed() >= debounce {
+            if !self.config.ai.enable_inline_autocomplete {
                 tab.last_edit_instant = None;
-                self.trigger_inline_ai_completion();
             } else {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(40));
+                let debounce = std::time::Duration::from_millis(
+                    self.config.ai.autocomplete_debounce_ms.max(50),
+                );
+                if instant.elapsed() >= debounce {
+                    tab.last_edit_instant = None;
+                    self.trigger_inline_ai_completion();
+                } else {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(40));
+                }
             }
         }
 
@@ -714,5 +731,31 @@ impl eframe::App for MysqlRustyApp {
         self.render_backup_modal(&ctx);
         self.render_restore_modal(&ctx);
         self.render_routine_call_modal(&ctx);
+    }
+}
+
+impl MysqlRustyApp {
+    pub(crate) fn is_any_modal_open(&self) -> bool {
+        self.show_connection_modal
+            || self.show_ai_settings_modal
+            || self.show_shortcuts_modal
+            || self.table_designer_draft.is_some()
+            || self.show_safety_modal
+            || self.show_schema_diff_modal
+            || self.show_mock_data_modal
+            || self.show_save_snippet_modal
+            || self.cell_inspector.is_some()
+            || self.csv_wizard.is_some()
+            || self.show_command_palette
+            || self.pending_delete_connection.is_some()
+            || self.show_connection_trash_modal
+            || self.show_data_diff_modal
+            || self.pending_db_sync.is_some()
+            || self.show_sql_dump_modal
+            || self.table_action_modal.is_some()
+            || self.table_info_modal.is_some()
+            || self.backup_modal.is_some()
+            || self.restore_modal.is_some()
+            || self.routine_call_modal.is_some()
     }
 }

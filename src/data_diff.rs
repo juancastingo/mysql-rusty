@@ -192,7 +192,7 @@ pub fn compute_data_diff_with_options(
                         columns
                             .get(c)
                             .is_none_or(|name| !excluded_cols.contains(name))
-                            && l_row.get(c) != r_row.get(c)
+                            && l_cells.get(c) != r_cells.get(c)
                     })
                     .collect();
                 if changed_cols.is_empty() {

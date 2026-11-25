@@ -544,12 +544,27 @@ pub struct CopilotDeviceCodeResponse {
     pub interval: u64,
 }
 
+fn shared_http_client() -> &'static Client {
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+fn copilot_token_cache() -> &'static std::sync::Mutex<Option<(String, String, u64)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(String, String, u64)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 pub async fn request_copilot_device_code() -> Result<CopilotDeviceCodeResponse> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = shared_http_client();
     let resp = client
         .post("https://github.com/login/device/code")
+        .timeout(std::time::Duration::from_secs(10))
         .header("Accept", "application/json")
         .header("User-Agent", "GitHubCopilot/1.180.0")
         .json(&json!({
@@ -571,11 +586,10 @@ pub async fn request_copilot_device_code() -> Result<CopilotDeviceCodeResponse> 
 }
 
 pub async fn poll_copilot_device_token(device_code: &str) -> Result<Result<String, String>> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = shared_http_client();
     let resp = client
         .post("https://github.com/login/oauth/access_token")
+        .timeout(std::time::Duration::from_secs(10))
         .header("Accept", "application/json")
         .header("User-Agent", "GitHubCopilot/1.180.0")
         .json(&json!({
@@ -598,11 +612,10 @@ pub async fn poll_copilot_device_token(device_code: &str) -> Result<Result<Strin
 }
 
 pub async fn fetch_copilot_session_token(github_token: &str) -> Result<(String, u64)> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = shared_http_client();
     let resp = client
         .get("https://api.github.com/copilot_internal/v2/token")
+        .timeout(std::time::Duration::from_secs(10))
         .header("Authorization", format!("token {github_token}"))
         .header("Editor-Version", "vscode/1.90.0")
         .header("Editor-Plugin-Version", "copilot/1.180.0")
@@ -1047,13 +1060,8 @@ async fn call_provider(
     user_prompt: &str,
     is_inline: bool,
 ) -> Result<String> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(if is_inline {
-            20
-        } else {
-            45
-        }))
-        .build()?;
+    let client = shared_http_client();
+    let _req_timeout = std::time::Duration::from_secs(if is_inline { 20 } else { 45 });
 
     match config.provider {
         AiProvider::LocalSchema => {
@@ -1074,14 +1082,26 @@ async fn call_provider(
                 .unwrap_or_default()
                 .as_secs();
 
-            // Refresh session token if missing or expiring within 60s
-            let session_token = if config.copilot_session_token.is_empty()
-                || config.copilot_token_expires_at <= now_secs + 60
+            // Check in-memory cache first, then config, then refresh via GitHub API
+            let cached_token = copilot_token_cache()
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .filter(|(cached_gh, _, exp)| cached_gh == gh_token && *exp > now_secs + 60)
+                .map(|(_, tok, _)| tok);
+
+            let session_token = if let Some(tok) = cached_token {
+                tok
+            } else if !config.copilot_session_token.is_empty()
+                && config.copilot_token_expires_at > now_secs + 60
             {
-                let (new_token, _) = fetch_copilot_session_token(gh_token).await?;
-                new_token
-            } else {
                 config.copilot_session_token.clone()
+            } else {
+                let (new_token, expires_at) = fetch_copilot_session_token(gh_token).await?;
+                if let Ok(mut g) = copilot_token_cache().lock() {
+                    *g = Some((gh_token.to_string(), new_token.clone(), expires_at));
+                }
+                new_token
             };
 
             let model = if config.copilot_model.trim().is_empty() {
@@ -1270,9 +1290,8 @@ async fn call_provider(
                 return Err(anyhow!("Gemini API Key is empty in AI Settings."));
             }
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                config.gemini_model.trim(),
-                config.gemini_api_key.trim()
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                config.gemini_model.trim()
             );
             let combined = format!("{system_prompt}\n\n{user_prompt}");
             let mut body = json!({
@@ -1288,7 +1307,12 @@ async fn call_provider(
                     "stopSequences": [";\n", "\n\n", "```"]
                 });
             }
-            let resp = client.post(&url).json(&body).send().await?;
+            let resp = client
+                .post(&url)
+                .header("x-goog-api-key", config.gemini_api_key.trim())
+                .json(&body)
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
@@ -1526,7 +1550,7 @@ pub fn clean_inline_completion_with_suffix(raw: &str, prefix: &str, suffix: &str
                         && cand_c.normalized.len() > last_p.normalized.len()
                     {
                         let offset = cand_c.start + last_p.text.len();
-                        if offset <= cleaned.len() {
+                        if offset <= cleaned.len() && cleaned.is_char_boundary(offset) {
                             cleaned = cleaned[offset..].trim_start().to_string();
                             partial_found = true;
                             break;
@@ -1538,12 +1562,15 @@ pub fn clean_inline_completion_with_suffix(raw: &str, prefix: &str, suffix: &str
             if !partial_found {
                 // Also check if prefix is non-empty and cleaned literally starts with trimmed prefix
                 let trimmed_p = prefix.trim();
-                if !trimmed_p.is_empty()
-                    && cleaned
-                        .to_lowercase()
-                        .starts_with(&trimmed_p.to_lowercase())
-                {
-                    cleaned = cleaned[trimmed_p.len()..].trim().to_string();
+                if !trimmed_p.is_empty() {
+                    let prefix_chars = trimmed_p.chars().count();
+                    let cleaned_prefix: String = cleaned.chars().take(prefix_chars).collect();
+                    if cleaned_prefix.to_lowercase() == trimmed_p.to_lowercase() {
+                        let byte_offset = cleaned_prefix.len();
+                        if cleaned.is_char_boundary(byte_offset) {
+                            cleaned = cleaned[byte_offset..].trim().to_string();
+                        }
+                    }
                 }
             }
         }
@@ -1815,6 +1842,20 @@ pub fn compute_sql_diff_ranges(
         return (strike, insert);
     }
 
+    if n.saturating_mul(m) > 250_000 {
+        let strike = if original.trim().is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0..original.len()).collect()
+        };
+        let insert = if fixed.trim().is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0..fixed.len()).collect()
+        };
+        return (strike, insert);
+    }
+
     let mut dp = vec![vec![0usize; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -1922,22 +1963,17 @@ pub fn parse_sql_error_fix_response(
 fn edit_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
-    let mut dp = vec![vec![0usize; b_chars.len() + 1]; a_chars.len() + 1];
-    for (i, row) in dp.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, slot) in dp[0].iter_mut().enumerate().take(b_chars.len() + 1) {
-        *slot = j;
-    }
-    for i in 1..=a_chars.len() {
-        for j in 1..=b_chars.len() {
-            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
-            dp[i][j] = (dp[i - 1][j] + 1)
-                .min(dp[i][j - 1] + 1)
-                .min(dp[i - 1][j - 1] + cost);
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0usize; b_chars.len() + 1];
+    for (i, &ac) in a_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &bc) in b_chars.iter().enumerate() {
+            let cost = usize::from(ac != bc);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
         }
+        std::mem::swap(&mut prev, &mut curr);
     }
-    dp[a_chars.len()][b_chars.len()]
+    prev[b_chars.len()]
 }
 
 fn find_closest_name<'a>(
@@ -1945,9 +1981,14 @@ fn find_closest_name<'a>(
     candidates: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {
     let t_lower = target.to_ascii_lowercase();
-    let max_dist = if t_lower.len() <= 3 { 1 } else { 2 };
+    let t_len = t_lower.chars().count();
+    let max_dist = if t_len <= 3 { 1 } else { 2 };
     let mut best: Option<(usize, &str)> = None;
     for cand in candidates {
+        let c_len = cand.chars().count();
+        if t_len.abs_diff(c_len) > max_dist {
+            continue;
+        }
         let d = edit_distance(&t_lower, &cand.to_ascii_lowercase());
         if d > 0 && d <= max_dist && best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, cand));

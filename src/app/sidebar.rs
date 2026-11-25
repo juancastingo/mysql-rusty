@@ -1,5 +1,51 @@
 use super::*;
 
+fn format_sidebar_select_sql(
+    dialect: crate::dialect::Dialect,
+    db_name: &str,
+    table_name: &str,
+) -> String {
+    let target = match dialect {
+        crate::dialect::Dialect::MySql => dialect.quote_qualified(db_name, table_name),
+        crate::dialect::Dialect::Postgres => {
+            if let Some((schema, tbl)) = table_name.split_once('.') {
+                dialect.quote_qualified(schema, tbl)
+            } else {
+                dialect.quote_ident(table_name)
+            }
+        }
+        crate::dialect::Dialect::Sqlite => dialect.quote_ident(table_name),
+    };
+    format!("SELECT * FROM {target} LIMIT 100;")
+}
+
+fn format_sidebar_ddl_sql(
+    dialect: crate::dialect::Dialect,
+    db_name: &str,
+    table_name: &str,
+) -> String {
+    let escaped = table_name.replace('\'', "''");
+    match dialect {
+        crate::dialect::Dialect::MySql => {
+            format!(
+                "SHOW CREATE TABLE {};",
+                dialect.quote_qualified(db_name, table_name)
+            )
+        }
+        crate::dialect::Dialect::Sqlite => {
+            format!("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{escaped}';")
+        }
+        crate::dialect::Dialect::Postgres => {
+            let (schema, tbl) = table_name.split_once('.').unwrap_or(("public", table_name));
+            let s_esc = schema.replace('\'', "''");
+            let t_esc = tbl.replace('\'', "''");
+            format!(
+                "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = '{s_esc}' AND table_name = '{t_esc}' ORDER BY ordinal_position;"
+            )
+        }
+    }
+}
+
 impl MysqlRustyApp {
     pub(crate) fn render_left_sidebar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("left_sidebar")
@@ -256,15 +302,21 @@ impl MysqlRustyApp {
                                         {
                                             toggle_favorite_table = Some(table.name.clone());
                                         }
+                                        let active_dialect = self
+                                            .active_session
+                                            .as_ref()
+                                            .map(|s| s.dialect())
+                                            .unwrap_or(crate::dialect::Dialect::MySql);
                                         if ui
                                             .small_button("SELECT *")
                                             .on_hover_text("Preview first 100 rows")
                                             .clicked()
                                         {
                                             pending_sql_action = Some((
-                                                format!(
-                                                    "SELECT * FROM `{}`.`{}` LIMIT 100;",
-                                                    db_name, table.name
+                                                format_sidebar_select_sql(
+                                                    active_dialect,
+                                                    db_name,
+                                                    &table.name,
                                                 ),
                                                 true,
                                             ));
@@ -280,9 +332,10 @@ impl MysqlRustyApp {
                                         ui.menu_button("More ▾", |ui| {
                                             if ui.button("Show DDL").clicked() {
                                                 pending_sql_action = Some((
-                                                    format!(
-                                                        "SHOW CREATE TABLE `{}`.`{}`;",
-                                                        db_name, table.name
+                                                    format_sidebar_ddl_sql(
+                                                        active_dialect,
+                                                        db_name,
+                                                        &table.name,
                                                     ),
                                                     true,
                                                 ));
@@ -407,20 +460,32 @@ impl MysqlRustyApp {
 
                             tbl_resp.header_response.context_menu(|ui| {
                                 if ui.button("SELECT * LIMIT 100").clicked() {
+                                    let active_dialect = self
+                                        .active_session
+                                        .as_ref()
+                                        .map(|s| s.dialect())
+                                        .unwrap_or(crate::dialect::Dialect::MySql);
                                     pending_sql_action = Some((
-                                        format!(
-                                            "SELECT * FROM `{}`.`{}` LIMIT 100;",
-                                            db_name, table.name
+                                        format_sidebar_select_sql(
+                                            active_dialect,
+                                            db_name,
+                                            &table.name,
                                         ),
                                         true,
                                     ));
                                     ui.close();
                                 }
                                 if ui.button("Show DDL").clicked() {
+                                    let active_dialect = self
+                                        .active_session
+                                        .as_ref()
+                                        .map(|s| s.dialect())
+                                        .unwrap_or(crate::dialect::Dialect::MySql);
                                     pending_sql_action = Some((
-                                        format!(
-                                            "SHOW CREATE TABLE `{}`.`{}`;",
-                                            db_name, table.name
+                                        format_sidebar_ddl_sql(
+                                            active_dialect,
+                                            db_name,
+                                            &table.name,
                                         ),
                                         true,
                                     ));

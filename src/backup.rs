@@ -153,6 +153,7 @@ async fn run_backup_inner(
             let batch_size = opts.batch_rows.max(1);
             let mut total_rows = 0u64;
             let table_name = table.clone();
+            let mut cached_col_list: Option<String> = None;
             let result = session
                 .stream_rows(&opts.database, table, batch_size, |cols, rows| {
                     if cancel.load(Ordering::Relaxed) {
@@ -161,18 +162,25 @@ async fn run_backup_inner(
                     if rows.is_empty() {
                         return Ok(());
                     }
-                    let col_list = cols
-                        .iter()
-                        .map(|c| quote_ident(c))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let col_list = cached_col_list.get_or_insert_with(|| {
+                        cols.iter()
+                            .map(|c| quote_ident(c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    });
                     writeln!(writer, "INSERT INTO {q_table} ({col_list}) VALUES")?;
                     for (r_idx, row) in rows.iter().enumerate() {
-                        let vals = row.iter().map(sql_literal).collect::<Vec<_>>().join(", ");
+                        write!(writer, "  (")?;
+                        for (c_idx, cell) in row.iter().enumerate() {
+                            if c_idx > 0 {
+                                write!(writer, ", ")?;
+                            }
+                            write!(writer, "{}", sql_literal(cell))?;
+                        }
                         if r_idx + 1 == rows.len() {
-                            writeln!(writer, "  ({vals});")?;
+                            writeln!(writer, ");")?;
                         } else {
-                            writeln!(writer, "  ({vals}),")?;
+                            writeln!(writer, "),")?;
                         }
                     }
                     total_rows += rows.len() as u64;

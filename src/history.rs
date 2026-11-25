@@ -52,6 +52,7 @@ impl HistoryStore {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA busy_timeout=5000;
              CREATE TABLE IF NOT EXISTS query_history (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  ts TEXT NOT NULL,

@@ -50,7 +50,11 @@ pub fn find_matches(text: &str, opts: &FindOptions) -> Result<Vec<Range<usize>>,
 }
 
 pub fn replace_one(text: &str, m: Range<usize>, replacement: &str, opts: &FindOptions) -> String {
-    if m.start > m.end || m.end > text.len() {
+    if m.start > m.end
+        || m.end > text.len()
+        || !text.is_char_boundary(m.start)
+        || !text.is_char_boundary(m.end)
+    {
         return text.to_string();
     }
     let slice = &text[m.clone()];
@@ -233,5 +237,14 @@ mod tests {
         };
         let matches = find_matches(&text, &opts).unwrap();
         assert_eq!(matches.len(), 10_000);
+    }
+
+    #[test]
+    fn test_replace_one_invalid_utf8_boundary_does_not_panic() {
+        let text = "SELECT '🦀' FROM t";
+        let opts = FindOptions::default();
+        // Byte 9 is inside the 4-byte emoji; must return text unchanged rather than panic
+        let out = replace_one(text, 9..11, "x", &opts);
+        assert_eq!(out, text);
     }
 }

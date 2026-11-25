@@ -107,20 +107,44 @@ impl PgSessionState {
         }
         pg_cfg.dbname(db_name);
 
-        let mgr_cfg = ManagerConfig {
-            recycling_method: RecyclingMethod::Fast,
+        let build_pool = |use_tls: bool| -> Result<Pool> {
+            let mgr_cfg = ManagerConfig {
+                recycling_method: RecyclingMethod::Fast,
+            };
+            let mgr = if !use_tls {
+                Manager::from_config(pg_cfg.clone(), NoTls, mgr_cfg)
+            } else {
+                let effective_accept_invalid = match self.ssl_mode {
+                    SslMode::VerifyCa | SslMode::VerifyIdentity => false,
+                    _ => self.accept_invalid_certs,
+                };
+                let tls = build_rustls_connector(effective_accept_invalid);
+                Manager::from_config(pg_cfg.clone(), tls, mgr_cfg)
+            };
+            Pool::builder(mgr)
+                .max_size(8)
+                .runtime(Runtime::Tokio1)
+                .build()
+                .context("Failed to build PostgreSQL pool")
         };
-        let mgr = if self.ssl_mode == SslMode::Disabled {
-            Manager::from_config(pg_cfg, NoTls, mgr_cfg)
-        } else {
-            let tls = build_rustls_connector(self.accept_invalid_certs);
-            Manager::from_config(pg_cfg, tls, mgr_cfg)
+
+        let pool = match self.ssl_mode {
+            SslMode::Disabled => build_pool(false)?,
+            SslMode::Preferred => {
+                let tls_pool = build_pool(true)?;
+                match tls_pool.get().await {
+                    Ok(_) => tls_pool,
+                    Err(tls_err) => {
+                        tracing::warn!(
+                            error = %tls_err,
+                            "PostgreSQL TLS connection failed under SslMode::Preferred, falling back to NoTls"
+                        );
+                        build_pool(false)?
+                    }
+                }
+            }
+            SslMode::Required | SslMode::VerifyCa | SslMode::VerifyIdentity => build_pool(true)?,
         };
-        let pool = Pool::builder(mgr)
-            .max_size(8)
-            .runtime(Runtime::Tokio1)
-            .build()
-            .context("Failed to build PostgreSQL pool")?;
         pools.insert(db_name.to_string(), pool.clone());
         Ok(pool)
     }
@@ -131,6 +155,18 @@ impl PgSessionState {
             .await
             .context("Failed to acquire PostgreSQL connection")
     }
+}
+
+pub async fn ping(pg: &PgSessionState) -> Result<()> {
+    if let Some(guard) = &pg._ssh_guard {
+        let mut locked = guard
+            .lock()
+            .map_err(|_| anyhow!("SSH tunnel mutex poisoned"))?;
+        locked.check_alive()?;
+    }
+    let client = pg.default_client().await?;
+    client.simple_query("SELECT 1").await?;
+    Ok(())
 }
 
 pub async fn connect_postgres(
@@ -409,7 +445,11 @@ pub async fn apply_cell_edits(
 ) -> Result<u64> {
     let pool = pg.pool_for_db(database).await?;
     let client = pool.get().await?;
-    let q_tbl = Dialect::Postgres.quote_ident(table);
+    let q_tbl = if let Some((schema, tbl)) = table.split_once('.') {
+        Dialect::Postgres.quote_qualified(schema, tbl)
+    } else {
+        Dialect::Postgres.quote_ident(table)
+    };
     let mut total = 0u64;
     for edit in edits {
         let q_col = Dialect::Postgres.quote_ident(&edit.column_name);
