@@ -92,7 +92,11 @@ impl Palette {
         let (fg, bg, border) = if selected {
             (self.accent_text, self.accent_bg, self.border_active)
         } else {
-            (self.text_secondary, self.tab_inactive_bg, self.border_subtle)
+            (
+                self.text_secondary,
+                self.tab_inactive_bg,
+                self.border_subtle,
+            )
         };
         let mut rt = RichText::new(text.into()).size(11.5).color(fg);
         if selected {
@@ -293,12 +297,12 @@ pub fn nord_palette() -> Palette {
         punctuation: Color32::from_rgb(180, 190, 208),
 
         // Semantic accent & status
-        accent: Color32::from_rgb(136, 192, 208),      // Nord8
+        accent: Color32::from_rgb(136, 192, 208), // Nord8
         accent_bg: Color32::from_rgb(44, 62, 78),
         accent_text: Color32::from_rgb(168, 218, 232),
-        success: Color32::from_rgb(163, 190, 140),     // Nord14
+        success: Color32::from_rgb(163, 190, 140), // Nord14
         success_bg: Color32::from_rgb(40, 58, 44),
-        warning: Color32::from_rgb(235, 203, 139),     // Nord13
+        warning: Color32::from_rgb(235, 203, 139), // Nord13
         warning_bg: Color32::from_rgb(72, 60, 34),
         danger: Color32::from_rgb(235, 130, 140),
         danger_bg: Color32::from_rgb(76, 34, 40),
@@ -307,12 +311,12 @@ pub fn nord_palette() -> Palette {
 
         // Surfaces & borders (Nord Polar Night)
         window_bg: Color32::from_rgb(38, 43, 54),
-        panel_bg: Color32::from_rgb(46, 52, 64),       // Nord0
+        panel_bg: Color32::from_rgb(46, 52, 64), // Nord0
         editor_bg: Color32::from_rgb(35, 40, 50),
         surface_bg: Color32::from_rgb(52, 59, 73),
-        card_bg: Color32::from_rgb(59, 66, 82),        // Nord1
-        card_hover_bg: Color32::from_rgb(67, 76, 94),  // Nord2
-        card_border: Color32::from_rgb(76, 86, 106),   // Nord3
+        card_bg: Color32::from_rgb(59, 66, 82),       // Nord1
+        card_hover_bg: Color32::from_rgb(67, 76, 94), // Nord2
+        card_border: Color32::from_rgb(76, 86, 106),  // Nord3
         border_subtle: Color32::from_rgb(67, 76, 94),
         border_active: Color32::from_rgb(136, 192, 208),
 
@@ -338,18 +342,18 @@ pub fn dracula_palette() -> Palette {
         is_dark: true,
 
         // Syntax highlighting (Dracula)
-        keyword: Color32::from_rgb(255, 121, 198),  // Pink
-        function: Color32::from_rgb(80, 250, 123),  // Green
-        type_: Color32::from_rgb(139, 233, 253),    // Cyan
-        string: Color32::from_rgb(241, 250, 140),   // Yellow
-        number: Color32::from_rgb(189, 147, 249),   // Purple
+        keyword: Color32::from_rgb(255, 121, 198), // Pink
+        function: Color32::from_rgb(80, 250, 123), // Green
+        type_: Color32::from_rgb(139, 233, 253),   // Cyan
+        string: Color32::from_rgb(241, 250, 140),  // Yellow
+        number: Color32::from_rgb(189, 147, 249),  // Purple
         comment: Color32::from_rgb(122, 134, 174),
         operator: Color32::from_rgb(255, 121, 198),
         identifier: Color32::from_rgb(248, 248, 242),
         punctuation: Color32::from_rgb(188, 194, 214),
 
         // Semantic accent & status
-        accent: Color32::from_rgb(189, 147, 249),      // Purple
+        accent: Color32::from_rgb(189, 147, 249), // Purple
         accent_bg: Color32::from_rgb(56, 44, 82),
         accent_text: Color32::from_rgb(212, 184, 255),
         success: Color32::from_rgb(80, 250, 123),
@@ -405,27 +409,27 @@ pub fn catppuccin_palette() -> Palette {
         punctuation: Color32::from_rgb(147, 153, 178), // Overlay2
 
         // Semantic accent & status
-        accent: Color32::from_rgb(137, 180, 250),      // Blue
+        accent: Color32::from_rgb(137, 180, 250), // Blue
         accent_bg: Color32::from_rgb(36, 48, 74),
         accent_text: Color32::from_rgb(166, 200, 255),
-        success: Color32::from_rgb(166, 227, 161),     // Green
+        success: Color32::from_rgb(166, 227, 161), // Green
         success_bg: Color32::from_rgb(30, 58, 40),
-        warning: Color32::from_rgb(249, 226, 175),     // Yellow
+        warning: Color32::from_rgb(249, 226, 175), // Yellow
         warning_bg: Color32::from_rgb(68, 56, 30),
-        danger: Color32::from_rgb(243, 139, 168),      // Red
+        danger: Color32::from_rgb(243, 139, 168), // Red
         danger_bg: Color32::from_rgb(72, 28, 42),
-        purple: Color32::from_rgb(203, 166, 247),      // Mauve
+        purple: Color32::from_rgb(203, 166, 247), // Mauve
         purple_bg: Color32::from_rgb(56, 38, 76),
 
         // Surfaces & borders (Catppuccin Mocha Crust/Mantle/Base/Surface0)
-        window_bg: Color32::from_rgb(17, 17, 27),      // Crust
-        panel_bg: Color32::from_rgb(24, 24, 37),       // Mantle
-        editor_bg: Color32::from_rgb(17, 17, 27),      // Crust
+        window_bg: Color32::from_rgb(17, 17, 27), // Crust
+        panel_bg: Color32::from_rgb(24, 24, 37),  // Mantle
+        editor_bg: Color32::from_rgb(17, 17, 27), // Crust
         surface_bg: Color32::from_rgb(27, 27, 42),
-        card_bg: Color32::from_rgb(30, 30, 46),        // Base
-        card_hover_bg: Color32::from_rgb(49, 50, 68),  // Surface0
-        card_border: Color32::from_rgb(69, 71, 90),    // Surface1
-        border_subtle: Color32::from_rgb(49, 50, 68),  // Surface0
+        card_bg: Color32::from_rgb(30, 30, 46),       // Base
+        card_hover_bg: Color32::from_rgb(49, 50, 68), // Surface0
+        card_border: Color32::from_rgb(69, 71, 90),   // Surface1
+        border_subtle: Color32::from_rgb(49, 50, 68), // Surface0
         border_active: Color32::from_rgb(137, 180, 250),
 
         // Text
@@ -478,7 +482,7 @@ pub fn light_palette() -> Palette {
         panel_bg: Color32::from_rgb(248, 250, 252), // Slate 50
         editor_bg: Color32::from_rgb(255, 255, 255),
         surface_bg: Color32::from_rgb(241, 245, 249), // Slate 100
-        card_bg: Color32::from_rgb(255, 255, 255),  // White
+        card_bg: Color32::from_rgb(255, 255, 255),    // White
         card_hover_bg: Color32::from_rgb(241, 245, 249),
         card_border: Color32::from_rgb(203, 213, 225), // Slate 300
         border_subtle: Color32::from_rgb(226, 232, 240), // Slate 200

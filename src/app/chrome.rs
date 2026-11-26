@@ -639,7 +639,9 @@ impl MysqlRustyApp {
                                 )
                                 .frame(false),
                             )
-                            .on_hover_text("Click to cycle UI density (Compact / Comfortable / Spacious)")
+                            .on_hover_text(
+                                "Click to cycle UI density (Compact / Comfortable / Spacious)",
+                            )
                             .clicked()
                         {
                             self.config.ui.density = self.config.ui.density.next();

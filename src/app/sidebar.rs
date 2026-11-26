@@ -61,7 +61,10 @@ impl MysqlRustyApp {
                     for (tab, label) in [
                         (SidebarTab::Schema, rust_i18n::t!("sidebar.schema")),
                         (SidebarTab::Connections, rust_i18n::t!("sidebar.servers")),
-                        (SidebarTab::SavedQueries, rust_i18n::t!("sidebar.saved_queries")),
+                        (
+                            SidebarTab::SavedQueries,
+                            rust_i18n::t!("sidebar.saved_queries"),
+                        ),
                         (SidebarTab::History, rust_i18n::t!("sidebar.history")),
                     ] {
                         let is_sel = self.sidebar_tab == tab;

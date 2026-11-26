@@ -436,12 +436,7 @@ impl MysqlRustyApp {
                             pal.dialect_badge(ui, prof.dialect);
                             let (er, eg, eb) = prof.environment.color_rgb();
                             let (env_fg, env_bg) = pal.env_badge_colors(er, eg, eb);
-                            pal.badge(
-                                ui,
-                                &prof.environment.label().to_uppercase(),
-                                env_fg,
-                                env_bg,
-                            );
+                            pal.badge(ui, &prof.environment.label().to_uppercase(), env_fg, env_bg);
                             if is_demo {
                                 pal.badge(ui, "SANDBOX", pal.success, pal.success_bg);
                             }
@@ -546,42 +541,39 @@ impl MysqlRustyApp {
                     });
 
                     if !compact_grid {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                let connect_btn = if is_demo {
-                                    egui::Button::new(
-                                        RichText::new("Connect")
-                                            .size(13.0)
-                                            .color(Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(Color32::from_rgb(5, 150, 105))
-                                    .corner_radius(egui::CornerRadius::same(6))
-                                } else {
-                                    pal.primary_button("Connect")
-                                };
-                                if ui.add(connect_btn).clicked() {
-                                    *to_connect = Some(prof.clone());
-                                }
-                                if ui.button("Edit").clicked() {
-                                    *to_edit = Some(prof.clone());
-                                }
-                                if ui
-                                    .button("Clone")
-                                    .on_hover_text("Duplicate connection profile")
-                                    .clicked()
-                                {
-                                    *to_duplicate = Some(prof.clone());
-                                }
-                                if ui
-                                    .button(RichText::new("Delete").color(pal.danger))
-                                    .clicked()
-                                {
-                                    *to_delete = Some(prof.id.clone());
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let connect_btn = if is_demo {
+                                egui::Button::new(
+                                    RichText::new("Connect")
+                                        .size(13.0)
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(Color32::from_rgb(5, 150, 105))
+                                .corner_radius(egui::CornerRadius::same(6))
+                            } else {
+                                pal.primary_button("Connect")
+                            };
+                            if ui.add(connect_btn).clicked() {
+                                *to_connect = Some(prof.clone());
+                            }
+                            if ui.button("Edit").clicked() {
+                                *to_edit = Some(prof.clone());
+                            }
+                            if ui
+                                .button("Clone")
+                                .on_hover_text("Duplicate connection profile")
+                                .clicked()
+                            {
+                                *to_duplicate = Some(prof.clone());
+                            }
+                            if ui
+                                .button(RichText::new("Delete").color(pal.danger))
+                                .clicked()
+                            {
+                                *to_delete = Some(prof.id.clone());
+                            }
+                        });
                     }
 
                     (bar_x, bar_top)
@@ -593,11 +585,8 @@ impl MysqlRustyApp {
                     egui::pos2(bar_x, bar_top),
                     egui::pos2(bar_x + 4.0, bar_bottom.max(bar_top + 40.0)),
                 );
-                ui.painter().rect_filled(
-                    bar_rect,
-                    egui::CornerRadius::same(2),
-                    card_accent,
-                );
+                ui.painter()
+                    .rect_filled(bar_rect, egui::CornerRadius::same(2), card_accent);
             });
 
         let hovered = frame_resp.response.hovered();
