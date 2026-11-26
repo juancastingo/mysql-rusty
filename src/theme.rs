@@ -30,7 +30,9 @@ pub struct Palette {
     pub purple_bg: Color32,
 
     // Surface & border tokens
+    pub window_bg: Color32,
     pub panel_bg: Color32,
+    pub editor_bg: Color32,
     pub surface_bg: Color32,
     pub card_bg: Color32,
     pub card_hover_bg: Color32,
@@ -49,6 +51,7 @@ pub struct Palette {
     pub badge_bg: Color32,
     pub null_badge_bg: Color32,
     pub row_selected_bg: Color32,
+    pub row_hover_bg: Color32,
     pub row_delete_bg: Color32,
     pub cell_edited_bg: Color32,
 }
@@ -83,6 +86,49 @@ impl Palette {
             .fill(self.card_bg)
             .stroke(Stroke::new(1.0, self.card_border))
             .corner_radius(CornerRadius::same(6))
+    }
+
+    pub fn pill_button(&self, text: impl Into<String>, selected: bool) -> egui::Button<'static> {
+        let (fg, bg, border) = if selected {
+            (self.accent_text, self.accent_bg, self.border_active)
+        } else {
+            (self.text_secondary, self.tab_inactive_bg, self.border_subtle)
+        };
+        let mut rt = RichText::new(text.into()).size(11.5).color(fg);
+        if selected {
+            rt = rt.strong();
+        }
+        egui::Button::new(rt)
+            .fill(bg)
+            .stroke(Stroke::new(1.0, border))
+            .corner_radius(CornerRadius::same(12))
+    }
+
+    pub fn icon_toggle_button(
+        &self,
+        icon: impl Into<String>,
+        active: bool,
+    ) -> egui::Button<'static> {
+        let (fg, bg, border) = if active {
+            (self.accent_text, self.accent_bg, self.border_active)
+        } else {
+            (self.text_secondary, self.card_bg, self.card_border)
+        };
+        egui::Button::new(RichText::new(icon.into()).size(13.0).color(fg))
+            .fill(bg)
+            .stroke(Stroke::new(1.0, border))
+            .corner_radius(CornerRadius::same(6))
+    }
+
+    pub fn section_header(&self, ui: &mut egui::Ui, title: &str) {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(title.to_uppercase())
+                .size(10.5)
+                .strong()
+                .color(self.muted_text),
+        );
+        ui.add_space(2.0);
     }
 
     pub fn card_frame(&self) -> egui::Frame {
@@ -120,6 +166,26 @@ impl Palette {
             });
     }
 
+    pub fn micro_badge(&self, ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
+        egui::Frame::new()
+            .fill(bg)
+            .stroke(Stroke::new(1.0, fg.gamma_multiply(0.35)))
+            .corner_radius(CornerRadius::same(3))
+            .inner_margin(Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                ui.label(RichText::new(text).size(9.5).strong().monospace().color(fg));
+            });
+    }
+
+    pub fn dialect_badge(&self, ui: &mut egui::Ui, dialect: crate::dialect::Dialect) {
+        let (label, fg, bg) = match dialect {
+            crate::dialect::Dialect::MySql => ("MySQL", self.accent_text, self.accent_bg),
+            crate::dialect::Dialect::Postgres => ("PostgreSQL", self.purple, self.purple_bg),
+            crate::dialect::Dialect::Sqlite => ("SQLite", self.success, self.success_bg),
+        };
+        self.badge(ui, label, fg, bg);
+    }
+
     pub fn env_badge_colors(&self, r: u8, g: u8, b: u8) -> (Color32, Color32) {
         if self.is_dark {
             (
@@ -140,6 +206,18 @@ impl Palette {
             );
             (fg, bg)
         }
+    }
+}
+
+pub fn palette_for(is_dark: bool, preset: crate::config::DarkThemePreset) -> Palette {
+    if !is_dark {
+        return light_palette();
+    }
+    match preset {
+        crate::config::DarkThemePreset::Obsidian => dark_palette(),
+        crate::config::DarkThemePreset::Nord => nord_palette(),
+        crate::config::DarkThemePreset::Dracula => dracula_palette(),
+        crate::config::DarkThemePreset::Catppuccin => catppuccin_palette(),
     }
 }
 
@@ -172,7 +250,9 @@ pub fn dark_palette() -> Palette {
         purple_bg: Color32::from_rgb(59, 7, 100), // Purple 950
 
         // Surfaces & borders
+        window_bg: Color32::from_rgb(11, 15, 23),
         panel_bg: Color32::from_rgb(13, 18, 28),
+        editor_bg: Color32::from_rgb(8, 11, 17),
         surface_bg: Color32::from_rgb(15, 21, 32),
         card_bg: Color32::from_rgb(19, 26, 40),
         card_hover_bg: Color32::from_rgb(26, 36, 54),
@@ -191,8 +271,177 @@ pub fn dark_palette() -> Palette {
         badge_bg: Color32::from_rgb(24, 34, 52),
         null_badge_bg: Color32::from_rgb(24, 32, 48),
         row_selected_bg: Color32::from_rgba_unmultiplied(14, 116, 144, 55),
+        row_hover_bg: Color32::from_rgba_unmultiplied(56, 189, 248, 22),
         row_delete_bg: Color32::from_rgba_unmultiplied(185, 28, 28, 65),
         cell_edited_bg: Color32::from_rgba_unmultiplied(217, 119, 6, 55),
+    }
+}
+
+pub fn nord_palette() -> Palette {
+    Palette {
+        is_dark: true,
+
+        // Syntax highlighting (Nord Frost & Aurora)
+        keyword: Color32::from_rgb(129, 161, 193),  // Nord9
+        function: Color32::from_rgb(136, 192, 208), // Nord8
+        type_: Color32::from_rgb(143, 188, 187),    // Nord7
+        string: Color32::from_rgb(163, 190, 140),   // Nord14
+        number: Color32::from_rgb(208, 135, 112),   // Nord12
+        comment: Color32::from_rgb(124, 136, 158),
+        operator: Color32::from_rgb(180, 190, 208),
+        identifier: Color32::from_rgb(229, 233, 240), // Nord5
+        punctuation: Color32::from_rgb(180, 190, 208),
+
+        // Semantic accent & status
+        accent: Color32::from_rgb(136, 192, 208),      // Nord8
+        accent_bg: Color32::from_rgb(44, 62, 78),
+        accent_text: Color32::from_rgb(168, 218, 232),
+        success: Color32::from_rgb(163, 190, 140),     // Nord14
+        success_bg: Color32::from_rgb(40, 58, 44),
+        warning: Color32::from_rgb(235, 203, 139),     // Nord13
+        warning_bg: Color32::from_rgb(72, 60, 34),
+        danger: Color32::from_rgb(235, 130, 140),
+        danger_bg: Color32::from_rgb(76, 34, 40),
+        purple: Color32::from_rgb(198, 160, 206),
+        purple_bg: Color32::from_rgb(64, 46, 72),
+
+        // Surfaces & borders (Nord Polar Night)
+        window_bg: Color32::from_rgb(38, 43, 54),
+        panel_bg: Color32::from_rgb(46, 52, 64),       // Nord0
+        editor_bg: Color32::from_rgb(35, 40, 50),
+        surface_bg: Color32::from_rgb(52, 59, 73),
+        card_bg: Color32::from_rgb(59, 66, 82),        // Nord1
+        card_hover_bg: Color32::from_rgb(67, 76, 94),  // Nord2
+        card_border: Color32::from_rgb(76, 86, 106),   // Nord3
+        border_subtle: Color32::from_rgb(67, 76, 94),
+        border_active: Color32::from_rgb(136, 192, 208),
+
+        // Text (Nord Snow Storm)
+        text_primary: Color32::from_rgb(236, 239, 244), // Nord6
+        text_secondary: Color32::from_rgb(216, 222, 233), // Nord4
+        muted_text: Color32::from_rgb(152, 164, 184),
+
+        // Chrome, tabs & grid
+        tab_active_bg: Color32::from_rgb(44, 62, 78),
+        tab_inactive_bg: Color32::from_rgb(50, 56, 70),
+        badge_bg: Color32::from_rgb(67, 76, 94),
+        null_badge_bg: Color32::from_rgb(64, 72, 88),
+        row_selected_bg: Color32::from_rgba_unmultiplied(136, 192, 208, 48),
+        row_hover_bg: Color32::from_rgba_unmultiplied(136, 192, 208, 20),
+        row_delete_bg: Color32::from_rgba_unmultiplied(191, 97, 106, 65),
+        cell_edited_bg: Color32::from_rgba_unmultiplied(235, 203, 139, 48),
+    }
+}
+
+pub fn dracula_palette() -> Palette {
+    Palette {
+        is_dark: true,
+
+        // Syntax highlighting (Dracula)
+        keyword: Color32::from_rgb(255, 121, 198),  // Pink
+        function: Color32::from_rgb(80, 250, 123),  // Green
+        type_: Color32::from_rgb(139, 233, 253),    // Cyan
+        string: Color32::from_rgb(241, 250, 140),   // Yellow
+        number: Color32::from_rgb(189, 147, 249),   // Purple
+        comment: Color32::from_rgb(122, 134, 174),
+        operator: Color32::from_rgb(255, 121, 198),
+        identifier: Color32::from_rgb(248, 248, 242),
+        punctuation: Color32::from_rgb(188, 194, 214),
+
+        // Semantic accent & status
+        accent: Color32::from_rgb(189, 147, 249),      // Purple
+        accent_bg: Color32::from_rgb(56, 44, 82),
+        accent_text: Color32::from_rgb(212, 184, 255),
+        success: Color32::from_rgb(80, 250, 123),
+        success_bg: Color32::from_rgb(22, 64, 38),
+        warning: Color32::from_rgb(255, 184, 108),
+        warning_bg: Color32::from_rgb(74, 50, 24),
+        danger: Color32::from_rgb(255, 110, 110),
+        danger_bg: Color32::from_rgb(78, 22, 28),
+        purple: Color32::from_rgb(255, 121, 198),
+        purple_bg: Color32::from_rgb(74, 28, 58),
+
+        // Surfaces & borders
+        window_bg: Color32::from_rgb(28, 29, 38),
+        panel_bg: Color32::from_rgb(33, 34, 44),
+        editor_bg: Color32::from_rgb(24, 25, 34),
+        surface_bg: Color32::from_rgb(37, 39, 50),
+        card_bg: Color32::from_rgb(40, 42, 54),
+        card_hover_bg: Color32::from_rgb(50, 53, 68),
+        card_border: Color32::from_rgb(68, 71, 90),
+        border_subtle: Color32::from_rgb(55, 58, 74),
+        border_active: Color32::from_rgb(189, 147, 249),
+
+        // Text
+        text_primary: Color32::from_rgb(248, 248, 242),
+        text_secondary: Color32::from_rgb(214, 218, 232),
+        muted_text: Color32::from_rgb(154, 162, 194),
+
+        // Chrome, tabs & grid
+        tab_active_bg: Color32::from_rgb(56, 44, 82),
+        tab_inactive_bg: Color32::from_rgb(36, 38, 49),
+        badge_bg: Color32::from_rgb(54, 57, 74),
+        null_badge_bg: Color32::from_rgb(50, 53, 68),
+        row_selected_bg: Color32::from_rgba_unmultiplied(189, 147, 249, 48),
+        row_hover_bg: Color32::from_rgba_unmultiplied(189, 147, 249, 22),
+        row_delete_bg: Color32::from_rgba_unmultiplied(255, 85, 85, 60),
+        cell_edited_bg: Color32::from_rgba_unmultiplied(255, 184, 108, 48),
+    }
+}
+
+pub fn catppuccin_palette() -> Palette {
+    Palette {
+        is_dark: true,
+
+        // Syntax highlighting (Catppuccin Mocha)
+        keyword: Color32::from_rgb(203, 166, 247),  // Mauve
+        function: Color32::from_rgb(137, 180, 250), // Blue
+        type_: Color32::from_rgb(148, 226, 213),    // Teal
+        string: Color32::from_rgb(166, 227, 161),   // Green
+        number: Color32::from_rgb(250, 179, 135),   // Peach
+        comment: Color32::from_rgb(127, 132, 156),  // Overlay1
+        operator: Color32::from_rgb(137, 220, 235), // Sky
+        identifier: Color32::from_rgb(205, 214, 244), // Text
+        punctuation: Color32::from_rgb(147, 153, 178), // Overlay2
+
+        // Semantic accent & status
+        accent: Color32::from_rgb(137, 180, 250),      // Blue
+        accent_bg: Color32::from_rgb(36, 48, 74),
+        accent_text: Color32::from_rgb(166, 200, 255),
+        success: Color32::from_rgb(166, 227, 161),     // Green
+        success_bg: Color32::from_rgb(30, 58, 40),
+        warning: Color32::from_rgb(249, 226, 175),     // Yellow
+        warning_bg: Color32::from_rgb(68, 56, 30),
+        danger: Color32::from_rgb(243, 139, 168),      // Red
+        danger_bg: Color32::from_rgb(72, 28, 42),
+        purple: Color32::from_rgb(203, 166, 247),      // Mauve
+        purple_bg: Color32::from_rgb(56, 38, 76),
+
+        // Surfaces & borders (Catppuccin Mocha Crust/Mantle/Base/Surface0)
+        window_bg: Color32::from_rgb(17, 17, 27),      // Crust
+        panel_bg: Color32::from_rgb(24, 24, 37),       // Mantle
+        editor_bg: Color32::from_rgb(17, 17, 27),      // Crust
+        surface_bg: Color32::from_rgb(27, 27, 42),
+        card_bg: Color32::from_rgb(30, 30, 46),        // Base
+        card_hover_bg: Color32::from_rgb(49, 50, 68),  // Surface0
+        card_border: Color32::from_rgb(69, 71, 90),    // Surface1
+        border_subtle: Color32::from_rgb(49, 50, 68),  // Surface0
+        border_active: Color32::from_rgb(137, 180, 250),
+
+        // Text
+        text_primary: Color32::from_rgb(205, 214, 244), // Text
+        text_secondary: Color32::from_rgb(186, 194, 222), // Subtext1
+        muted_text: Color32::from_rgb(147, 153, 178),   // Overlay2
+
+        // Chrome, tabs & grid
+        tab_active_bg: Color32::from_rgb(36, 48, 74),
+        tab_inactive_bg: Color32::from_rgb(26, 26, 40),
+        badge_bg: Color32::from_rgb(49, 50, 68),
+        null_badge_bg: Color32::from_rgb(44, 46, 62),
+        row_selected_bg: Color32::from_rgba_unmultiplied(137, 180, 250, 48),
+        row_hover_bg: Color32::from_rgba_unmultiplied(137, 180, 250, 22),
+        row_delete_bg: Color32::from_rgba_unmultiplied(243, 139, 168, 55),
+        cell_edited_bg: Color32::from_rgba_unmultiplied(249, 226, 175, 45),
     }
 }
 
@@ -225,7 +474,9 @@ pub fn light_palette() -> Palette {
         purple_bg: Color32::from_rgb(243, 232, 255), // Purple 100
 
         // Surfaces & borders
+        window_bg: Color32::from_rgb(255, 255, 255),
         panel_bg: Color32::from_rgb(248, 250, 252), // Slate 50
+        editor_bg: Color32::from_rgb(255, 255, 255),
         surface_bg: Color32::from_rgb(241, 245, 249), // Slate 100
         card_bg: Color32::from_rgb(255, 255, 255),  // White
         card_hover_bg: Color32::from_rgb(241, 245, 249),
@@ -244,6 +495,7 @@ pub fn light_palette() -> Palette {
         badge_bg: Color32::from_rgb(226, 232, 240),      // Slate 200
         null_badge_bg: Color32::from_rgb(226, 232, 240),
         row_selected_bg: Color32::from_rgba_unmultiplied(14, 165, 233, 38),
+        row_hover_bg: Color32::from_rgba_unmultiplied(2, 132, 199, 18),
         row_delete_bg: Color32::from_rgba_unmultiplied(220, 38, 38, 35),
         cell_edited_bg: Color32::from_rgba_unmultiplied(234, 179, 8, 55),
     }
@@ -273,37 +525,44 @@ mod tests {
     }
 
     #[test]
-    fn dark_and_light_palettes_have_accessible_text_contrast() {
-        for pal in [dark_palette(), light_palette()] {
+    fn all_palettes_have_accessible_text_contrast() {
+        let palettes = [
+            ("Obsidian", dark_palette()),
+            ("Nord", nord_palette()),
+            ("Dracula", dracula_palette()),
+            ("Catppuccin", catppuccin_palette()),
+            ("Light", light_palette()),
+        ];
+        for (name, pal) in palettes {
             assert!(
                 contrast_ratio(pal.text_primary, pal.card_bg) >= 7.0,
-                "text_primary contrast on card_bg should be >= 7:1 (is_dark={})",
-                pal.is_dark
+                "{name}: text_primary contrast on card_bg should be >= 7:1 (got {:.2})",
+                contrast_ratio(pal.text_primary, pal.card_bg)
             );
             assert!(
                 contrast_ratio(pal.text_secondary, pal.card_bg) >= 4.5,
-                "text_secondary contrast on card_bg should be >= 4.5:1 (is_dark={})",
-                pal.is_dark
+                "{name}: text_secondary contrast on card_bg should be >= 4.5:1 (got {:.2})",
+                contrast_ratio(pal.text_secondary, pal.card_bg)
             );
             assert!(
                 contrast_ratio(pal.accent_text, pal.card_bg) >= 4.5,
-                "accent_text contrast on card_bg should be >= 4.5:1 (is_dark={})",
-                pal.is_dark
+                "{name}: accent_text contrast on card_bg should be >= 4.5:1 (got {:.2})",
+                contrast_ratio(pal.accent_text, pal.card_bg)
             );
             assert!(
                 contrast_ratio(pal.danger, pal.danger_bg) >= 4.5,
-                "danger contrast on danger_bg should be >= 4.5:1 (is_dark={})",
-                pal.is_dark
+                "{name}: danger contrast on danger_bg should be >= 4.5:1 (got {:.2})",
+                contrast_ratio(pal.danger, pal.danger_bg)
             );
             assert!(
                 contrast_ratio(pal.warning, pal.warning_bg) >= 4.5,
-                "warning contrast on warning_bg should be >= 4.5:1 (is_dark={})",
-                pal.is_dark
+                "{name}: warning contrast on warning_bg should be >= 4.5:1 (got {:.2})",
+                contrast_ratio(pal.warning, pal.warning_bg)
             );
             assert!(
                 contrast_ratio(pal.success, pal.success_bg) >= 4.5,
-                "success contrast on success_bg should be >= 4.5:1 (is_dark={})",
-                pal.is_dark
+                "{name}: success contrast on success_bg should be >= 4.5:1 (got {:.2})",
+                contrast_ratio(pal.success, pal.success_bg)
             );
         }
     }

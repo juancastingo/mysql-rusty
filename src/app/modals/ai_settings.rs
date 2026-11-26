@@ -318,25 +318,82 @@ impl MysqlRustyApp {
                         });
                         ui.horizontal(|ui| {
                             ui.label(rust_i18n::t!("settings.theme"));
-                            egui::ComboBox::from_id_salt("settings_theme_combo")
-                                .selected_text(self.config.ui.theme.label())
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.config.ui.theme,
-                                        crate::config::ThemePreference::Dark,
-                                        "Dark",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.config.ui.theme,
-                                        crate::config::ThemePreference::Light,
-                                        "Light",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.config.ui.theme,
-                                        crate::config::ThemePreference::System,
-                                        "Follow System",
-                                    );
-                                });
+                            for pref in [
+                                crate::config::ThemePreference::Dark,
+                                crate::config::ThemePreference::Light,
+                                crate::config::ThemePreference::System,
+                            ] {
+                                let sel = self.config.ui.theme == pref;
+                                if ui.add(pal.pill_button(pref.label(), sel)).clicked() {
+                                    self.config.ui.theme = pref;
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        pal.section_header(ui, "Dark Theme Preset");
+                        ui.horizontal_wrapped(|ui| {
+                            for preset in crate::config::DarkThemePreset::all() {
+                                let sel = self.config.ui.dark_preset == preset;
+                                let swatches = preset.preview_swatches();
+                                let frame = egui::Frame::new()
+                                    .fill(if sel { pal.accent_bg } else { pal.card_bg })
+                                    .stroke(Stroke::new(
+                                        if sel { 1.5 } else { 1.0 },
+                                        if sel {
+                                            pal.border_active
+                                        } else {
+                                            pal.card_border
+                                        },
+                                    ))
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(8, 5));
+                                let resp = frame
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                            for (r, g, b) in swatches {
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    egui::vec2(10.0, 10.0),
+                                                    egui::Sense::hover(),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    rect.center(),
+                                                    4.5,
+                                                    Color32::from_rgb(r, g, b),
+                                                );
+                                            }
+                                            ui.add_space(3.0);
+                                            ui.label(
+                                                RichText::new(preset.label())
+                                                    .size(11.5)
+                                                    .color(if sel {
+                                                        pal.accent_text
+                                                    } else {
+                                                        pal.text_primary
+                                                    }),
+                                            );
+                                        });
+                                    })
+                                    .response
+                                    .interact(egui::Sense::click());
+                                if resp.clicked() {
+                                    self.config.ui.dark_preset = preset;
+                                    if self.config.ui.theme == crate::config::ThemePreference::Light
+                                    {
+                                        self.config.ui.theme = crate::config::ThemePreference::Dark;
+                                    }
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("UI Density:");
+                            for density in crate::config::UiDensity::all() {
+                                let sel = self.config.ui.density == density;
+                                if ui.add(pal.pill_button(density.label(), sel)).clicked() {
+                                    self.config.ui.density = density;
+                                }
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.label(rust_i18n::t!("settings.ui_scale"));
@@ -354,6 +411,10 @@ impl MysqlRustyApp {
                                     .suffix(" px"),
                             );
                         });
+                        ui.checkbox(
+                            &mut self.config.ui.show_line_numbers,
+                            "Show line numbers gutter in SQL editor",
+                        );
                     });
 
                 ui.separator();

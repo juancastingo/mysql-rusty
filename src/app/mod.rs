@@ -261,7 +261,16 @@ pub struct MysqlRustyApp {
     user_form_expire: bool,
 
     // UI Theme & Scale (#26)
-    last_applied_theme: Option<egui::Theme>,
+    last_applied_theme: Option<(
+        egui::Theme,
+        crate::config::DarkThemePreset,
+        crate::config::UiDensity,
+    )>,
+    show_sidebar: bool,
+    zen_mode: bool,
+    dashboard_search: String,
+    dashboard_env_filter: Option<Environment>,
+    dashboard_favorites_only: bool,
 
     // Keyboard Shortcuts (#27)
     keymap: crate::shortcuts::Keymap,
@@ -411,6 +420,11 @@ impl MysqlRustyApp {
             qps_history: Vec::new(),
             threads_history: Vec::new(),
             last_applied_theme: None,
+            show_sidebar: true,
+            zen_mode: false,
+            dashboard_search: String::new(),
+            dashboard_env_filter: None,
+            dashboard_favorites_only: false,
             keymap,
             show_shortcuts_modal: false,
             shortcuts_filter: String::new(),
@@ -583,12 +597,15 @@ impl eframe::App for MysqlRustyApp {
             let mut global_format_sql = false;
             let mut toggle_palette = false;
             let mut toggle_shortcuts = false;
+            let mut toggle_sidebar = false;
 
             ui.ctx().input_mut(|i| {
                 let is_ctrl = i.modifiers.ctrl || i.modifiers.command;
                 let is_shift = i.modifiers.shift;
 
-                if self
+                if is_ctrl && !is_shift && i.consume_key(Modifiers::NONE, Key::B) {
+                    toggle_sidebar = true;
+                } else if self
                     .keymap
                     .consume(i, crate::shortcuts::Action::ShortcutsHelp)
                 {
@@ -614,7 +631,12 @@ impl eframe::App for MysqlRustyApp {
                 }
             });
 
-            if toggle_shortcuts {
+            if toggle_sidebar {
+                self.show_sidebar = !self.show_sidebar;
+                if self.show_sidebar {
+                    self.zen_mode = false;
+                }
+            } else if toggle_shortcuts {
                 self.show_shortcuts_modal = !self.show_shortcuts_modal;
                 self.rebinding_action = None;
                 self.rebind_conflict_msg = None;
@@ -631,6 +653,12 @@ impl eframe::App for MysqlRustyApp {
                 let label = self.keymap.label(crate::shortcuts::Action::FormatSql);
                 self.status_banner = format!("Formatted SQL query ({label}).");
             }
+        }
+
+        // Keep UI repainting smoothly while any query is running (live elapsed timer + spinner)
+        if self.tabs.iter().any(|t| t.is_running) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(80));
         }
 
         let ai_triggered = ui.ctx().input_mut(|i| {
@@ -698,11 +726,15 @@ impl eframe::App for MysqlRustyApp {
                 .show(ui, |_ui| {});
         }
 
-        self.render_open_connections_bar(ui);
+        if !self.zen_mode {
+            self.render_open_connections_bar(ui);
+        }
         self.render_top_toolbar(ui);
         self.render_bottom_status_bar(ui);
-        self.render_left_sidebar(ui);
-        if self.show_ai_panel {
+        if self.show_sidebar && !self.zen_mode {
+            self.render_left_sidebar(ui);
+        }
+        if self.show_ai_panel && !self.zen_mode {
             self.render_right_ai_panel(ui);
         }
         self.render_central_workspace(ui);

@@ -3,8 +3,9 @@ use super::super::*;
 impl MysqlRustyApp {
     pub(crate) fn render_results_grid(&mut self, ui: &mut Ui) {
         let pal = self.effective_palette(ui.ctx());
-        let (is_running, has_result) = match self.tabs.get(self.active_tab_idx) {
-            Some(t) => (t.is_running, t.last_result.is_some()),
+        let grid_density = self.config.ui.density;
+        let (is_running, run_started_at, has_result) = match self.tabs.get(self.active_tab_idx) {
+            Some(t) => (t.is_running, t.run_started_at, t.last_result.is_some()),
             None => return,
         };
 
@@ -13,7 +14,10 @@ impl MysqlRustyApp {
                 ui.add_space(28.0);
                 ui.spinner();
                 ui.add_space(6.0);
-                ui.label(RichText::new("Executing SQL query...").color(pal.text_secondary));
+                let elapsed_txt = run_started_at
+                    .map(|s| format!("Executing SQL query... ({:.1}s)", s.elapsed().as_secs_f32()))
+                    .unwrap_or_else(|| "Executing SQL query...".to_string());
+                ui.label(RichText::new(elapsed_txt).color(pal.text_secondary));
             });
             return;
         }
@@ -1067,6 +1071,31 @@ impl MysqlRustyApp {
 
             // Render Virtualized Data Grid inside a horizontal ScrollArea so wide
             // result sets can be scrolled horizontally.
+            let col_type_lookup: HashMap<String, (String, bool)> = result
+                .editable_table
+                .as_ref()
+                .and_then(|tname| {
+                    active_schema_opt.as_ref().and_then(|s| {
+                        s.tables
+                            .iter()
+                            .find(|t| t.name.eq_ignore_ascii_case(tname))
+                            .map(|t| {
+                                t.columns
+                                    .iter()
+                                    .map(|c| {
+                                        (
+                                            c.name.to_lowercase(),
+                                            (c.data_type.clone(), c.is_primary_key),
+                                        )
+                                    })
+                                    .collect()
+                            })
+                    })
+                })
+                .unwrap_or_default();
+
+            let header_h = grid_density.grid_header_height();
+            let row_h = grid_density.grid_row_height();
             let hscroll_id = tab.id.clone();
             egui::ScrollArea::horizontal()
                 .id_salt(("results_grid_hscroll", hscroll_id))
@@ -1080,11 +1109,11 @@ impl MysqlRustyApp {
 
                     builder = builder.column(Column::exact(28.0)); // Selection checkbox column
                     for _ in 0..num_cols {
-                        builder = builder.column(Column::initial(135.0).at_least(65.0).clip(true));
+                        builder = builder.column(Column::initial(145.0).at_least(72.0).clip(true));
                     }
 
                     builder
-                    .header(24.0, |mut header| {
+                    .header(header_h, |mut header| {
                 header.col(|ui| {
                     let all_selected = !page_indices.is_empty()
                         && page_indices.iter().all(|r| tab.selected_rows.contains(r));
@@ -1105,14 +1134,72 @@ impl MysqlRustyApp {
                 });
                 for (col_idx, col_name) in result.columns.iter().enumerate() {
                     header.col(|ui| {
+                        let is_sorted = matches!(tab.sort_column, Some((c, _)) if c == col_idx);
                         let arrow = match tab.sort_column {
                             Some((c, true)) if c == col_idx => " ▲",
                             Some((c, false)) if c == col_idx => " ▼",
                             _ => "",
                         };
+                        let col_meta = col_type_lookup.get(&col_name.to_lowercase());
+                        let is_pk_col = col_meta.map(|(_, pk)| *pk).unwrap_or(false)
+                            || pk_col_idx == Some(col_idx);
+                        let type_tag: Option<&str> = col_meta.map(|(dt, _)| {
+                            let u = dt.to_uppercase();
+                            if u.contains("INT") || u.contains("SERIAL") {
+                                "INT"
+                            } else if u.contains("BOOL") || u.contains("BIT") {
+                                "BOOL"
+                            } else if u.contains("JSON") {
+                                "JSON"
+                            } else if u.contains("DEC")
+                                || u.contains("NUM")
+                                || u.contains("FLOAT")
+                                || u.contains("DOUBLE")
+                                || u.contains("REAL")
+                            {
+                                "NUM"
+                            } else if u.contains("DATE") || u.contains("TIME") {
+                                "DATE"
+                            } else if u.contains("BLOB") || u.contains("BYTE") || u.contains("BIN")
+                            {
+                                "BIN"
+                            } else {
+                                "TEXT"
+                            }
+                        });
+                        let hdr_color = if is_sorted {
+                            pal.accent_text
+                        } else {
+                            pal.text_primary
+                        };
+                        let mut hover_tip =
+                            "Click to sort | Right-click to copy column as IN (...) or JS Array"
+                                .to_string();
+                        if let Some((dt, _)) = col_meta {
+                            hover_tip = format!("{col_name} ({dt})\n{hover_tip}");
+                        }
                         let hdr_resp = ui
-                            .button(RichText::new(format!("{col_name}{arrow}")).strong())
-                            .on_hover_text("Click to sort | Right-click to copy column as IN (...) or JS Array");
+                            .horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if is_pk_col {
+                                    pal.micro_badge(ui, "PK", pal.warning, pal.warning_bg);
+                                }
+                                let btn = ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new(format!("{col_name}{arrow}"))
+                                                .strong()
+                                                .color(hdr_color),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text(hover_tip);
+                                if let Some(tag) = type_tag {
+                                    pal.micro_badge(ui, tag, pal.muted_text, pal.badge_bg);
+                                }
+                                btn
+                            })
+                            .inner;
                         if hdr_resp.clicked() {
                             let next_asc = match tab.sort_column {
                                 Some((c, asc)) if c == col_idx => !asc,
@@ -1138,7 +1225,7 @@ impl MysqlRustyApp {
                 }
             })
             .body(|body| {
-                body.rows(24.0, page_indices.len(), |mut row| {
+                body.rows(row_h, page_indices.len(), |mut row| {
                     let actual_row_idx = page_indices[row.index()];
                     let row_cells = &result.rows[actual_row_idx];
                     let is_marked_delete = tab
@@ -1168,12 +1255,15 @@ impl MysqlRustyApp {
                             let pending = tab.pending_edits.iter().find(|e| {
                                 e.row_idx == actual_row_idx && e.col_idx == col_idx
                             });
+                            let cell_hovered = ui.rect_contains_pointer(ui.max_rect());
                             if is_marked_delete {
                                 ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_delete_bg);
                             } else if pending.is_some() {
                                 ui.painter().rect_filled(ui.max_rect(), 0.0, pal.cell_edited_bg);
                             } else if is_selected_row {
                                 ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_selected_bg);
+                            } else if cell_hovered {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, pal.row_hover_bg);
                             }
 
                             let is_editing = matches!(
@@ -1226,14 +1316,46 @@ impl MysqlRustyApp {
                                         .color(pal.warning)
                                         .strong()
                                 } else if cell.is_null() {
-                                    RichText::new("NULL")
+                                    RichText::new(" NULL ")
                                         .italics()
                                         .monospace()
-                                        .size(11.0)
+                                        .size(10.5)
                                         .color(pal.muted_text)
                                         .background_color(pal.null_badge_bg)
                                 } else {
-                                    RichText::new(cell.display_text()).color(pal.text_primary)
+                                    let val = cell.display_text();
+                                    let trimmed = val.trim();
+                                    if trimmed.eq_ignore_ascii_case("true") {
+                                        RichText::new(" true ")
+                                            .monospace()
+                                            .size(11.0)
+                                            .strong()
+                                            .color(pal.success)
+                                            .background_color(pal.success_bg)
+                                    } else if trimmed.eq_ignore_ascii_case("false") {
+                                        RichText::new(" false ")
+                                            .monospace()
+                                            .size(11.0)
+                                            .strong()
+                                            .color(pal.danger)
+                                            .background_color(pal.danger_bg)
+                                    } else if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                                        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+                                    {
+                                        RichText::new(val)
+                                            .monospace()
+                                            .size(11.5)
+                                            .color(pal.purple)
+                                    } else if !trimmed.is_empty()
+                                        && trimmed.len() <= 24
+                                        && trimmed.parse::<f64>().is_ok()
+                                    {
+                                        RichText::new(val)
+                                            .monospace()
+                                            .color(pal.number)
+                                    } else {
+                                        RichText::new(val).color(pal.text_primary)
+                                    }
                                 };
                                 if is_marked_delete {
                                     text = text.strikethrough().color(pal.danger);

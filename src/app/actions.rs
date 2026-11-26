@@ -590,6 +590,7 @@ impl MysqlRustyApp {
         };
 
         tab.is_running = true;
+        tab.run_started_at = Some(std::time::Instant::now());
         tab.last_error = None;
         tab.last_executed_sql = Some(sql.clone());
         tab.ai_error_fix_req_id += 1;

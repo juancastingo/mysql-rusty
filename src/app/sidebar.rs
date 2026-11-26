@@ -48,35 +48,29 @@ fn format_sidebar_ddl_sql(
 
 impl MysqlRustyApp {
     pub(crate) fn render_left_sidebar(&mut self, ui: &mut egui::Ui) {
+        let pal = self.effective_palette(ui.ctx());
         egui::Panel::left("left_sidebar")
             .default_size(280.0)
             .size_range(220.0..=420.0)
             .show(ui, |ui| {
                 self.tour
                     .set_anchor(crate::tour::TourAnchor::SchemaTree, ui.max_rect());
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(
-                        &mut self.sidebar_tab,
-                        SidebarTab::Schema,
-                        RichText::new(rust_i18n::t!("sidebar.schema")).size(12.0),
-                    );
-                    ui.selectable_value(
-                        &mut self.sidebar_tab,
-                        SidebarTab::Connections,
-                        RichText::new(rust_i18n::t!("sidebar.servers")).size(12.0),
-                    );
-                    ui.selectable_value(
-                        &mut self.sidebar_tab,
-                        SidebarTab::SavedQueries,
-                        RichText::new(rust_i18n::t!("sidebar.saved_queries")).size(12.0),
-                    );
-                    ui.selectable_value(
-                        &mut self.sidebar_tab,
-                        SidebarTab::History,
-                        RichText::new(rust_i18n::t!("sidebar.history")).size(12.0),
-                    );
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (tab, label) in [
+                        (SidebarTab::Schema, rust_i18n::t!("sidebar.schema")),
+                        (SidebarTab::Connections, rust_i18n::t!("sidebar.servers")),
+                        (SidebarTab::SavedQueries, rust_i18n::t!("sidebar.saved_queries")),
+                        (SidebarTab::History, rust_i18n::t!("sidebar.history")),
+                    ] {
+                        let is_sel = self.sidebar_tab == tab;
+                        if ui.add(pal.pill_button(label.as_ref(), is_sel)).clicked() {
+                            self.sidebar_tab = tab;
+                        }
+                    }
                 });
+                ui.add_space(2.0);
                 ui.separator();
 
                 match self.sidebar_tab {
@@ -403,20 +397,31 @@ impl MysqlRustyApp {
                                     });
 
                                     for col in &table.columns {
+                                        let is_fk = table
+                                            .foreign_keys
+                                            .iter()
+                                            .any(|fk| fk.column_name.eq_ignore_ascii_case(&col.name));
                                         ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 5.0;
                                             if col.is_primary_key {
-                                                ui.label(
-                                                    RichText::new("PK")
-                                                        .monospace()
-                                                        .size(10.0)
-                                                        .strong()
-                                                        .color(pal.warning),
+                                                pal.micro_badge(
+                                                    ui,
+                                                    "PK",
+                                                    pal.warning,
+                                                    pal.warning_bg,
+                                                );
+                                            } else if is_fk {
+                                                pal.micro_badge(
+                                                    ui,
+                                                    "FK",
+                                                    pal.accent_text,
+                                                    pal.accent_bg,
                                                 );
                                             } else {
                                                 ui.label(
-                                                    RichText::new("  ")
-                                                        .monospace()
-                                                        .size(10.0),
+                                                    RichText::new("•")
+                                                        .size(10.0)
+                                                        .color(pal.muted_text),
                                                 );
                                             }
                                             ui.label(
@@ -426,8 +431,9 @@ impl MysqlRustyApp {
                                             );
                                             ui.label(
                                                 RichText::new(&col.data_type)
+                                                    .monospace()
                                                     .color(pal.muted_text)
-                                                    .size(11.0),
+                                                    .size(10.5),
                                             );
                                         });
                                     }

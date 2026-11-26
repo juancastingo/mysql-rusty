@@ -60,115 +60,109 @@ pub(crate) fn configure_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn apply_shared_spacing(style: &mut egui::Style) {
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.window_margin = egui::Margin::same(14);
-    style.spacing.interact_size = egui::vec2(28.0, 24.0);
-    style.spacing.combo_width = 180.0;
+fn apply_density_spacing(style: &mut egui::Style, density: crate::config::UiDensity) {
+    match density {
+        crate::config::UiDensity::Compact => {
+            style.spacing.button_padding = egui::vec2(7.0, 3.0);
+            style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+            style.spacing.window_margin = egui::Margin::same(10);
+            style.spacing.interact_size = egui::vec2(24.0, 20.0);
+            style.spacing.combo_width = 165.0;
+        }
+        crate::config::UiDensity::Comfortable => {
+            style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+            style.spacing.window_margin = egui::Margin::same(14);
+            style.spacing.interact_size = egui::vec2(28.0, 24.0);
+            style.spacing.combo_width = 180.0;
+        }
+        crate::config::UiDensity::Spacious => {
+            style.spacing.button_padding = egui::vec2(13.0, 7.0);
+            style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+            style.spacing.window_margin = egui::Margin::same(18);
+            style.spacing.interact_size = egui::vec2(32.0, 28.0);
+            style.spacing.combo_width = 195.0;
+        }
+    }
 }
 
-pub(crate) fn configure_modern_dark_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.window_fill = Color32::from_rgb(11, 15, 23); // Obsidian 950
-    visuals.panel_fill = Color32::from_rgb(13, 18, 28); // Deep slate surface
-    visuals.extreme_bg_color = Color32::from_rgb(8, 11, 17); // Editor background
-    visuals.faint_bg_color = Color32::from_rgb(20, 26, 40); // Faint background
-    visuals.selection.bg_fill = Color32::from_rgb(14, 116, 144); // Cyan selection
-    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
+pub(crate) fn configure_theme_visuals(
+    ctx: &egui::Context,
+    pal: crate::theme::Palette,
+    density: crate::config::UiDensity,
+) {
+    let mut visuals = if pal.is_dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
-    // Corner radii
-    visuals.window_corner_radius = egui::CornerRadius::same(10);
-    visuals.menu_corner_radius = egui::CornerRadius::same(8);
-
-    // Widget styling (Buttons, inputs, dropdowns)
-    let subtle_border = Stroke::new(1.0, Color32::from_rgb(35, 46, 68));
-    let hover_border = Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
-    let active_border = Stroke::new(1.0, Color32::from_rgb(14, 165, 233));
-
-    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 21, 32);
-    visuals.widgets.noninteractive.bg_stroke = subtle_border;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(148, 163, 184));
-
-    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(19, 26, 40);
-    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(16, 22, 34);
-    visuals.widgets.inactive.bg_stroke = subtle_border;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
-
-    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(30, 41, 62);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(25, 34, 52);
-    visuals.widgets.hovered.bg_stroke = hover_border;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-
-    visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(37, 51, 77);
-    visuals.widgets.active.weak_bg_fill = Color32::from_rgb(32, 44, 66);
-    visuals.widgets.active.bg_stroke = active_border;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-
-    visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.open.bg_fill = Color32::from_rgb(23, 31, 47);
-    visuals.widgets.open.bg_stroke = hover_border;
-
-    ctx.set_theme(egui::Theme::Dark);
-    ctx.set_visuals(visuals.clone());
-    ctx.style_mut_of(egui::Theme::Dark, |style| {
-        style.visuals = visuals;
-        apply_shared_spacing(style);
-    });
-}
-
-pub(crate) fn configure_modern_light_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.window_fill = Color32::from_rgb(255, 255, 255);
-    visuals.panel_fill = Color32::from_rgb(248, 250, 252);
-    visuals.extreme_bg_color = Color32::from_rgb(255, 255, 255);
-    visuals.faint_bg_color = Color32::from_rgb(241, 245, 249);
-    visuals.selection.bg_fill = Color32::from_rgb(186, 230, 253);
-    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(2, 132, 199));
+    visuals.window_fill = pal.window_bg;
+    visuals.panel_fill = pal.panel_bg;
+    visuals.extreme_bg_color = pal.editor_bg;
+    visuals.faint_bg_color = pal.surface_bg;
+    visuals.selection.bg_fill = pal.accent_bg;
+    visuals.selection.stroke = Stroke::new(1.0, pal.border_active);
 
     visuals.window_corner_radius = egui::CornerRadius::same(10);
     visuals.menu_corner_radius = egui::CornerRadius::same(8);
+    visuals.window_stroke = Stroke::new(1.0, pal.card_border);
 
-    let subtle_border = Stroke::new(1.0, Color32::from_rgb(203, 213, 225));
-    let hover_border = Stroke::new(1.0, Color32::from_rgb(14, 165, 233));
-    let active_border = Stroke::new(1.0, Color32::from_rgb(2, 132, 199));
+    let subtle_border = Stroke::new(1.0, pal.card_border);
+    let hover_border = Stroke::new(1.0, pal.border_active);
+    let active_border = Stroke::new(1.2, pal.accent);
 
     visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(248, 250, 252);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(51, 65, 85));
+    visuals.widgets.noninteractive.bg_fill = pal.surface_bg;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal.border_subtle);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal.text_secondary);
 
     visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(241, 245, 249);
-    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(248, 250, 252);
+    visuals.widgets.inactive.bg_fill = pal.card_bg;
+    visuals.widgets.inactive.weak_bg_fill = pal.tab_inactive_bg;
     visuals.widgets.inactive.bg_stroke = subtle_border;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(15, 23, 42));
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, pal.text_primary);
 
     visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(226, 232, 240);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(235, 241, 248);
+    visuals.widgets.hovered.bg_fill = pal.card_hover_bg;
+    visuals.widgets.hovered.weak_bg_fill = pal.card_hover_bg;
     visuals.widgets.hovered.bg_stroke = hover_border;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(15, 23, 42));
+    visuals.widgets.hovered.fg_stroke = Stroke::new(
+        1.0,
+        if pal.is_dark {
+            Color32::WHITE
+        } else {
+            pal.text_primary
+        },
+    );
 
     visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(203, 213, 225);
-    visuals.widgets.active.weak_bg_fill = Color32::from_rgb(219, 228, 240);
+    visuals.widgets.active.bg_fill = pal.accent_bg;
+    visuals.widgets.active.weak_bg_fill = pal.accent_bg;
     visuals.widgets.active.bg_stroke = active_border;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::from_rgb(15, 23, 42));
+    visuals.widgets.active.fg_stroke = Stroke::new(
+        1.0,
+        if pal.is_dark {
+            Color32::WHITE
+        } else {
+            pal.text_primary
+        },
+    );
 
     visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
-    visuals.widgets.open.bg_fill = Color32::from_rgb(226, 232, 240);
+    visuals.widgets.open.bg_fill = pal.card_hover_bg;
     visuals.widgets.open.bg_stroke = hover_border;
 
-    ctx.set_theme(egui::Theme::Light);
+    let target = if pal.is_dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
+    ctx.set_theme(target);
     ctx.set_visuals(visuals.clone());
-    ctx.style_mut_of(egui::Theme::Light, |style| {
+    ctx.style_mut_of(target, |style| {
         style.visuals = visuals;
-        apply_shared_spacing(style);
+        apply_density_spacing(style, density);
     });
 }
 
@@ -184,20 +178,24 @@ impl super::MysqlRustyApp {
     }
 
     pub(crate) fn effective_palette(&self, ctx: &egui::Context) -> crate::theme::Palette {
-        match self.resolved_egui_theme(ctx) {
-            egui::Theme::Dark => crate::theme::dark_palette(),
-            egui::Theme::Light => crate::theme::light_palette(),
-        }
+        let is_dark = self.resolved_egui_theme(ctx) == egui::Theme::Dark;
+        crate::theme::palette_for(is_dark, self.config.ui.dark_preset)
     }
 
     pub(crate) fn apply_ui_theme_and_scale(&mut self, ctx: &egui::Context) {
         let target_theme = self.resolved_egui_theme(ctx);
-        if self.last_applied_theme != Some(target_theme) {
-            match target_theme {
-                egui::Theme::Dark => configure_modern_dark_theme(ctx),
-                egui::Theme::Light => configure_modern_light_theme(ctx),
-            }
-            self.last_applied_theme = Some(target_theme);
+        let key = (
+            target_theme,
+            self.config.ui.dark_preset,
+            self.config.ui.density,
+        );
+        if self.last_applied_theme != Some(key) {
+            let pal = crate::theme::palette_for(
+                target_theme == egui::Theme::Dark,
+                self.config.ui.dark_preset,
+            );
+            configure_theme_visuals(ctx, pal, self.config.ui.density);
+            self.last_applied_theme = Some(key);
         }
         let scale = self.config.ui.ui_scale.clamp(0.75, 2.0);
         if (ctx.zoom_factor() - scale).abs() > 0.001 {

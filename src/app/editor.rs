@@ -50,7 +50,8 @@ impl MysqlRustyApp {
                                     Stroke::new(1.0, pal.border_subtle)
                                 };
 
-                                egui::Frame::new()
+                                let is_running_tab = self.tabs[idx].is_running;
+                                let tab_frame = egui::Frame::new()
                                     .fill(tab_bg)
                                     .stroke(tab_stroke)
                                     .corner_radius(egui::CornerRadius {
@@ -81,7 +82,9 @@ impl MysqlRustyApp {
                                                     self.renaming_tab_idx = None;
                                                 }
                                             } else {
-                                                if is_dirty {
+                                                if is_running_tab {
+                                                    ui.add(egui::Spinner::new().size(11.0));
+                                                } else if is_dirty {
                                                     ui.label(
                                                         RichText::new("●")
                                                             .size(8.0)
@@ -173,6 +176,18 @@ impl MysqlRustyApp {
                                             }
                                         });
                                     });
+                                if is_active {
+                                    let r = tab_frame.response.rect;
+                                    let top_bar = egui::Rect::from_min_max(
+                                        egui::pos2(r.left() + 3.0, r.top()),
+                                        egui::pos2(r.right() - 3.0, r.top() + 2.5),
+                                    );
+                                    ui.painter().rect_filled(
+                                        top_bar,
+                                        egui::CornerRadius::same(1),
+                                        pal.accent,
+                                    );
+                                }
                                 ui.add_space(2.0);
                             }
 
@@ -225,6 +240,9 @@ impl MysqlRustyApp {
             let editor_palette = self.effective_palette(ui.ctx());
             let initial_font_size = self.config.ui.editor_font_size.clamp(10.0, 28.0);
             let mut editor_font_size = initial_font_size;
+            let initial_show_line_numbers = self.config.ui.show_line_numbers;
+            let mut show_line_numbers = initial_show_line_numbers;
+            let mut copied_sql_banner = false;
             ui.input_mut(|i| {
                 if keymap.consume(i, crate::shortcuts::Action::ZoomIn)
                     || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
@@ -1136,18 +1154,81 @@ impl MysqlRustyApp {
                     }
                 }
 
+                let (prefix_for_gutter, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
+                let active_line_num = prefix_for_gutter.chars().filter(|&c| c == '\n').count() + 1;
+                let total_line_count = tab.sql.split('\n').count().max(1);
+
                 let output = egui::ScrollArea::vertical()
                     .id_salt("sql_editor_scroll")
-                    .max_height(195.0)
+                    .max_height(210.0)
                     .show(ui, |ui| {
-                        egui::TextEdit::multiline(&mut tab.sql)
-                            .id(editor_id)
-                            .font(egui::TextStyle::Monospace)
-                            .code_editor()
-                            .desired_rows(8)
-                            .desired_width(f32::INFINITY)
-                            .layouter(&mut layouter)
-                            .show(ui)
+                        ui.horizontal_top(|ui| {
+                            if show_line_numbers {
+                                let digits = total_line_count.to_string().len().max(2);
+                                let gutter_w = (digits as f32 * (editor_font_size * 0.62) + 14.0)
+                                    .max(30.0);
+                                let row_h = ui.fonts_mut(|f| {
+                                    f.row_height(&egui::FontId::monospace(editor_font_size))
+                                });
+                                let lines_to_show = total_line_count.max(8);
+                                egui::Frame::new()
+                                    .fill(editor_palette.surface_bg)
+                                    .stroke(Stroke::new(1.0, editor_palette.border_subtle))
+                                    .corner_radius(egui::CornerRadius {
+                                        nw: 6,
+                                        sw: 6,
+                                        ne: 0,
+                                        se: 0,
+                                    })
+                                    .inner_margin(egui::Margin {
+                                        left: 4,
+                                        right: 6,
+                                        top: 3,
+                                        bottom: 3,
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(gutter_w);
+                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                        for ln in 1..=lines_to_show {
+                                            let is_cur = ln == active_line_num;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(gutter_w, row_h),
+                                                egui::Sense::hover(),
+                                            );
+                                            if is_cur {
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    2.0,
+                                                    editor_palette.accent_bg,
+                                                );
+                                            }
+                                            let color = if is_cur {
+                                                editor_palette.accent_text
+                                            } else if ln <= total_line_count {
+                                                editor_palette.muted_text
+                                            } else {
+                                                editor_palette.muted_text.gamma_multiply(0.35)
+                                            };
+                                            ui.painter().text(
+                                                egui::pos2(rect.right() - 2.0, rect.center().y),
+                                                egui::Align2::RIGHT_CENTER,
+                                                ln.to_string(),
+                                                egui::FontId::monospace(editor_font_size * 0.88),
+                                                color,
+                                            );
+                                        }
+                                    });
+                            }
+                            egui::TextEdit::multiline(&mut tab.sql)
+                                .id(editor_id)
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .desired_rows(8)
+                                .desired_width(f32::INFINITY)
+                                .layouter(&mut layouter)
+                                .show(ui)
+                        })
+                        .inner
                     })
                     .inner;
 
@@ -1215,7 +1296,7 @@ impl MysqlRustyApp {
                     }
                 }
 
-                // Compact Editor Status Strip (Ln/Col, lines, selection, font size)
+                // Compact Contextual Editor Status & Action Strip
                 {
                     let (prefix_before_cursor, _) =
                         split_sql_at_cursor(&tab.sql, tab.cursor_index);
@@ -1225,28 +1306,99 @@ impl MysqlRustyApp {
                         .next()
                         .map(|s| s.chars().count() + 1)
                         .unwrap_or(1);
-                    let total_lines = tab.sql.lines().count().max(1);
+                    let total_lines = tab.sql.split('\n').count().max(1);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!(
                                 "Ln {cur_line}, Col {cur_col}  •  {total_lines} lines"
                             ))
                             .size(11.0)
+                            .monospace()
                             .color(editor_palette.muted_text),
                         );
                         if let Some(sel) = &tab.selected_sql {
-                            ui.label(
-                                RichText::new(format!("•  {} chars selected", sel.chars().count()))
-                                    .size(11.0)
-                                    .color(editor_palette.accent_text),
+                            editor_palette.micro_badge(
+                                ui,
+                                &format!("{} chars selected", sel.chars().count()),
+                                editor_palette.accent_text,
+                                editor_palette.accent_bg,
+                            );
+                        }
+                        if tab.is_running
+                            && let Some(started) = tab.run_started_at
+                        {
+                            editor_palette.micro_badge(
+                                ui,
+                                &format!("Running {:.1}s", started.elapsed().as_secs_f32()),
+                                editor_palette.success,
+                                editor_palette.success_bg,
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{:.0}px", editor_font_size))
-                                    .size(11.0)
-                                    .color(editor_palette.muted_text),
-                            );
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Increase editor font size (Ctrl+=)")
+                                .clicked()
+                            {
+                                editor_font_size = (editor_font_size + 1.0).clamp(10.0, 28.0);
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(format!("{:.0}px", editor_font_size))
+                                            .size(10.5)
+                                            .monospace()
+                                            .color(editor_palette.muted_text),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Click to reset editor font size to 14px")
+                                .clicked()
+                            {
+                                editor_font_size = 14.0;
+                            }
+                            if ui
+                                .small_button("-")
+                                .on_hover_text("Decrease editor font size (Ctrl+-)")
+                                .clicked()
+                            {
+                                editor_font_size = (editor_font_size - 1.0).clamp(10.0, 28.0);
+                            }
+                            ui.separator();
+                            if ui
+                                .add(editor_palette.pill_button("# Lines", show_line_numbers))
+                                .on_hover_text("Toggle line numbers gutter")
+                                .clicked()
+                            {
+                                show_line_numbers = !show_line_numbers;
+                            }
+                            if ui
+                                .small_button("Copy")
+                                .on_hover_text("Copy SQL to clipboard")
+                                .clicked()
+                            {
+                                let to_copy = tab
+                                    .selected_sql
+                                    .as_deref()
+                                    .unwrap_or(&tab.sql)
+                                    .to_string();
+                                ui.ctx().copy_text(to_copy);
+                                copied_sql_banner = true;
+                            }
+                            if !tab.sql.is_empty()
+                                && ui
+                                    .small_button(
+                                        RichText::new("Clear").color(editor_palette.muted_text),
+                                    )
+                                    .on_hover_text("Clear SQL editor")
+                                    .clicked()
+                            {
+                                tab.sql.clear();
+                                tab.selected_sql = None;
+                                tab.cursor_index = 0;
+                                tab.is_dirty = true;
+                                tab.sql_version = tab.sql_version.wrapping_add(1);
+                            }
                         });
                     });
                 }
@@ -1438,6 +1590,13 @@ impl MysqlRustyApp {
             if (editor_font_size - initial_font_size).abs() > 0.01 {
                 self.config.ui.editor_font_size = editor_font_size;
                 let _ = self.config.save();
+            }
+            if show_line_numbers != initial_show_line_numbers {
+                self.config.ui.show_line_numbers = show_line_numbers;
+                let _ = self.config.save();
+            }
+            if copied_sql_banner {
+                self.status_banner = "Copied SQL to clipboard.".to_string();
             }
 
             if editor_run_stmt {
