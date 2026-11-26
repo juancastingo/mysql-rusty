@@ -146,6 +146,7 @@ impl MysqlRustyApp {
                     let mut should_auto_retry = false;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.is_running = false;
+                        tab.run_started_at = None;
                         tab.task_abort_handle = None;
                         match result {
                             Ok(res) => {
@@ -252,6 +253,7 @@ impl MysqlRustyApp {
                     self.bottom_tab = BottomTab::ResultsGrid;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.is_running = false;
+                        tab.run_started_at = None;
                         tab.task_abort_handle = None;
                         tab.multi_results.clear();
                         tab.active_result_idx = 0;

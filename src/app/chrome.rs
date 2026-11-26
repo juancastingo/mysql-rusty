@@ -153,6 +153,18 @@ impl MysqlRustyApp {
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(4.0);
+                    let sidebar_visible = self.show_sidebar && !self.zen_mode;
+                    if ui
+                        .add(pal.icon_toggle_button("◧", sidebar_visible))
+                        .on_hover_text("Toggle left sidebar (Ctrl+B)")
+                        .clicked()
+                    {
+                        self.show_sidebar = !self.show_sidebar;
+                        if self.show_sidebar {
+                            self.zen_mode = false;
+                        }
+                    }
+                    ui.add_space(2.0);
                     // Brand Logo
                     ui.label(
                         RichText::new("MySQL-Rusty")
@@ -160,6 +172,9 @@ impl MysqlRustyApp {
                             .color(pal.accent_text)
                             .strong(),
                     );
+                    if let Some(session) = &self.active_session {
+                        pal.dialect_badge(ui, session.dialect());
+                    }
                     ui.add_space(4.0);
                     ui.separator();
                     ui.add_space(4.0);
@@ -185,12 +200,17 @@ impl MysqlRustyApp {
 
                     egui::ComboBox::from_id_salt("conn_selector")
                         .selected_text(RichText::new(active_conn_name).strong())
-                        .width(190.0)
+                        .width(180.0)
                         .show_ui(ui, |ui| {
                             let profiles = self.config.connections.clone();
                             for prof in profiles {
                                 let is_sel = Some(&prof.id) == self.active_profile_id.as_ref();
-                                if ui.selectable_label(is_sel, &prof.name).clicked() {
+                                let label = if prof.is_favorite {
+                                    format!("★ {}", prof.name)
+                                } else {
+                                    prof.name.clone()
+                                };
+                                if ui.selectable_label(is_sel, label).clicked() {
                                     self.connect_to_profile(prof);
                                 }
                             }
@@ -317,31 +337,47 @@ impl MysqlRustyApp {
                             self.reconnect_active_session();
                         }
 
-                        if is_running
-                            && ui
+                        if is_running {
+                            if let Some(started) = self
+                                .tabs
+                                .get(self.active_tab_idx)
+                                .and_then(|t| t.run_started_at)
+                            {
+                                let secs = started.elapsed().as_secs_f32();
+                                ui.spinner();
+                                pal.badge(
+                                    ui,
+                                    &format!("{secs:.1}s"),
+                                    pal.accent_text,
+                                    pal.accent_bg,
+                                );
+                            }
+                            if ui
                                 .add(pal.danger_button("■ Stop"))
                                 .on_hover_text("Abort running query execution")
                                 .clicked()
-                        {
-                            if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                                if let Some(handle) = tab.task_abort_handle.take() {
-                                    handle.abort();
-                                }
-                                tab.is_running = false;
-                                tab.last_error = Some("Query cancelled by user".to_string());
-                            }
-                            if let Some(session) = self.active_session.clone()
-                                && let Some(conn_id) = session.editor_connection_id()
                             {
-                                self.rt.spawn(async move {
-                                    if let Err(err) = session.kill_query(conn_id).await {
-                                        tracing::warn!(conn_id, error = %err, "Failed to KILL QUERY on server");
-                                    } else {
-                                        tracing::info!(conn_id, "Cancelled query on server via KILL QUERY");
+                                if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
+                                    if let Some(handle) = tab.task_abort_handle.take() {
+                                        handle.abort();
                                     }
-                                });
+                                    tab.is_running = false;
+                                    tab.run_started_at = None;
+                                    tab.last_error = Some("Query cancelled by user".to_string());
+                                }
+                                if let Some(session) = self.active_session.clone()
+                                    && let Some(conn_id) = session.editor_connection_id()
+                                {
+                                    self.rt.spawn(async move {
+                                        if let Err(err) = session.kill_query(conn_id).await {
+                                            tracing::warn!(conn_id, error = %err, "Failed to KILL QUERY on server");
+                                        } else {
+                                            tracing::info!(conn_id, "Cancelled query on server via KILL QUERY");
+                                        }
+                                    });
+                                }
+                                self.status_banner = "Query cancelled by user.".to_string();
                             }
-                            self.status_banner = "Query cancelled by user.".to_string();
                         }
 
                         if !has_selection {
@@ -471,20 +507,60 @@ impl MysqlRustyApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let copilot_text = if self.show_ai_panel {
+                        // Quick Zen Mode toggle
+                        if ui
+                            .add(pal.icon_toggle_button("⛶", self.zen_mode))
+                            .on_hover_text(if self.zen_mode {
+                                "Exit Zen Mode (restore sidebar & panels)"
+                            } else {
+                                "Zen Mode — hide sidebar and panels for focused querying"
+                            })
+                            .clicked()
+                        {
+                            self.zen_mode = !self.zen_mode;
+                        }
+
+                        // Quick Dark/Light theme toggle
+                        let is_dark = pal.is_dark;
+                        let theme_icon = if is_dark { "☀" } else { "☾" };
+                        let theme_tip = if is_dark {
+                            format!(
+                                "Switch to Light theme (current: {})",
+                                self.config.ui.dark_preset.label()
+                            )
+                        } else {
+                            format!(
+                                "Switch to Dark theme ({})",
+                                self.config.ui.dark_preset.label()
+                            )
+                        };
+                        if ui
+                            .add(pal.icon_toggle_button(theme_icon, false))
+                            .on_hover_text(theme_tip)
+                            .clicked()
+                        {
+                            self.config.ui.theme = if is_dark {
+                                crate::config::ThemePreference::Light
+                            } else {
+                                crate::config::ThemePreference::Dark
+                            };
+                            let _ = self.config.save();
+                        }
+
+                        let copilot_text = if self.show_ai_panel && !self.zen_mode {
                             RichText::new("AI Copilot").color(Color32::WHITE).strong()
                         } else {
                             RichText::new("AI Copilot").color(pal.text_secondary)
                         };
                         let copilot_btn = egui::Button::new(copilot_text)
-                            .fill(if self.show_ai_panel {
+                            .fill(if self.show_ai_panel && !self.zen_mode {
                                 Color32::from_rgb(126, 34, 206)
                             } else {
                                 pal.card_bg
                             })
                             .stroke(Stroke::new(
                                 1.0,
-                                if self.show_ai_panel {
+                                if self.show_ai_panel && !self.zen_mode {
                                     pal.purple
                                 } else {
                                     pal.card_border
@@ -494,11 +570,14 @@ impl MysqlRustyApp {
 
                         if ui.add(copilot_btn).clicked() {
                             self.show_ai_panel = !self.show_ai_panel;
+                            if self.show_ai_panel {
+                                self.zen_mode = false;
+                            }
                         }
 
                         if ui
-                            .button(format!("AI: {}", self.config.ai.provider.label()))
-                            .on_hover_text("Configure AI autocomplete & chat provider")
+                            .button(format!("⚙ {}", self.config.ai.provider.label()))
+                            .on_hover_text("Appearance, theme presets & AI provider settings")
                             .clicked()
                         {
                             self.show_ai_settings_modal = true;
@@ -511,7 +590,7 @@ impl MysqlRustyApp {
     pub(crate) fn render_bottom_status_bar(&mut self, ui: &mut egui::Ui) {
         let pal = self.effective_palette(ui.ctx());
         egui::Panel::bottom("status_bar")
-            .exact_size(26.0)
+            .exact_size(28.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     let dot_color = if self.connection_lost.is_some() {
@@ -523,12 +602,12 @@ impl MysqlRustyApp {
                     };
                     ui.colored_label(dot_color, "●");
 
-                    let status_max_w = (ui.available_width() - 420.0).max(120.0);
+                    let status_max_w = (ui.available_width() - 560.0).max(110.0);
                     ui.add_sized(
                         [status_max_w, 18.0],
                         egui::Label::new(
                             RichText::new(&self.status_banner)
-                                .size(12.0)
+                                .size(11.5)
                                 .color(pal.text_secondary),
                         )
                         .truncate(),
@@ -549,13 +628,102 @@ impl MysqlRustyApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(
-                                "Ctrl+K: Palette | Ctrl+Space: AI | Ctrl+Shift+F: Format | Ctrl+Enter: Run",
+                        // Clickable Density switcher chip
+                        let density_label = self.config.ui.density.label();
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(density_label)
+                                        .size(10.5)
+                                        .color(pal.muted_text),
+                                )
+                                .frame(false),
                             )
-                            .color(pal.muted_text)
-                            .small(),
-                        );
+                            .on_hover_text(
+                                "Click to cycle UI density (Compact / Comfortable / Spacious)",
+                            )
+                            .clicked()
+                        {
+                            self.config.ui.density = self.config.ui.density.next();
+                            let _ = self.config.save();
+                        }
+
+                        ui.separator();
+
+                        // Clickable Theme Preset switcher chip
+                        let preset_label = if pal.is_dark {
+                            self.config.ui.dark_preset.label()
+                        } else {
+                            "Light"
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(preset_label)
+                                        .size(10.5)
+                                        .color(pal.accent_text),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Click to cycle theme preset")
+                            .clicked()
+                        {
+                            if pal.is_dark {
+                                let all = crate::config::DarkThemePreset::all();
+                                let idx = all
+                                    .iter()
+                                    .position(|&p| p == self.config.ui.dark_preset)
+                                    .unwrap_or(0);
+                                self.config.ui.dark_preset = all[(idx + 1) % all.len()];
+                            } else {
+                                self.config.ui.theme = crate::config::ThemePreference::Dark;
+                            }
+                            let _ = self.config.save();
+                        }
+
+                        if self.active_session.is_some()
+                            && let Some(tab) = self.tabs.get(self.active_tab_idx)
+                        {
+                            let (prefix, _) = split_sql_at_cursor(&tab.sql, tab.cursor_index);
+                            let ln = prefix.chars().filter(|&c| c == '\n').count() + 1;
+                            let col = prefix
+                                .rsplit('\n')
+                                .next()
+                                .map(|s| s.chars().count() + 1)
+                                .unwrap_or(1);
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("Ln {ln}, Col {col}"))
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(pal.muted_text),
+                            );
+
+                            if let Some(res) = &tab.last_result {
+                                ui.separator();
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} rows • {}ms",
+                                        res.rows.len(),
+                                        res.duration_ms
+                                    ))
+                                    .size(11.0)
+                                    .color(pal.text_secondary),
+                                );
+                            }
+                        }
+
+                        if let Some(prof) = self
+                            .active_profile_id
+                            .as_ref()
+                            .and_then(|id| self.config.connections.iter().find(|c| &c.id == id))
+                        {
+                            let (er, eg, eb) = prof.environment.color_rgb();
+                            let (fg, bg) = pal.env_badge_colors(er, eg, eb);
+                            ui.separator();
+                            pal.micro_badge(ui, &prof.environment.label().to_uppercase(), fg, bg);
+                        }
+
                         if self.config.ui.vim_mode
                             && let Some(tab) = self.tabs.get(self.active_tab_idx)
                         {

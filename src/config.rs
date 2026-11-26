@@ -122,6 +122,8 @@ pub struct ConnectionProfile {
     pub dialect: crate::dialect::Dialect,
     #[serde(default)]
     pub sqlite_path: String,
+    #[serde(default)]
+    pub is_favorite: bool,
 }
 
 impl Default for ConnectionProfile {
@@ -147,6 +149,7 @@ impl Default for ConnectionProfile {
             favorite_tables: Vec::new(),
             dialect: crate::dialect::Dialect::MySql,
             sqlite_path: String::new(),
+            is_favorite: false,
         }
     }
 }
@@ -174,6 +177,7 @@ impl ConnectionProfile {
             favorite_tables: Vec::new(),
             dialect: crate::dialect::Dialect::MySql,
             sqlite_path: String::new(),
+            is_favorite: false,
         }
     }
 }
@@ -371,6 +375,85 @@ impl ThemePreference {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DarkThemePreset {
+    #[default]
+    Obsidian,
+    Nord,
+    Dracula,
+    Catppuccin,
+}
+
+impl DarkThemePreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Obsidian => "Obsidian",
+            Self::Nord => "Nord",
+            Self::Dracula => "Dracula",
+            Self::Catppuccin => "Catppuccin Mocha",
+        }
+    }
+
+    pub fn all() -> [Self; 4] {
+        [Self::Obsidian, Self::Nord, Self::Dracula, Self::Catppuccin]
+    }
+
+    pub fn preview_swatches(self) -> [(u8, u8, u8); 3] {
+        match self {
+            Self::Obsidian => [(13, 18, 28), (19, 26, 40), (56, 189, 248)],
+            Self::Nord => [(46, 52, 64), (59, 66, 82), (136, 192, 208)],
+            Self::Dracula => [(33, 34, 44), (40, 42, 54), (189, 147, 249)],
+            Self::Catppuccin => [(24, 24, 37), (30, 30, 46), (137, 180, 250)],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiDensity {
+    Compact,
+    #[default]
+    Comfortable,
+    Spacious,
+}
+
+impl UiDensity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Comfortable => "Comfortable",
+            Self::Spacious => "Spacious",
+        }
+    }
+
+    pub fn all() -> [Self; 3] {
+        [Self::Compact, Self::Comfortable, Self::Spacious]
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Comfortable,
+            Self::Comfortable => Self::Spacious,
+            Self::Spacious => Self::Compact,
+        }
+    }
+
+    pub fn grid_row_height(self) -> f32 {
+        match self {
+            Self::Compact => 21.0,
+            Self::Comfortable => 25.0,
+            Self::Spacious => 30.0,
+        }
+    }
+
+    pub fn grid_header_height(self) -> f32 {
+        match self {
+            Self::Compact => 24.0,
+            Self::Comfortable => 28.0,
+            Self::Spacious => 32.0,
+        }
+    }
+}
+
 fn default_ui_scale() -> f32 {
     1.0
 }
@@ -389,12 +472,20 @@ pub struct UiSettings {
     pub vim_mode: bool,
     #[serde(default)]
     pub theme: ThemePreference,
+    #[serde(default)]
+    pub dark_preset: DarkThemePreset,
+    #[serde(default)]
+    pub density: UiDensity,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
     #[serde(default = "default_editor_font_size")]
     pub editor_font_size: f32,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_true")]
+    pub show_line_numbers: bool,
+    #[serde(default = "default_true")]
+    pub dashboard_grid_view: bool,
 }
 
 impl Default for UiSettings {
@@ -402,9 +493,13 @@ impl Default for UiSettings {
         Self {
             vim_mode: false,
             theme: ThemePreference::Dark,
+            dark_preset: DarkThemePreset::Obsidian,
+            density: UiDensity::Comfortable,
             ui_scale: default_ui_scale(),
             editor_font_size: default_editor_font_size(),
             language: default_language(),
+            show_line_numbers: true,
+            dashboard_grid_view: true,
         }
     }
 }
@@ -866,6 +961,7 @@ pub fn parse_workbench_connections_xml(xml: &str) -> Vec<ConnectionProfile> {
             favorite_tables: Vec::new(),
             dialect: crate::dialect::Dialect::MySql,
             sqlite_path: String::new(),
+            is_favorite: false,
         });
     }
 
